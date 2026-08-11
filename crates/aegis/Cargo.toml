@@ -34,6 +34,8 @@ chrome-command-panel = ["dep:aegis-command-panel", "dep:aegis-tray"]
 aegis-security.workspace = true
 aegis-semantic.workspace = true
 aegis-model = { workspace = true }
+# Design tokens: scene colors and glass material policy (single source).
+aegis-design = { workspace = true }
 aegis-compositor = { workspace = true }
 aegis-backend = { workspace = true }
 aegis-render = { workspace = true }
@@ -60,6 +62,8 @@ aegis-desktop-entries = { workspace = true }
 aegis-launcher = { workspace = true }
 flux = { workspace = true }
 lens = { workspace = true }
+# Liquid-glass material compositor (ADR-0063 moved it out of flux).
+prism = { workspace = true }
 image = { workspace = true }
 libc = { workspace = true }
 # SVG cursor rasterization for the software cursor (ADR-0070). Pure Rust,
@@ -84,9 +88,10 @@ aegis-logging.workspace = true
 flux-sys = { workspace = true }
 flux-scene-graph-sys = { workspace = true }
 lens-sys = { workspace = true }
+prism-sys = { workspace = true }
 
 [package.metadata.cargo-machete]
-ignored = ["flux-scene-graph-sys", "lens-sys"]
+ignored = ["flux-scene-graph-sys", "lens-sys", "prism-sys"]
 
 [dev-dependencies]
 tempfile = "3"

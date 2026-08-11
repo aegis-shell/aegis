@@ -154,13 +154,14 @@ impl Chrome for ControlledWindowGuard {
                 }
                 _ => format!("{status} · {}", i18n.text(Message::ReadOnlyMirror)),
             };
+            let footnote = self.design.typography.footnote;
             let label = ellipsize(
                 frame,
                 &label,
-                11.0,
+                footnote,
                 (rect.w - BADGE_MARGIN * 2.0 - 28.0).max(0.0),
             );
-            let badge_width = (frame.measure_text(&label, 11.0).width + 28.0)
+            let badge_width = (frame.measure_text(&label, footnote).width + 28.0)
                 .min((rect.w - BADGE_MARGIN * 2.0).max(1.0));
             let badge = Rect {
                 x: rect.x + (rect.w - badge_width) * 0.5,
@@ -189,7 +190,7 @@ impl Chrome for ControlledWindowGuard {
                             cross: Align::Center,
                             ..Default::default()
                         },
-                        |frame| frame.label_compact_sized(&label, 11.0),
+                        |frame| frame.label_compact_sized(&label, footnote),
                     );
                 },
             );

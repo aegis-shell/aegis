@@ -10,7 +10,7 @@ application does not also receive the shortcut.
 |----------|--------|
 | `Super+A` | Open or close the full application launcher |
 | `Super+Space` | Open or close Prism application search |
-| `Super+O` | Open or close the window and workspace overview |
+| `Super+O` | Open or close the window and workspace overview (`Escape` also closes it) |
 | `Super+S` | Open or close the command panel (quick settings, settings modules, tray, notifications) |
 | `Super+Q` | Close the focused toplevel |
 | `Super+Tab` | Focus the next toplevel and show the live switcher while `Super` remains held |
@@ -22,11 +22,21 @@ application does not also receive the shortcut.
 | `Print` | Open the interactive screenshot region selector |
 | `Super+Ctrl+Q` | Gracefully quit the current Aegis instance |
 | `Super+Shift+Return` | Gracefully quit the current Aegis instance |
+| `Ctrl+Alt+Escape` | Force every open modal dialog (consent prompts, the low-battery alert) to its cancel/deny exit |
 
 The quit shortcuts stop only the Aegis process that receives the input. The
 normal shutdown path disables its outputs, releases the seat and Direct
 Rendering Manager (DRM) device, and returns control to the terminal. This is
 the preferred exit path during VT testing.
+
+`Ctrl+Alt+Escape` is the panic chord for high-priority modal dialogs. Those
+dialogs — the capability, confirmation, secret, and app-picker consent
+prompts and the low-battery alert — never dismiss on clicks outside the
+panel; they leave only through their buttons, `Escape`, or this chord. The
+chord is matched before chrome and client input routing and consumed on both
+edges, so it stays reachable even when a modal dialog owns the keyboard and
+a stuck dialog cannot hold the session hostage. Like the VT-switch chords it
+is compositor-owned and not a configurable `[[keybind]]` entry.
 
 The launcher, Prism, and command-panel toggles, `Super+L`, `Print`, and the quit
 shortcuts
@@ -57,11 +67,11 @@ does not perform VT switching.
 | Three-finger swipe right | Switch to the previous workspace |
 | Three-finger swipe up | Focus the next toplevel on the current workspace, showing the live switcher until the gesture ends |
 | Three-finger swipe down | Focus the previous toplevel on the current workspace, showing the live switcher until the gesture ends |
-| Four-finger swipe up | Open the window and workspace overview |
-| Four-finger swipe down (overview open) | Close the overview |
+| Four-finger swipe down | Open the command panel |
+| Four-finger swipe up (panel open) | Close the command panel |
 
 Three- and four-finger swipes are compositor-owned (ADR-0080, ADR-0082,
-ADR-0116):
+ADR-0119):
 they are claimed by Aegis and never forwarded to client
 `zwp_pointer_gestures_v1` objects. A three-finger swipe latches its axis
 once it travels 30 px, then fires one step per 120 px of travel. Swipes

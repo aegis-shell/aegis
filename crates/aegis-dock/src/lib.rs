@@ -5,11 +5,14 @@
 //! `.desktop` entries the binary pins (plus any running window that is not
 //! already pinned), so it shows real XDG icons even when nothing is running.
 //!
-//! Each tile is one app:
+//! Each tile is one app — pinned or not, an application's running windows
+//! fold into a single tile:
 //!   - Clicking a tile whose app has a running window focuses that window;
 //!     clicking a tile with no running window launches the app (`out.spawn`).
 //!   - Dragging a pinned tile past a neighbour's midpoint reorders the pinned
-//!     strip (`out.dock_reorder`); dragging empty panel space toward another
+//!     strip (`out.dock_reorder`); dragging it past the section divider
+//!     unpins it, and dragging a transient tile back across the divider pins
+//!     it at the hovered slot. Dragging empty panel space toward another
 //!     screen edge moves the dock there (`out.dock_position`).
 //!   - A small dot beside a tile (beneath it on a bottom dock) marks a
 //!     running app; the dot brightens for the activated window.
@@ -43,7 +46,7 @@ use aegis_model::workspace::WorkspaceSnapshot;
 use aegis_shell::{
     AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
     LiquidGlassRegion, LivePreviewPresentation, Localizer, Message, PinAction, PopupSide,
-    PreviewCard, Reserved, ellipsize, preview,
+    PreviewCard, Reserved, ellipsize, liquid_glass_region_id, preview,
 };
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
@@ -76,10 +79,12 @@ const SPRING_DAMPING: f32 = 0.85;
 const DOCK_TILE_BIRTH: f32 = 6.0;
 /// Gap between adjacent rest slots inside the bar.
 const DOCK_TILE_GAP: f32 = 10.0;
-/// Extra breathing room between the pinned strip and the transient (running,
+/// Edge-to-edge gap between the pinned strip and the transient (running,
 /// unpinned) section — the macOS-style separator between kept apps and apps
-/// that only live while they run.
-const DOCK_SECTION_GAP: f32 = 22.0;
+/// that only live while they run. The boundary *replaces* the ordinary tile
+/// gap and the divider hairline sits at its midpoint, so each section keeps
+/// exactly one ordinary tile gap of clearance beside the divider.
+const DOCK_SECTION_GAP: f32 = 2.0 * DOCK_TILE_GAP;
 /// Padding between the bar's edge and the first/last rest slot.
 const DOCK_PAD: f32 = 10.0;
 /// Diameter of a single running-indicator dot.
@@ -138,8 +143,9 @@ pub struct DockApp {
     pub keys: Vec<String>,
 }
 
-/// One resolved tile for the current frame: a pinned app, a running window, or
-/// a pinned app that also has a running window folded into it.
+/// One resolved tile for the current frame: a pinned app or a transient
+/// running application (one tile per app in both cases, its windows folded
+/// in — a pinned app and an unpinned one behave identically).
 #[derive(Clone)]
 struct Tile {
     /// Stable identity for per-frame size easing (survives across frames).
@@ -167,9 +173,13 @@ struct Tile {
     /// launcher rather than focusing or spawning. Drawn as a 3×3 grid glyph.
     launchpad: bool,
     /// Whether the tile belongs to the persistent strip (launchpad or a
-    /// pinned app). Transient tiles — unpinned running windows — sit on the
-    /// right of the section separator and disappear when they close.
+    /// pinned app). Transient tiles — unpinned running applications — sit on
+    /// the right of the section separator and disappear when they close.
     pinned: bool,
+    /// The desktop-entry id a transient tile pins as ("Keep in Dock", or a
+    /// drag across the section divider). `None` for pinned tiles, the
+    /// Launchpad, and windows that match no enumerated entry.
+    pin_entry: Option<String>,
 }
 
 impl Tile {
@@ -188,8 +198,24 @@ impl Tile {
             label: label.to_string(),
             launchpad: true,
             pinned: true,
+            pin_entry: None,
         }
     }
+}
+
+/// One transient-strip application grouping: every running window that
+/// shares a resolved desktop entry (or, unresolved, a lowercased `app_id`).
+/// Mirroring the pinned strip, one group renders as exactly one tile.
+struct TransientGroup {
+    /// The tile key: `transient:<entry id>` or `transient:<app_id>` for an
+    /// application group, `win:<id>` for a window that reported no app_id.
+    key: String,
+    /// The first member's lowercased `app_id` (icon lookup), if any.
+    app_id: Option<String>,
+    /// Index into `all_apps` of the resolved desktop entry, if any.
+    entry: Option<usize>,
+    /// Member window indices into `windows`, in first-observed order.
+    windows: Vec<usize>,
 }
 
 /// What a left-button press on the dock panel landed on.
@@ -200,12 +226,24 @@ enum PressTarget {
     /// frame, so windows opening or closing mid-gesture cannot shift the
     /// drag anchor.
     PinnedTile(String),
-    /// A tile that cannot be reordered — the Launchpad or a transient
-    /// running window. The press stays a pending click until release.
+    /// A tile that does not reorder inside the pinned strip — the Launchpad
+    /// or a transient running application. The press stays a pending click
+    /// until release, except that a transient tile that resolves to a
+    /// desktop entry promotes to a drag so it can be pinned by crossing the
+    /// section divider.
     OtherTile(String),
     /// Empty panel space (padding, gaps, or the collapsed autohide handle).
     /// A press-and-drag here moves the dock between screen edges.
     Panel,
+}
+
+/// The strip section under a dragged tile: the kept (pinned) strip, or the
+/// transient running section past the section divider. A tile dropped in
+/// the foreign section pins or unpins it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DropSection {
+    Pinned,
+    Transient,
 }
 
 /// A held left-button press on the dock. Movement past [`DRAG_THRESHOLD`]
@@ -221,6 +259,10 @@ struct PressState {
     target: PressTarget,
     /// Whether the press has been promoted to a drag.
     dragging: bool,
+    /// The strip section the drag currently hovers. Starts as the tile's own
+    /// section; crossing the section divider flips it, and the release then
+    /// pins or unpins the dragged tile instead of reordering it.
+    section: DropSection,
     /// The latest reorder insertion slot previewed during a tile drag (an
     /// index into the pinned-app sequence with the dragged tile removed).
     /// The release commits it.
@@ -725,21 +767,30 @@ impl Dock {
     /// along the strip axis (width for a bottom dock, height for a side dock);
     /// the bar is centred on its edge, so the math is orientation-independent.
     fn rest_centre_estimate(i: usize, n: usize, pinned_count: usize, axis_len: f32) -> f32 {
-        let unpinned = n.saturating_sub(pinned_count);
-        let section_gap = if pinned_count > 0 && unpinned > 0 {
-            DOCK_SECTION_GAP
-        } else {
-            0.0
-        };
-        let bar_w =
-            n as f32 * DOCK_TILE + (n as f32 - 1.0) * DOCK_TILE_GAP + section_gap + 2.0 * DOCK_PAD;
+        let section_extra = Self::section_extra(pinned_count, n);
+        let bar_w = n as f32 * DOCK_TILE
+            + (n as f32 - 1.0) * DOCK_TILE_GAP
+            + section_extra
+            + 2.0 * DOCK_PAD;
         let bar_x = (axis_len - bar_w) * 0.5;
-        let extra = if i >= pinned_count && pinned_count > 0 && unpinned > 0 {
-            section_gap
+        let extra = if i >= pinned_count {
+            section_extra
         } else {
             0.0
         };
         bar_x + DOCK_PAD + i as f32 * (DOCK_TILE + DOCK_TILE_GAP) + extra + DOCK_TILE * 0.5
+    }
+
+    /// The section boundary's extra width beyond the ordinary tile gap it
+    /// replaces, or zero when either section is empty. Boundary tiles sit
+    /// exactly [`DOCK_SECTION_GAP`] apart edge-to-edge, so the divider at
+    /// its midpoint keeps one ordinary gap of clearance on each side.
+    fn section_extra(pinned_count: usize, tile_count: usize) -> f32 {
+        if pinned_count > 0 && tile_count > pinned_count {
+            DOCK_SECTION_GAP - DOCK_TILE_GAP
+        } else {
+            0.0
+        }
     }
 
     /// Panel rectangle for a strip of long-axis length `bar_len` anchored to
@@ -778,13 +829,8 @@ impl Dock {
         position: DockPosition,
         display: (f32, f32),
     ) -> Rect {
-        let unpinned = tile_count.saturating_sub(pinned_count);
-        let section_gap = if pinned_count > 0 && unpinned > 0 {
-            DOCK_SECTION_GAP
-        } else {
-            0.0
-        };
-        let gaps = tile_count.saturating_sub(1) as f32 * DOCK_TILE_GAP + section_gap;
+        let gaps = tile_count.saturating_sub(1) as f32 * DOCK_TILE_GAP
+            + Self::section_extra(pinned_count, tile_count);
         let bar_len = tile_count as f32 * DOCK_TILE + gaps + 2.0 * DOCK_PAD;
         Self::panel_rect_for(position, bar_len, display)
     }
@@ -797,16 +843,39 @@ impl Dock {
         dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD
     }
 
-    /// The insertion slot for a dragged pinned tile: the number of pinned-app
-    /// rest centres — the dragged tile excluded — the cursor has passed along
-    /// the strip axis. The result ranges over the pinned strip only, so a
-    /// drop can never cross the pinned/transient separator or displace the
-    /// leading Launchpad tile.
+    /// The insertion slot for a dragged tile: the number of pinned-app rest
+    /// centres — the dragged tile excluded for a reorder — the cursor has
+    /// passed along the strip axis. The result ranges over the pinned strip
+    /// only, so a drop can never displace the leading Launchpad tile.
     fn drop_insert_index(pinned_centres: &[f32], cursor_axis: f32) -> usize {
         pinned_centres
             .iter()
             .filter(|centre| cursor_axis > **centre)
             .count()
+    }
+
+    /// The strip-axis position of the section divider under resting
+    /// geometry: half a section gap past the last pinned tile's edge.
+    fn section_boundary_axis(n: usize, pinned_count: usize, axis_len: f32) -> f32 {
+        Self::rest_centre_estimate(pinned_count - 1, n, pinned_count, axis_len)
+            + DOCK_TILE * 0.5
+            + DOCK_SECTION_GAP * 0.5
+    }
+
+    /// The strip section under a dragged tile's cursor. A pinned tile dragged
+    /// past the divider enters (and commits to) the transient section; a
+    /// transient tile dragged back across it enters the pinned strip.
+    fn drop_section_at(
+        cursor_axis: f32,
+        n: usize,
+        pinned_count: usize,
+        axis_len: f32,
+    ) -> DropSection {
+        if cursor_axis > Self::section_boundary_axis(n, pinned_count, axis_len) {
+            DropSection::Transient
+        } else {
+            DropSection::Pinned
+        }
     }
 
     /// Move the element at `from` to insertion slot `insert`, an index into
@@ -869,9 +938,11 @@ impl Dock {
     }
 
     /// The current frame's tile strip: the Launchpad tile, then every pinned
-    /// app (with any running window folded in), then running windows that
-    /// match no pinned app. A window matches an app when its lowercased
-    /// `app_id` is among the app's [`DockApp::keys`].
+    /// app (with any running window folded in), then every running
+    /// application that matches no pinned app — one tile per app on both
+    /// sides of the section separator. A window matches an app when its
+    /// lowercased `app_id` is among the app's [`DockApp::keys`] (pinned) or a
+    /// desktop entry's [`Entry::match_keys`] (transient grouping).
     ///
     /// The strip is cached: rendering, backdrop geometry, and pointer
     /// geometry all need it every frame, but it only changes when the window
@@ -886,6 +957,7 @@ impl Dock {
     fn frame_tiles<'a>(
         tile_cache: &'a RefCell<TileCache>,
         apps: &[DockApp],
+        all_apps: &[Entry],
         icons: &IconSet,
         catalog_revision: u64,
         windows: &[Window],
@@ -910,7 +982,8 @@ impl Dock {
                     cache.window_order.push(window.id);
                 }
             }
-            cache.tiles = Self::build_tiles(apps, icons, windows, &cache.window_order, &label);
+            cache.tiles =
+                Self::build_tiles(apps, all_apps, icons, windows, &cache.window_order, &label);
             cache.signature = Some(signature);
             cache.label = label;
         }
@@ -950,6 +1023,7 @@ impl Dock {
     /// allocations here no longer happen every frame.
     fn build_tiles(
         apps: &[DockApp],
+        all_apps: &[Entry],
         icons: &IconSet,
         windows: &[Window],
         window_order: &[aegis_model::window::WindowId],
@@ -1000,9 +1074,16 @@ impl Dock {
                 label: app.entry.name.clone(),
                 launchpad: false,
                 pinned: true,
+                pin_entry: None,
             });
         }
 
+        // The transient section: one tile per running application, exactly
+        // like the pinned strip. A window whose `app_id` resolves to an
+        // enumerated desktop entry groups under that entry (and can be
+        // pinned); any other window groups under its lowercased `app_id`, or
+        // stands alone when the client reported none.
+        let mut groups: Vec<TransientGroup> = Vec::new();
         for window_id in window_order {
             let Some((wi, w)) = windows
                 .iter()
@@ -1014,23 +1095,74 @@ impl Dock {
             if claimed[wi] {
                 continue;
             }
-            let icon = win_appid[wi].as_ref().and_then(|a| icons.get(a));
-            tiles.push(Tile {
-                key: format!("win:{}", w.id.0),
-                icon,
-                running: true,
-                activated: w.state.activated,
-                focus: (!w.read_only).then_some(w.id),
-                windows: vec![w.id],
-                app: None,
-                spawn: None,
-                label: w
+            let app_id = win_appid[wi].clone();
+            let entry = app_id.as_ref().and_then(|a| {
+                all_apps
+                    .iter()
+                    .position(|entry| rendering::entry_matches_app_id(entry, a))
+            });
+            let key = match (entry, &app_id) {
+                (Some(i), _) => format!("transient:{}", all_apps[i].id),
+                (None, Some(a)) => format!("transient:{a}"),
+                (None, None) => format!("win:{}", w.id.0),
+            };
+            match groups.iter_mut().find(|group| group.key == key) {
+                Some(group) => group.windows.push(wi),
+                None => groups.push(TransientGroup {
+                    key,
+                    app_id,
+                    entry,
+                    windows: vec![wi],
+                }),
+            }
+        }
+
+        for group in groups {
+            let mut activated = false;
+            let mut focus = None;
+            let mut window_ids = Vec::new();
+            for &wi in &group.windows {
+                let w = &windows[wi];
+                if w.state.activated {
+                    window_ids.insert(0, w.id);
+                } else {
+                    window_ids.push(w.id);
+                }
+                if !w.read_only && w.state.activated {
+                    activated = true;
+                    focus = Some(w.id);
+                } else if !w.read_only && focus.is_none() {
+                    focus = Some(w.id);
+                }
+            }
+            let first = &windows[group.windows[0]];
+            let icon = group.app_id.as_ref().and_then(|a| icons.get(a));
+            let label = match group.entry {
+                Some(i) => all_apps[i].name.clone(),
+                None if group.windows.len() == 1 => first
                     .title
                     .clone()
-                    .or_else(|| w.app_id.clone())
+                    .or_else(|| first.app_id.clone())
                     .unwrap_or_else(|| application_label.to_string()),
+                None => first
+                    .app_id
+                    .clone()
+                    .or_else(|| first.title.clone())
+                    .unwrap_or_else(|| application_label.to_string()),
+            };
+            tiles.push(Tile {
+                key: group.key,
+                icon,
+                running: true,
+                activated,
+                focus,
+                windows: window_ids,
+                app: None,
+                spawn: None,
+                label,
                 launchpad: false,
                 pinned: false,
+                pin_entry: group.entry.map(|i| all_apps[i].id.clone()),
             });
         }
         tiles
@@ -1043,6 +1175,7 @@ impl Dock {
         Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
+            &self.all_apps,
             &self.icons,
             self.catalog_revision,
             windows,
@@ -1059,6 +1192,7 @@ impl Dock {
         let tiles = Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
+            &self.all_apps,
             &self.icons,
             self.catalog_revision,
             &self.all_windows,
@@ -1080,6 +1214,7 @@ impl Dock {
         let tiles = Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
+            &self.all_apps,
             &self.icons,
             self.catalog_revision,
             &self.all_windows,
@@ -1178,6 +1313,7 @@ impl Dock {
         let tiles = Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
+            &self.all_apps,
             &self.icons,
             self.catalog_revision,
             &self.all_windows,
@@ -1189,13 +1325,8 @@ impl Dock {
                 .map_or(DOCK_TILE, |state| state.value.max(DOCK_TILE))
         });
         let pinned_count = tiles.iter().filter(|tile| tile.pinned).count();
-        let unpinned = tiles.len().saturating_sub(pinned_count);
-        let section_gap = if pinned_count > 0 && unpinned > 0 {
-            DOCK_SECTION_GAP
-        } else {
-            0.0
-        };
-        let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP + section_gap;
+        let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP
+            + Self::section_extra(pinned_count, tiles.len());
         let bar_len = widths.sum::<f32>() + gaps + 2.0 * DOCK_PAD;
         Self::panel_rect_for(self.position, bar_len, display)
     }

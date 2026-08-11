@@ -262,12 +262,7 @@ impl OutputStreams {
         let slot_stride = capture.table.stride;
         let slot_bytes = capture.table.byte_len;
         let modifier = capture.modifier;
-        let mut info = self.start(
-            conn_id,
-            max_fps,
-            size,
-            aegis_ipc::StreamTarget::Output,
-        );
+        let mut info = self.start(conn_id, max_fps, size, aegis_ipc::StreamTarget::Output);
         if let Some(stream) = self.streams.get_mut(&info.stream_id) {
             stream.dmabuf = Some(DmabufStream {
                 surface: capture.surface,
@@ -526,18 +521,17 @@ impl CompositorRuntime {
     /// The modifier is constrained to the presentation surface's, so the
     /// post-present copy never crosses formats. Any failure is reported to
     /// the caller, which falls back to SHM.
-    pub(super) fn create_dmabuf_capture(&self, width: u32, height: u32) -> Result<DmabufCapture, String> {
+    pub(super) fn create_dmabuf_capture(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<DmabufCapture, String> {
         let modifier = self
             .surface
             .dmabuf_modifier()
             .ok_or_else(|| "presentation surface is not dma-buf exportable".to_owned())?;
         let surface = flux::Surface::offscreen_dmabuf(&self.device, width, height, &[modifier])
-            .map_err(|error| {
-                format!(
-                    "capture surface: {error}{}",
-                    flux_last_error_detail()
-                )
-            })?;
+            .map_err(|error| format!("capture surface: {error}{}", flux_last_error_detail()))?;
         let canvas = flux::Canvas::new(&surface)
             .map_err(|error| format!("capture canvas: {error}{}", flux_last_error_detail()))?;
         let mut fds: Vec<Option<OwnedFd>> = (0..STREAM_SLOT_COUNT).map(|_| None).collect();
@@ -649,7 +643,9 @@ impl CompositorRuntime {
         }
         if let Some(ipc) = self.ipc.as_ref() {
             for (stream_id, reason) in ended {
-                log::warn!("stream {stream_id}: dmabuf capture failed after submit: {reason}; ending");
+                log::warn!(
+                    "stream {stream_id}: dmabuf capture failed after submit: {reason}; ending"
+                );
                 ipc.end_stream(stream_id, &reason);
                 self.streams.stop(stream_id);
             }
@@ -804,18 +800,15 @@ fn blit_presented_frame(
             return Err(BlitFailure::Retryable(format!(
                 "import presented dma-buf: {error}{}",
                 flux_last_error_detail()
-            )))
+            )));
         }
     };
-    let frame = dmabuf
-        .surface
-        .begin_frame()
-        .map_err(|error| {
-            BlitFailure::Retryable(format!(
-                "capture begin_frame: {error}{}",
-                flux_last_error_detail()
-            ))
-        })?;
+    let frame = dmabuf.surface.begin_frame().map_err(|error| {
+        BlitFailure::Retryable(format!(
+            "capture begin_frame: {error}{}",
+            flux_last_error_detail()
+        ))
+    })?;
     begin_opaque_frame(&dmabuf.canvas, &frame, flux::rgba(0, 0, 0, 255))
         .map_err(|error| BlitFailure::Retryable(format!("capture pass: {error}")))?;
     dmabuf.canvas.draw_image_opaque(
@@ -912,7 +905,10 @@ mod tests {
         streams.record_frame(fast, t0, true);
         streams.record_frame(slow, t0, true);
         // 20ms later: only the 60fps stream is due again.
-        assert_eq!(streams.due_shm_ids(t0 + Duration::from_millis(20)), vec![fast]);
+        assert_eq!(
+            streams.due_shm_ids(t0 + Duration::from_millis(20)),
+            vec![fast]
+        );
         // 1.1s later: both.
         assert_eq!(
             streams.due_shm_ids(t0 + Duration::from_millis(1100)),
@@ -1138,7 +1134,9 @@ mod dmabuf_tests {
         frame.submit().unwrap().present().unwrap();
         let export = surface.export_dmabuf_explicit().unwrap();
         assert_eq!(export.slot, 0);
-        let fence = export.acquire_fence.expect("explicit export carries a fence");
+        let fence = export
+            .acquire_fence
+            .expect("explicit export carries a fence");
         let mut pollfd = libc::pollfd {
             fd: fence.as_raw_fd(),
             events: libc::POLLIN,

@@ -352,12 +352,17 @@ fn render_pointer_feedback(
     }
 
     let label = activity_label(&activity.latest, interaction_domain_state, i18n, true);
-    let measured = f.measure_text(&label, 11.0).width;
+    let measured = f.measure_text(&label, design.typography.footnote).width;
     let width = (measured + 20.0)
         .clamp(128.0, 290.0)
         .min((display.0 - 16.0).max(1.0));
     let label_rect = marker_label_rect(position, width, display);
-    let label = ellipsize(f, &label, 11.0, (label_rect.w - 14.0).max(0.0));
+    let label = ellipsize(
+        f,
+        &label,
+        design.typography.footnote,
+        (label_rect.w - 14.0).max(0.0),
+    );
     f.place(
         &format!("aegis-agent-label-{}", interaction_domain.0),
         &chrome_place(
@@ -382,7 +387,7 @@ fn render_pointer_feedback(
                     cross: Align::Center,
                     ..Default::default()
                 },
-                |f| f.label_compact_sized(&label, 11.0),
+                |f| f.label_compact_sized(&label, design.typography.footnote),
             );
         },
     );
@@ -401,7 +406,7 @@ fn render_background_activity(
     design: &Design,
 ) {
     let label = activity_label(&activity.latest, interaction_domain_state, i18n, false);
-    let measured = f.measure_text(&label, 11.0).width;
+    let measured = f.measure_text(&label, design.typography.footnote).width;
     let width = (measured + 28.0)
         .clamp(190.0, 360.0)
         .min((display.0 - 16.0).max(1.0));
@@ -411,7 +416,12 @@ fn render_background_activity(
         w: width,
         h: BACKGROUND_HEIGHT,
     };
-    let label = ellipsize(f, &label, 11.0, (rect.w - 31.0).max(0.0));
+    let label = ellipsize(
+        f,
+        &label,
+        design.typography.footnote,
+        (rect.w - 31.0).max(0.0),
+    );
     let accent = interaction_domain_color(interaction_domain).with_alpha(alpha);
     f.place(
         &format!("aegis-agent-background-{}", interaction_domain.0),
@@ -449,7 +459,7 @@ fn render_background_activity(
                         },
                         |_| {},
                     );
-                    f.label_compact_sized(&label, 11.0);
+                    f.label_compact_sized(&label, design.typography.footnote);
                 },
             );
         },

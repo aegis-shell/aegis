@@ -141,6 +141,44 @@ pub fn hud_panel(hud: &crate::tokens::Hud) -> LayoutOpts {
     }
 }
 
+/// An invisible container used purely as a layout anchor for its children —
+/// the fully-transparent layer the modal prompts (secret, confirm,
+/// capability, battery, app picker) stack their painted surfaces on.
+#[must_use]
+pub fn transparent() -> LayoutOpts {
+    LayoutOpts {
+        bg: Color::TRANSPARENT,
+        pad: 0.0,
+        ..surface_layout()
+    }
+}
+
+/// A fixed-size invisible container. Callers that center their children
+/// (launcher icons) layer `cross: Align::Center` on top through struct
+/// update syntax.
+#[must_use]
+pub fn sized(width: f32, height: f32) -> LayoutOpts {
+    LayoutOpts {
+        width,
+        height,
+        ..Default::default()
+    }
+}
+
+/// A fixed-size container that paints a rounded `bg` — the reliable
+/// filled-rect primitive (lens paints a container's background at its solved
+/// size).
+#[must_use]
+pub fn sized_fill(width: f32, height: f32, color: Color, radius: f32) -> LayoutOpts {
+    LayoutOpts {
+        width,
+        height,
+        bg: color,
+        radius,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use lens::Color;
@@ -210,5 +248,30 @@ mod tests {
         assert_eq!(material.border_width, 1.0);
         assert_eq!(material.radius, 16.0);
         assert_eq!(material.pad, 0.0);
+    }
+
+    #[test]
+    fn transparent_material_paints_nothing_and_keeps_surface_spacing() {
+        let material = transparent();
+        assert_eq!(material.bg, Color::TRANSPARENT);
+        assert_eq!(material.border, Color::TRANSPARENT);
+        assert_eq!(material.border_width, 0.0);
+        assert_eq!(material.radius, 0.0);
+        assert_eq!(material.pad, 0.0);
+        assert_eq!(material.gap, surface_layout().gap);
+    }
+
+    #[test]
+    fn sized_helpers_fix_extent_without_painting() {
+        let material = sized(24.0, 12.0);
+        assert_eq!(material.width, 24.0);
+        assert_eq!(material.height, 12.0);
+        assert_eq!(material.bg, Color::TRANSPARENT);
+
+        let filled = sized_fill(8.0, 8.0, Color::rgba(255, 255, 255, 22), 4.0);
+        assert_eq!(filled.width, 8.0);
+        assert_eq!(filled.height, 8.0);
+        assert_eq!(filled.bg, Color::rgba(255, 255, 255, 22));
+        assert_eq!(filled.radius, 4.0);
     }
 }

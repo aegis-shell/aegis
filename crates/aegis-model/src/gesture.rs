@@ -57,13 +57,13 @@ pub struct GestureMap {
 }
 
 impl GestureMap {
-    /// Built-in defaults (ADR-0080, ADR-0082, ADR-0116).
+    /// Built-in defaults (ADR-0080, ADR-0082, ADR-0119).
     pub fn defaults() -> GestureMap {
         GestureMap {
             binds: vec![
                 gb(3, GestureAxis::Horizontal, GestureAction::WorkspaceSwitch),
                 gb(3, GestureAxis::Vertical, GestureAction::WindowCycle),
-                gb(4, GestureAxis::Vertical, GestureAction::Overview),
+                gb(4, GestureAxis::Vertical, GestureAction::CommandPanel),
             ],
         }
     }
@@ -157,7 +157,7 @@ mod tests {
         );
         assert_eq!(
             gm.lookup(4, GestureAxis::Vertical),
-            Some(GestureAction::Overview)
+            Some(GestureAction::CommandPanel)
         );
         // Unbound axes and finger counts have no listener.
         assert_eq!(gm.lookup(4, GestureAxis::Horizontal), None);
@@ -203,7 +203,8 @@ mod tests {
 
     #[test]
     fn action_filter_releases_removed_finger_count() {
-        let gm = GestureMap::defaults().retain_actions(|action| action != GestureAction::Overview);
+        let gm =
+            GestureMap::defaults().retain_actions(|action| action != GestureAction::CommandPanel);
         assert_eq!(gm.lookup(4, GestureAxis::Vertical), None);
         assert!(!gm.claims(4));
         assert!(gm.claims(3));

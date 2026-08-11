@@ -1,5 +1,6 @@
 use super::rendering::{
     entry_matches_app_id, hit_test_tiles, live_preview_hit, live_preview_layout, snapped_hairline,
+    strip_centres,
 };
 use super::*;
 
@@ -191,7 +192,10 @@ fn unpinned_running_window_is_appended() {
         2,
         "pinned firefox plus the unpinned gimp window"
     );
-    let gimp = tiles.iter().find(|t| t.key == "win:3").expect("gimp tile");
+    let gimp = tiles
+        .iter()
+        .find(|t| t.key == "transient:gimp")
+        .expect("gimp tile");
     assert!(gimp.running);
     assert!(!gimp.pinned, "the window tile is transient, not kept");
     assert_eq!(gimp.focus, Some(aegis_model::window::WindowId(3)));
@@ -222,7 +226,7 @@ fn tile_strip_uses_the_workspace_global_window_list() {
         .find(|t| t.key == "app:firefox.desktop")
         .unwrap();
     assert!(firefox.running && firefox.activated);
-    let gimp = tiles.iter().find(|t| t.key == "win:3").unwrap();
+    let gimp = tiles.iter().find(|t| t.key == "transient:gimp").unwrap();
     assert!(gimp.running && !gimp.pinned);
     assert_eq!(gimp.focus, Some(aegis_model::window::WindowId(3)));
 
@@ -232,7 +236,7 @@ fn tile_strip_uses_the_workspace_global_window_list() {
     assert!(
         dock.tiles(&dock.all_windows)
             .iter()
-            .any(|t| t.key == "win:3")
+            .any(|t| t.key == "transient:gimp")
     );
 
     // The transient tile leaves when the window leaves the global list.
@@ -241,7 +245,7 @@ fn tile_strip_uses_the_workspace_global_window_list() {
         !dock
             .tiles(&dock.all_windows)
             .iter()
-            .any(|t| t.key == "win:3")
+            .any(|t| t.key == "transient:gimp")
     );
 }
 
@@ -277,7 +281,7 @@ fn unpinned_windows_keep_open_order_when_focus_reorders_snapshot() {
             .iter()
             .map(|tile| tile.key.as_str())
             .collect::<Vec<_>>(),
-        vec!["win:1", "win:2"]
+        vec!["transient:first", "transient:second"]
     );
 
     let reordered = dock.tiles(&[window(2, "second", false), window(1, "first", true)]);
@@ -286,7 +290,7 @@ fn unpinned_windows_keep_open_order_when_focus_reorders_snapshot() {
             .iter()
             .map(|tile| tile.key.as_str())
             .collect::<Vec<_>>(),
-        vec!["win:1", "win:2"],
+        vec!["transient:first", "transient:second"],
         "focus/stacking order must not move a transient Dock tile"
     );
     assert!(reordered[0].activated);
@@ -298,9 +302,62 @@ fn unpinned_windows_keep_open_order_when_focus_reorders_snapshot() {
             .iter()
             .map(|tile| tile.key.as_str())
             .collect::<Vec<_>>(),
-        vec!["win:2", "win:3"],
-        "a newly opened window is appended after surviving transient tiles"
+        vec!["transient:second", "transient:third"],
+        "a newly opened application is appended after surviving transient tiles"
     );
+}
+
+#[test]
+fn unpinned_windows_of_one_app_fold_into_one_tile() {
+    let dock = Dock::new();
+    let tiles = dock.tiles(&[
+        window(1, "gimp", false),
+        window(2, "gimp", true),
+        window(3, "other", false),
+    ]);
+    assert_eq!(tiles.len(), 2, "one tile per application, pinned or not");
+    let gimp = &tiles[0];
+    assert_eq!(gimp.key, "transient:gimp");
+    assert!(gimp.running && gimp.activated);
+    assert_eq!(
+        gimp.windows,
+        vec![
+            aegis_model::window::WindowId(2),
+            aegis_model::window::WindowId(1)
+        ],
+        "the activated window leads the group"
+    );
+    assert_eq!(gimp.focus, Some(aegis_model::window::WindowId(2)));
+    assert_eq!(gimp.pin_entry, None, "no desktop entry in the catalog");
+    assert!(!tiles[1].activated);
+}
+
+#[test]
+fn unpinned_app_resolves_its_desktop_entry_for_pinning() {
+    let mut dock = Dock::new();
+    dock.update_app_catalog(&AppCatalog {
+        apps: vec![app("gimp.desktop")],
+        pinned: vec![],
+        icons: IconSet::default(),
+        position: DockPosition::Bottom,
+    });
+    let tiles = dock.tiles(&[window(1, "Gimp", false)]);
+    assert_eq!(tiles.len(), 1);
+    assert_eq!(tiles[0].key, "transient:gimp.desktop");
+    assert_eq!(tiles[0].pin_entry.as_deref(), Some("gimp.desktop"));
+}
+
+#[test]
+fn a_window_without_app_id_stands_alone() {
+    let dock = Dock::new();
+    let mut lone = window(1, "gimp", false);
+    lone.app_id = None;
+    lone.title = Some("Untitled".to_string());
+    let tiles = dock.tiles(&[lone]);
+    assert_eq!(tiles.len(), 1);
+    assert_eq!(tiles[0].key, "win:1");
+    assert_eq!(tiles[0].pin_entry, None);
+    assert_eq!(tiles[0].label, "Untitled");
 }
 
 #[test]
@@ -961,18 +1018,98 @@ fn entry_matches_app_id_like_the_launcher_heuristic() {
 
 #[test]
 fn rest_centres_include_the_section_gap_for_transient_tiles() {
-    // 2 pinned tiles (incl. launchpad) + 1 transient window tile.
+    // 2 pinned tiles (incl. launchpad) + 1 transient application tile.
     let pinned = Dock::rest_centre_estimate(1, 3, 2, 1920.0);
     let transient = Dock::rest_centre_estimate(2, 3, 2, 1920.0);
     let pitch = DOCK_TILE + DOCK_TILE_GAP;
     assert!(
-        (transient - pinned - pitch - DOCK_SECTION_GAP).abs() < 1e-5,
-        "the first transient tile sits one pitch plus the section gap right of the last pinned tile"
+        (transient - pinned - DOCK_TILE - DOCK_SECTION_GAP).abs() < 1e-5,
+        "the section boundary replaces the ordinary gap with the wider section gap"
     );
     // No transient tiles → no extra gap.
     let a = Dock::rest_centre_estimate(1, 2, 2, 1920.0);
     let b = Dock::rest_centre_estimate(0, 2, 2, 1920.0);
     assert!((a - b - pitch).abs() < 1e-5);
+}
+
+#[test]
+fn live_strip_centres_settle_onto_the_rest_estimates() {
+    // Launchpad + 2 pinned apps (one running) + 1 transient application. With
+    // every spring at rest and no drag permutation, the live strip geometry
+    // must reproduce the resting estimates the magnification factor and the
+    // pointer bounds are computed from — including the section boundary gap.
+    let dock = dock_with(vec![app("firefox.desktop"), app("terminal.desktop")]);
+    let windows = [window(1, "firefox", true), window(2, "unknown-app", false)];
+    let tiles = Dock::frame_tiles(
+        &dock.tile_cache,
+        &dock.apps,
+        &dock.all_apps,
+        &dock.icons,
+        dock.catalog_revision,
+        &windows,
+        Some("Applications"),
+    );
+    let n = tiles.len();
+    assert_eq!(n, 4);
+    let pinned_count = tiles.iter().filter(|t| t.pinned).count();
+    assert_eq!(pinned_count, 3);
+
+    let order: Vec<usize> = (0..n).collect();
+    let eased = vec![DOCK_TILE; n];
+    let bar_len = n as f32 * DOCK_TILE
+        + (n as f32 - 1.0) * DOCK_TILE_GAP
+        + (DOCK_SECTION_GAP - DOCK_TILE_GAP)
+        + 2.0 * DOCK_PAD;
+    let origin = (1920.0 - bar_len) * 0.5;
+    let centres = strip_centres(&eased, &order, origin, pinned_count, DOCK_SECTION_GAP);
+    for (i, centre) in centres.iter().enumerate() {
+        let rest = Dock::rest_centre_estimate(i, n, pinned_count, 1920.0);
+        assert!(
+            (centre - rest).abs() < 1e-4,
+            "tile {i}: live centre {centre} != rest estimate {rest}"
+        );
+    }
+
+    // The section boundary replaces the ordinary tile gap with the wider
+    // section gap, so the divider at its edge-to-edge midpoint keeps exactly
+    // one ordinary gap of clearance on each side.
+    let last_pinned_edge = centres[pinned_count - 1] + eased[pinned_count - 1] * 0.5;
+    let first_transient_edge = centres[pinned_count] - eased[pinned_count] * 0.5;
+    assert!((first_transient_edge - last_pinned_edge - DOCK_SECTION_GAP).abs() < 1e-4);
+}
+
+#[test]
+fn strip_centres_place_the_section_gap_at_the_preview_boundary() {
+    // Pin preview: the transient tile (index 3) previews inside the pinned
+    // strip at slot 2, so the boundary gap lands right after it.
+    let eased = vec![DOCK_TILE; 4];
+    let order = vec![0, 1, 3, 2];
+    let centres = strip_centres(&eased, &order, 0.0, 3, DOCK_SECTION_GAP);
+    let pitch = DOCK_TILE + DOCK_TILE_GAP;
+    let first = DOCK_PAD + DOCK_TILE * 0.5;
+    assert!((centres[0] - first).abs() < 1e-4);
+    assert!((centres[1] - (first + pitch)).abs() < 1e-4);
+    // Slot 2 holds the dragged transient tile: the ordinary gap.
+    assert!((centres[3] - (first + 2.0 * pitch)).abs() < 1e-4);
+    // Slot 3: the wider section gap replaces the ordinary gap.
+    assert!((centres[2] - (first + 2.0 * pitch + DOCK_TILE + DOCK_SECTION_GAP)).abs() < 1e-4);
+}
+
+#[test]
+fn drop_section_follows_the_section_divider() {
+    // Launchpad + 2 pinned apps + 1 transient app on a 1920-wide bottom dock.
+    let (n, pinned_count, axis_len) = (4, 3, 1920.0);
+    let boundary = Dock::section_boundary_axis(n, pinned_count, axis_len);
+    let last_pinned = Dock::rest_centre_estimate(2, n, pinned_count, axis_len);
+    assert!((boundary - (last_pinned + DOCK_TILE * 0.5 + DOCK_SECTION_GAP * 0.5)).abs() < 1e-4);
+    assert_eq!(
+        Dock::drop_section_at(boundary - 1.0, n, pinned_count, axis_len),
+        DropSection::Pinned
+    );
+    assert_eq!(
+        Dock::drop_section_at(boundary + 1.0, n, pinned_count, axis_len),
+        DropSection::Transient
+    );
 }
 
 #[test]
@@ -1154,6 +1291,7 @@ fn catalog_push_updates_position_and_reconciles_optimistic_order() {
         origin: (10.0, 500.0),
         target: PressTarget::Panel,
         dragging: true,
+        section: DropSection::Pinned,
         insert: None,
         start_position: DockPosition::Left,
     });
@@ -1236,5 +1374,8 @@ fn minimize_targets_follow_the_dock_edge() {
     // Left dock: the resting icon sits inside the left panel, vertically centred.
     assert!(rect.origin.x < 100, "icon hugs the left edge: {rect:?}");
     let centre_y = rect.origin.y + rect.size.h / 2;
-    assert!((centre_y - 540).abs() < 100, "icon near vertical centre: {rect:?}");
+    assert!(
+        (centre_y - 540).abs() < 100,
+        "icon near vertical centre: {rect:?}"
+    );
 }

@@ -469,6 +469,29 @@ pub(crate) unsafe fn is_active_session_lock_surface(
     }
 }
 
+/// Preferred fractional scale (in 120ths, the wire unit) for a lock surface,
+/// resolved from the connector it was created for. Returns `None` for
+/// non-lock or already-destroyed surfaces so callers keep their fallback.
+pub(crate) unsafe fn session_lock_surface_preferred_scale_120(
+    surface: *mut SurfaceRec,
+) -> Option<u32> {
+    unsafe {
+        if surface.is_null() || (*surface).session_lock_surface.is_null() {
+            return None;
+        }
+        let record = (*surface).session_lock_surface as *mut LockSurfaceRec;
+        if (*record).lock.is_null() || (*(*record).lock).state.is_null() {
+            return None;
+        }
+        let state = (*(*record).lock).state;
+        let output = (*state)
+            .output_infos
+            .iter()
+            .find(|output| output.connector == (*record).connector)?;
+        Some((output.geometry.scale.0 * 120.0).round().max(1.0) as u32)
+    }
+}
+
 pub(crate) unsafe fn is_active_session_lock_client_resource(
     state: *mut State,
     resource: *mut ffi::wl_resource,

@@ -97,6 +97,11 @@ pub(super) struct CompositorRuntime {
     pub(super) host: Host,
     pub(super) device: flux::Device,
     pub(super) launcher_backdrop: LauncherBackdrop,
+    /// Region-level glass backdrop adaptation (smoothing + policy) and the
+    /// per-frame-slot record of which region ids were submitted to prism, so
+    /// the frame-lagged statistics align with the bodies that produced them.
+    pub(super) glass_adaptation: GlassAdaptation,
+    pub(super) submitted_glass_ids: Vec<Vec<u64>>,
     pub(super) screenshot_freeze: ScreenshotFreeze,
     pub(super) pending_capture: Option<PendingCapture>,
     pub(super) capture_worker: CaptureWorker,

@@ -48,8 +48,6 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         1.0,
         false,
         &capture,
-        &frost,
-        &[],
         None,
         &[],
     );
@@ -61,8 +59,6 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         1.0,
         false,
         &capture,
-        &frost,
-        &[],
         None,
         &[],
     );
@@ -78,27 +74,10 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         }),
         ..Default::default()
     };
-    let with_focus = BackdropCacheKey::new(
-        (0, 1000),
-        (1920, 80),
-        (1920, 1080),
-        12.0,
-        1.0,
-        false,
-        &capture,
-        &frost,
-        &[glass],
-        None,
-        &[],
-    );
-    let moved_focus = BackdropCacheKey::new(
-        (0, 1000),
-        (1920, 80),
-        (1920, 1080),
-        12.0,
-        1.0,
-        false,
-        &capture,
+    // Glass parameters live in the material key: a focus-geometry change
+    // re-runs the effect composite but leaves the scene capture untouched.
+    let with_focus = BackdropMaterialKey::new(&frost, &[glass], [255, 255, 255]);
+    let moved_focus = BackdropMaterialKey::new(
         &frost,
         &[aegis_shell::LiquidGlassRegion {
             focus: glass.focus.map(|focus| aegis_shell::LiquidGlassFocus {
@@ -112,10 +91,56 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
             }),
             ..glass
         }],
+        [255, 255, 255],
+    );
+    assert_ne!(with_focus, moved_focus);
+    // Every material leg participates: material strengths, polarity, the
+    // adaptation writeback, and the scheme tint.
+    let strengthened = BackdropMaterialKey::new(
+        &frost,
+        &[aegis_shell::LiquidGlassRegion {
+            frost_strength: 5.0,
+            ..glass
+        }],
+        [255, 255, 255],
+    );
+    assert_ne!(with_focus, strengthened);
+    let polarized = BackdropMaterialKey::new(
+        &frost,
+        &[aegis_shell::LiquidGlassRegion {
+            plate_polarity: 0.0,
+            ..glass
+        }],
+        [255, 255, 255],
+    );
+    assert_ne!(with_focus, polarized);
+    let adapted = BackdropMaterialKey::new(
+        &frost,
+        &[aegis_shell::LiquidGlassRegion {
+            adaptation: Some(aegis_shell::LiquidGlassAdaptation {
+                plate_luminance: 0.5,
+                backdrop_energy: 0.25,
+            }),
+            ..glass
+        }],
+        [255, 255, 255],
+    );
+    assert_ne!(with_focus, adapted);
+    let tinted = BackdropMaterialKey::new(&frost, &[glass], [243, 245, 249]);
+    assert_ne!(with_focus, tinted);
+    // …while the capture key no longer sees any of it.
+    let capture_with_glass = BackdropCacheKey::new(
+        (0, 1000),
+        (1920, 80),
+        (1920, 1080),
+        12.0,
+        1.0,
+        false,
+        &capture,
         None,
         &[],
     );
-    assert_ne!(with_focus, moved_focus);
+    assert_eq!(base, capture_with_glass);
 }
 
 #[test]

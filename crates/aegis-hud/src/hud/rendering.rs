@@ -137,7 +137,7 @@ pub(super) fn render_status_cell(
                 }
                 if !label.is_empty() {
                     f.push_style(hud_text_outline(design, fade));
-                    f.label_compact_sized(label, 11.0);
+                    f.label_compact_sized(label, design.typography.footnote);
                     f.pop_style();
                 }
             },
@@ -191,12 +191,12 @@ pub(super) fn hud_glyph_outline(design: &Design, fade: f32) -> Style {
 /// it does not turn the physical glass back into an opaque dark pill. The
 /// whisper is scheme-invariant: the scheme-aware pieces are the glass body
 /// and the HUD foreground/contour pair, not this tint.
-pub(super) fn chip_opts(fade: f32) -> LayoutOpts {
+pub(super) fn chip_opts(design: &Design, fade: f32) -> LayoutOpts {
     LayoutOpts {
         bg: fade_color(Color::rgba(24, 26, 36, 42), fade),
         border: fade_color(Color::rgba(255, 255, 255, 18), fade),
         border_width: 0.75,
-        radius: CHIP_RADIUS,
+        radius: design.radii.chip,
         pad: 0.0,
         ..surface_layout()
     }
@@ -229,24 +229,6 @@ pub(super) fn centered_layer() -> LayoutOpts {
     }
 }
 
-pub(super) fn sized(w: f32, h: f32) -> LayoutOpts {
-    LayoutOpts {
-        width: w,
-        height: h,
-        ..Default::default()
-    }
-}
-
-pub(super) fn sized_fill(w: f32, h: f32, bg: Color, radius: f32) -> LayoutOpts {
-    LayoutOpts {
-        width: w,
-        height: h,
-        bg,
-        radius,
-        ..Default::default()
-    }
-}
-
 pub(super) fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
 }
@@ -260,16 +242,4 @@ pub(super) fn fade_alpha(base: u8, progress: f32) -> u8 {
 pub(super) fn fade_color(color: Color, progress: f32) -> Color {
     let (_, _, _, opacity) = color.components();
     color.with_alpha(fade_alpha(opacity, progress))
-}
-
-pub(super) fn faded_theme(theme: Theme, progress: f32) -> Theme {
-    let fade = |color: Color| fade_color(color, progress);
-    theme
-        .with_fg(fade(theme.fg()))
-        .with_accent(fade(theme.accent()))
-        .with_border(fade(theme.border()))
-        .with_hover(fade(theme.hover()))
-        .with_active(fade(theme.active()))
-        .with_disabled(fade(theme.disabled()))
-        .with_error(fade(theme.error()))
 }

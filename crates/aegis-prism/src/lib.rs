@@ -10,7 +10,7 @@ use std::ffi::c_void;
 use std::ops::Range;
 
 use aegis_design::materials::{chrome_place, surface_layout};
-use aegis_design::{Design, GlassRole, materials};
+use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::app::Entry;
 use aegis_model::input::{KeyChar, key_action};
 use aegis_model::launcher::{Launch, Launcher as SearchBrain};
@@ -20,7 +20,7 @@ use aegis_shell::{
     AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
     IconSet, LiquidGlassRegion, Localizer, Message, ellipsize,
 };
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect, Theme};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 const PANEL_MAX_WIDTH: f32 = 680.0;
 const PANEL_SIDE_MARGIN: f32 = 20.0;
@@ -33,7 +33,6 @@ const MAX_VISIBLE_RESULTS: usize = 6;
 const ICON_SIZE: f32 = 38.0;
 const BACKDROP_BLUR_SIGMA: f32 = 18.0;
 const ANIMATION_SPEED: f32 = 22.0;
-const PANEL_RADIUS: f32 = 18.0;
 
 /// Spotlight-style application search, opened by the default
 /// `Super+Space` binding.
@@ -227,7 +226,7 @@ impl Chrome for Prism {
         }
 
         let original_theme = frame.theme();
-        frame.set_theme(faded_theme(original_theme, progress));
+        frame.set_theme(themes::faded(original_theme, progress));
         frame.place(
             "aegis-prism-scrim",
             &chrome_place(
@@ -250,9 +249,10 @@ impl Chrome for Prism {
         );
 
         let design = self.design;
+        let type_scale = design.typography;
+        // The glass-panel material already carries the shared panel radius.
         let mut panel_material = materials::glass_panel(&design);
         panel_material.bg = with_progress(design.colors.glass_surface, progress);
-        panel_material.radius = PANEL_RADIUS;
         frame.place(
             "aegis-prism-panel",
             &chrome_place(panel, panel_material),
@@ -267,14 +267,19 @@ impl Chrome for Prism {
         };
         let query_is_empty = self.brain.query().is_empty();
         let search_text_width = (search.w - 20.0 * 2.0 - 23.0 - 12.0).max(0.0);
-        let shown_query = ellipsize(frame, self.brain.query(), 20.0, search_text_width);
+        let shown_query = ellipsize(
+            frame,
+            self.brain.query(),
+            type_scale.title,
+            search_text_width,
+        );
         let shown_placeholder = ellipsize(
             frame,
             i18n.text(Message::SearchApplications),
-            20.0,
+            type_scale.title,
             search_text_width,
         );
-        let query_metrics = frame.measure_text(&shown_query, 20.0);
+        let query_metrics = frame.measure_text(&shown_query, type_scale.title);
         frame.place(
             "aegis-prism-search",
             &chrome_place(
@@ -299,9 +304,9 @@ impl Chrome for Prism {
                     |frame| {
                         frame.icon(Icon::Search, 23.0);
                         if query_is_empty {
-                            frame.label_compact_sized(&shown_placeholder, 20.0);
+                            frame.label_compact_sized(&shown_placeholder, type_scale.title);
                         } else {
-                            frame.label_compact_sized(&shown_query, 20.0);
+                            frame.label_compact_sized(&shown_query, type_scale.title);
                         }
                     },
                 );
@@ -373,8 +378,10 @@ impl Chrome for Prism {
                         },
                         |frame| {
                             frame.flex(1.0);
-                            frame
-                                .label_compact_sized(i18n.text(Message::NoApplicationsFound), 13.0);
+                            frame.label_compact_sized(
+                                i18n.text(Message::NoApplicationsFound),
+                                type_scale.body,
+                            );
                             frame.flex(1.0);
                         },
                     );
@@ -392,12 +399,12 @@ impl Chrome for Prism {
                 let selected = filtered_position == selection;
                 let icon = self.entry_icon(entry);
                 let text_width = (row.w - 92.0).max(1.0);
-                let name = ellipsize(frame, &entry.name, 13.5, text_width);
+                let name = ellipsize(frame, &entry.name, type_scale.body, text_width);
                 let subtitle = entry
                     .generic_name
                     .as_deref()
                     .or(entry.comment.as_deref())
-                    .map(|text| ellipsize(frame, text, 10.5, text_width));
+                    .map(|text| ellipsize(frame, text, type_scale.footnote, text_width));
                 let running = self.brain.is_running(app_index);
                 frame.place(
                     &format!("aegis-prism-result-{filtered_position}"),
@@ -435,15 +442,16 @@ impl Chrome for Prism {
                                         ..Default::default()
                                     },
                                     |frame| {
-                                        frame.label_compact_sized(&name, 13.5);
+                                        frame.label_compact_sized(&name, type_scale.body);
                                         if let Some(subtitle) = &subtitle {
-                                            frame.label_compact_sized(subtitle, 10.5);
+                                            frame
+                                                .label_compact_sized(subtitle, type_scale.footnote);
                                         }
                                     },
                                 );
                                 frame.flex(1.0);
                                 if running {
-                                    frame.label_compact_sized("●", 9.0);
+                                    frame.label_compact_sized("●", type_scale.caption);
                                 }
                             },
                         );
@@ -594,7 +602,7 @@ impl Chrome for Prism {
             &self.design,
             GlassRole::ProminentPanel,
             BackdropRegion::from(panel),
-            PANEL_RADIUS,
+            self.design.radii.glass_panel,
             self.visibility,
         )]
     }
@@ -649,18 +657,6 @@ fn with_progress(color: Color, progress: f32) -> Color {
     color.with_alpha(alpha(opacity, progress))
 }
 
-fn faded_theme(theme: Theme, progress: f32) -> Theme {
-    let fade = |color: Color| with_progress(color, progress);
-    theme
-        .with_fg(fade(theme.fg()))
-        .with_accent(fade(theme.accent()))
-        .with_border(fade(theme.border()))
-        .with_hover(fade(theme.hover()))
-        .with_active(fade(theme.active()))
-        .with_disabled(fade(theme.disabled()))
-        .with_error(fade(theme.error()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,7 +708,7 @@ mod tests {
         assert_eq!(backdrop.len(), 1);
         assert_eq!(glass.len(), 1);
         assert_eq!(glass[0].bounds, backdrop[0]);
-        assert_eq!(glass[0].corner_radius, PANEL_RADIUS);
+        assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 0.75);
     }
 

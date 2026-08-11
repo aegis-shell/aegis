@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
-use aegis_design::tokens::Hud;
+use aegis_design::tokens::{Hud, TypeScale};
 use aegis_design::{AvatarRole, Design, materials, themes};
 use aegis_model::input::KeyChar;
 use aegis_model::interaction_domain::{
@@ -56,7 +56,7 @@ use aegis_model::workspace::WorkspaceSnapshot;
 use aegis_settings::builtin_settings_modules;
 use aegis_settings::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_shell::persona::{Portrait, PortraitConfig, PortraitWatcher, Profile};
-use lens::{Align, Color, Frame, Input, LayoutOpts, Rect, Theme};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use aegis_shell::{
     BackdropRegion, ChassisKind, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -73,7 +73,8 @@ use rendering::*;
 mod tests;
 
 /// The scrim runs slightly deeper with the dark glass look so the HUD
-/// surfaces still separate from the blurred desktop behind them.
+/// surfaces still separate from the blurred desktop behind them: the shared
+/// scrim token's rgb at this custom alpha.
 const SCRIM_ALPHA: u8 = 150;
 const BACKDROP_BLUR_SIGMA: f32 = 14.0;
 /// The cluster's surfaces: a full-width header band; below it the main
@@ -748,8 +749,9 @@ impl Chrome for CommandPanel {
         let reveal = self.reveal.clamp(0.0, 1.0);
         let (header_rect, main_rect, notifications_rect, tray_rect) = Self::cluster_bounds(display);
 
-        // Dark scrim over the blurred desktop — the product's standard modal
-        // backdrop, scaled in with the reveal.
+        // Dark scrim over the blurred desktop — the shared scrim token's rgb
+        // at the panel's deeper alpha, scaled in with the reveal.
+        let scrim = self.design.colors.scrim;
         f.place(
             "aegis-hud-scrim",
             &materials::chrome_place(
@@ -760,7 +762,7 @@ impl Chrome for CommandPanel {
                     h: display.1,
                 },
                 LayoutOpts {
-                    bg: Color::rgba(8, 10, 18, fade_alpha(SCRIM_ALPHA, reveal)),
+                    bg: scrim.with_alpha(fade_alpha(SCRIM_ALPHA, reveal)),
                     border: Color::TRANSPARENT,
                     radius: 0.0,
                     pad: 0.0,

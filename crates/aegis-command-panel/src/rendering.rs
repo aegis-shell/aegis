@@ -44,38 +44,6 @@ pub(super) fn fade_color(color: Color, progress: f32) -> Color {
     color.with_alpha(fade_alpha(opacity, progress))
 }
 
-pub(super) fn faded_theme(theme: Theme, progress: f32) -> Theme {
-    let fade = |color: Color| fade_color(color, progress);
-    theme
-        .with_fg(fade(theme.fg()))
-        .with_accent(fade(theme.accent()))
-        .with_border(fade(theme.border()))
-        .with_hover(fade(theme.hover()))
-        .with_active(fade(theme.active()))
-        .with_disabled(fade(theme.disabled()))
-        .with_error(fade(theme.error()))
-}
-
-pub(super) fn sized(w: f32, h: f32) -> LayoutOpts {
-    LayoutOpts {
-        width: w,
-        height: h,
-        ..Default::default()
-    }
-}
-
-/// An invisible placement used purely as a layout anchor for its children.
-pub(super) fn transparent() -> LayoutOpts {
-    LayoutOpts {
-        bg: Color::TRANSPARENT,
-        border: Color::TRANSPARENT,
-        border_width: 0.0,
-        radius: 0.0,
-        pad: 0.0,
-        ..materials::surface_layout()
-    }
-}
-
 /// Filled circle used for the header band's avatar backdrop.
 pub(super) fn render_disc(
     frame: &mut Frame,
@@ -214,7 +182,12 @@ pub(super) fn network_text(status: &SystemStatus, i18n: &Localizer) -> &'static 
 
 /// An unavailable-on-this-host control row: the label plus a muted
 /// "Unavailable" marker, matching the status bar's old panel.
-pub(super) fn unavailable_control(f: &mut Frame, label: &str, i18n: &Localizer) {
+pub(super) fn unavailable_control(
+    f: &mut Frame,
+    label: &str,
+    i18n: &Localizer,
+    type_scale: TypeScale,
+) {
     f.row_ex(
         &LayoutOpts {
             height: 20.0,
@@ -223,10 +196,10 @@ pub(super) fn unavailable_control(f: &mut Frame, label: &str, i18n: &Localizer) 
             ..Default::default()
         },
         |f| {
-            f.label_compact_sized(label, 11.0);
+            f.label_compact_sized(label, type_scale.footnote);
             f.flex(1.0);
             f.spacer(0.0);
-            f.label_compact_sized(i18n.text(Message::Unavailable), 10.5);
+            f.label_compact_sized(i18n.text(Message::Unavailable), type_scale.footnote);
         },
     );
 }

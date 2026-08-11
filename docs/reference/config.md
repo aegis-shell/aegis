@@ -751,16 +751,16 @@ configured:
 |---------|------|--------|
 | 3 | horizontal | `workspace_switch` |
 | 3 | vertical | `window_cycle` |
-| 4 | vertical | `overview` |
+| 4 | vertical | `command_panel` |
 
-The four-finger vertical swipe opened the command panel before ADR-0116.
-Re-add that binding (shadowing the overview default) with:
+The four-finger vertical swipe opened the overview between ADR-0116 and
+ADR-0119. Re-add that binding (shadowing the command panel default) with:
 
 ```toml
 [[gesture]]
 fingers = 4
 axis = "vertical"
-action = "command_panel"
+action = "overview"
 ```
 
 ## Example

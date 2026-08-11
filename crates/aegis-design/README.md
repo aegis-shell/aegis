@@ -5,12 +5,18 @@ chrome components on top of lens.
 
 ## Responsibilities
 
-- Define semantic colors, radii, stroke widths, and role-based presentation
-  policies.
-- Build lens themes for shared product surfaces.
-- Build data-only material options for popovers, panels, and cards.
-- Define Liquid Glass elevation, preview selection, and identity portrait
-  frame roles without owning component state or user content.
+- Define semantic colors, radii, stroke widths, the chrome type scale, and
+  role-based presentation policies.
+- Own the scheme palettes for chrome surfaces, the compositor scene (clear
+  colors, scrims, glass tint), and the scheme-invariant dock palette.
+- Build lens themes for shared product surfaces, including theme-wide alpha
+  fades for entry/exit motion.
+- Build data-only material options for popovers, panels, and cards, plus the
+  shared transparent and fixed-size container helpers.
+- Define Liquid Glass elevation and material-strength roles — elevation
+  shadows plus the frost, tint, saturation, and plate-polarity recipes that
+  keep text-bearing bodies legible — preview selection, and identity
+  portrait frame roles without owning component state or user content.
 - Keep the default appearance consistent across independently packaged chrome
   components.
 

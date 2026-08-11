@@ -59,6 +59,7 @@ impl Chrome for Dock {
         let tiles = Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
+            &self.all_apps,
             &self.icons,
             self.catalog_revision,
             &self.all_windows,
@@ -66,12 +67,6 @@ impl Chrome for Dock {
         );
         let n = tiles.len();
         let pinned_count = tiles.iter().filter(|t| t.pinned).count();
-        let unpinned_count = n.saturating_sub(pinned_count);
-        let section_gap = if pinned_count > 0 && unpinned_count > 0 {
-            DOCK_SECTION_GAP
-        } else {
-            0.0
-        };
         let position = self.position;
         let vertical = position.is_vertical();
         // The strip's long axis: x for a bottom dock, y for a side dock.
@@ -99,6 +94,7 @@ impl Chrome for Dock {
         let mut released_target: Option<PressTarget> = None;
         let mut drag_strip: Option<usize> = None;
         let mut drag_insert: Option<usize> = None;
+        let mut drag_section: Option<DropSection> = None;
 
         if let Some(mut press) = self.press.take() {
             let mut keep_press = true;
@@ -111,7 +107,11 @@ impl Chrome for Dock {
                             .iter()
                             .any(|tile| &tile.key == key && tile.pinned && tile.app.is_some()),
                         PressTarget::Panel => true,
-                        PressTarget::OtherTile(_) => false,
+                        // A transient tile that resolves to a desktop entry
+                        // drags across the section divider to pin.
+                        PressTarget::OtherTile(key) => tiles.iter().any(|tile| {
+                            &tile.key == key && !tile.pinned && tile.pin_entry.is_some()
+                        }),
                     };
                 }
                 if press.dragging {
@@ -124,23 +124,35 @@ impl Chrome for Dock {
                                     if tiles[strip].pinned && tiles[strip].app.is_some() =>
                                 {
                                     drag_strip = Some(strip);
-                                    // The insertion slot over the pinned-app
-                                    // rest centres, the dragged tile excluded.
-                                    let pinned_centres: Vec<f32> = (1..pinned_count)
-                                        .filter(|slot| *slot != strip)
-                                        .map(|slot| {
-                                            Self::rest_centre_estimate(
-                                                slot,
-                                                n,
-                                                pinned_count,
-                                                axis_disp,
-                                            )
-                                        })
-                                        .collect();
-                                    let insert =
-                                        Self::drop_insert_index(&pinned_centres, cursor_axis);
-                                    press.insert = Some(insert);
-                                    drag_insert = Some(insert);
+                                    let section = Self::drop_section_at(
+                                        cursor_axis,
+                                        n,
+                                        pinned_count,
+                                        axis_disp,
+                                    );
+                                    press.section = section;
+                                    drag_section = Some(section);
+                                    if section == DropSection::Pinned {
+                                        // The insertion slot over the pinned-app
+                                        // rest centres, the dragged tile excluded.
+                                        let pinned_centres: Vec<f32> = (1..pinned_count)
+                                            .filter(|slot| *slot != strip)
+                                            .map(|slot| {
+                                                Self::rest_centre_estimate(
+                                                    slot,
+                                                    n,
+                                                    pinned_count,
+                                                    axis_disp,
+                                                )
+                                            })
+                                            .collect();
+                                        let insert =
+                                            Self::drop_insert_index(&pinned_centres, cursor_axis);
+                                        press.insert = Some(insert);
+                                        drag_insert = Some(insert);
+                                    } else {
+                                        press.insert = None;
+                                    }
                                 }
                                 // The dragged tile vanished mid-gesture (a
                                 // window or catalog change): cancel the press.
@@ -159,7 +171,45 @@ impl Chrome for Dock {
                                 self.anim_active = true;
                             }
                         }
-                        PressTarget::OtherTile(_) => {}
+                        PressTarget::OtherTile(key) => {
+                            let strip = tiles.iter().position(|tile| &tile.key == key);
+                            match strip {
+                                Some(strip)
+                                    if !tiles[strip].pinned && tiles[strip].pin_entry.is_some() =>
+                                {
+                                    drag_strip = Some(strip);
+                                    let section = Self::drop_section_at(
+                                        cursor_axis,
+                                        n,
+                                        pinned_count,
+                                        axis_disp,
+                                    );
+                                    press.section = section;
+                                    drag_section = Some(section);
+                                    if section == DropSection::Pinned {
+                                        // The insertion slot over every
+                                        // pinned-app rest centre.
+                                        let pinned_centres: Vec<f32> = (1..pinned_count)
+                                            .map(|slot| {
+                                                Self::rest_centre_estimate(
+                                                    slot,
+                                                    n,
+                                                    pinned_count,
+                                                    axis_disp,
+                                                )
+                                            })
+                                            .collect();
+                                        let insert =
+                                            Self::drop_insert_index(&pinned_centres, cursor_axis);
+                                        press.insert = Some(insert);
+                                        drag_insert = Some(insert);
+                                    } else {
+                                        press.insert = None;
+                                    }
+                                }
+                                _ => keep_press = false,
+                            }
+                        }
                     }
                 }
             }
@@ -170,18 +220,41 @@ impl Chrome for Dock {
                     match &press.target {
                         PressTarget::PinnedTile(key) => {
                             let strip = tiles.iter().position(|tile| &tile.key == key);
-                            if let (Some(strip), Some(insert)) = (strip, press.insert)
+                            if let Some(strip) = strip
                                 && strip >= 1
                                 && tiles[strip].pinned
-                                && tiles[strip].app.is_some()
+                                && let Some(ai) = tiles[strip].app
                             {
-                                let mut ids: Vec<String> =
-                                    self.apps.iter().map(|app| app.entry.id.clone()).collect();
-                                // Strip index 0 is the Launchpad; the pinned
-                                // apps sequence starts at strip index 1.
-                                if Self::move_element(&mut ids, strip - 1, insert) {
-                                    out.dock_reorder = Some(ids.clone());
-                                    self.pending_order = Some(ids);
+                                match press.section {
+                                    DropSection::Pinned => {
+                                        if let Some(insert) = press.insert {
+                                            let mut ids: Vec<String> = self
+                                                .apps
+                                                .iter()
+                                                .map(|app| app.entry.id.clone())
+                                                .collect();
+                                            // Strip index 0 is the Launchpad; the
+                                            // pinned apps sequence starts at 1.
+                                            if Self::move_element(&mut ids, strip - 1, insert) {
+                                                out.dock_reorder = Some(ids.clone());
+                                                self.pending_order = Some(ids);
+                                            }
+                                        }
+                                    }
+                                    // Dropped past the divider: unpin. A still
+                                    // running app reappears as a transient tile.
+                                    DropSection::Transient => {
+                                        let id = self.apps[ai].entry.id.clone();
+                                        let ids: Vec<String> = self
+                                            .apps
+                                            .iter()
+                                            .map(|app| app.entry.id.clone())
+                                            .filter(|entry| entry != &id)
+                                            .collect();
+                                        self.apps.retain(|app| app.entry.id != id);
+                                        out.dock_reorder = Some(ids.clone());
+                                        self.pending_order = Some(ids);
+                                    }
                                 }
                             }
                         }
@@ -190,7 +263,36 @@ impl Chrome for Dock {
                                 out.dock_position = Some(self.position);
                             }
                         }
-                        PressTarget::OtherTile(_) => {}
+                        PressTarget::OtherTile(key) => {
+                            let strip = tiles.iter().position(|tile| &tile.key == key);
+                            // Dropped into the pinned strip: pin at the
+                            // previewed slot.
+                            if let Some(strip) = strip
+                                && !tiles[strip].pinned
+                                && press.section == DropSection::Pinned
+                                && let (Some(insert), Some(entry_id)) =
+                                    (press.insert, tiles[strip].pin_entry.clone())
+                                && let Some(entry) = self
+                                    .all_apps
+                                    .iter()
+                                    .find(|entry| entry.id == entry_id)
+                                    .cloned()
+                            {
+                                let pos = insert.min(self.apps.len());
+                                let mut ids: Vec<String> =
+                                    self.apps.iter().map(|app| app.entry.id.clone()).collect();
+                                ids.insert(pos, entry_id);
+                                self.apps.insert(
+                                    pos,
+                                    DockApp {
+                                        keys: entry.match_keys(),
+                                        entry,
+                                    },
+                                );
+                                out.dock_reorder = Some(ids.clone());
+                                self.pending_order = Some(ids);
+                            }
+                        }
                     }
                 }
             } else if keep_press {
@@ -340,44 +442,58 @@ impl Chrome for Dock {
         self.anim_active = unsettled || autohide_moving || drag_active;
 
         // Sum the eased widths (plus the inter-tile gap) to get the live bar
-        // length along the strip axis. The gap is constant; only the tiles
-        // widen. Centred on the dock's edge.
+        // length along the strip axis. Ordinary neighbours sit one tile gap
+        // apart; the section boundary replaces that gap with the wider
+        // section gap. Centred on the dock's edge.
         let total_tiles: f32 = eased.iter().sum();
-        let bar_len = total_tiles + (n as f32 - 1.0) * DOCK_TILE_GAP + section_gap + 2.0 * DOCK_PAD;
-        let bar_axis_origin = (axis_disp - bar_len) * 0.5;
 
-        // The drop-preview permutation: during a reorder drag the dragged
-        // tile still occupies a strip slot (the bar length is unchanged),
-        // but the other tiles shift aside to open the insertion gap at the
-        // preview slot. The Launchpad holds slot 0; the dragged pinned tile
-        // re-enters within the pinned range only.
-        let order: Vec<usize> = match (drag_strip, drag_insert) {
-            (Some(dragged), Some(insert)) if n > 1 => {
+        // The drop-preview permutation: during a tile drag the dragged tile
+        // still occupies a strip slot (the bar length is unchanged), but the
+        // other tiles shift aside to open the insertion gap at the preview
+        // slot. The Launchpad holds slot 0. A pinned tile re-enters within
+        // the pinned range; dragged past the divider it previews as the
+        // first transient tile; a transient tile dragged into the pinned
+        // range previews at the hovered pinned slot. `section_slot` is where
+        // the transient section begins in preview order.
+        let (order, section_slot): (Vec<usize>, usize) = match (drag_strip, drag_section) {
+            (Some(dragged), Some(DropSection::Transient)) if tiles[dragged].pinned => {
+                let mut order: Vec<usize> = (0..n).filter(|slot| *slot != dragged).collect();
+                order.insert((pinned_count - 1).min(order.len()), dragged);
+                (order, pinned_count - 1)
+            }
+            (Some(dragged), Some(DropSection::Pinned)) => {
+                let insert = drag_insert.unwrap_or(0);
                 let mut order: Vec<usize> = (0..n).filter(|slot| *slot != dragged).collect();
                 order.insert((insert + 1).min(order.len()), dragged);
-                order
+                let section_slot = if tiles[dragged].pinned {
+                    pinned_count
+                } else {
+                    pinned_count + 1
+                };
+                (order, section_slot)
             }
-            _ => (0..n).collect(),
+            _ => ((0..n).collect(), pinned_count),
         };
+        let live_section_gap = if section_slot < order.len() {
+            DOCK_SECTION_GAP
+        } else {
+            0.0
+        };
+        let bar_len = total_tiles
+            + (n as f32 - 1.0) * DOCK_TILE_GAP
+            + (live_section_gap - DOCK_TILE_GAP).max(0.0)
+            + 2.0 * DOCK_PAD;
+        let bar_axis_origin = (axis_disp - bar_len) * 0.5;
 
         // The running axis offset of each tile's centre, first to last in
-        // preview order. The pinned strip and the transient running section
-        // are separated by the wider section gap instead of the ordinary
-        // tile gap.
-        let mut centres = vec![0.0_f32; n];
-        let mut next_axis = bar_axis_origin + DOCK_PAD;
-        for (slot, tile_index) in order.iter().copied().enumerate() {
-            if slot > 0 {
-                let gap = if !tiles[tile_index].pinned && tiles[order[slot - 1]].pinned {
-                    section_gap
-                } else {
-                    DOCK_TILE_GAP
-                };
-                next_axis += gap;
-            }
-            centres[tile_index] = next_axis + eased[tile_index] * 0.5;
-            next_axis += eased[tile_index];
-        }
+        // preview order, from the shared strip geometry helper below.
+        let centres = strip_centres(
+            &eased,
+            &order,
+            bar_axis_origin,
+            section_slot,
+            live_section_gap,
+        );
         let centre = |i: usize| centres[i];
 
         let surface_progress = if effective_autohide {
@@ -501,6 +617,7 @@ impl Chrome for Dock {
 
         // Draw each tile's icon, then its running dot. Once content has
         // reached the sink, no tile placements remain behind the stadium.
+        let dock_colors = self.design.dock;
         if content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
             for (i, t) in tiles.iter().enumerate() {
                 let s = icon_rects[i].w;
@@ -513,8 +630,8 @@ impl Chrome for Dock {
                     // Launchpad button. The grid (real content) sizes the surface;
                     // the surface paints the rounded background behind it.
                     let bg = LayoutOpts {
-                        bg: Color::rgba(70, 78, 110, scaled_alpha(240, content_progress)),
-                        border: Color::rgba(150, 160, 195, scaled_alpha(180, content_progress)),
+                        bg: content_faded(dock_colors.launchpad_tile_bg, content_progress),
+                        border: content_faded(dock_colors.launchpad_tile_border, content_progress),
                         border_width: 1.0,
                         radius: s * 0.22,
                         pad: s * 0.2,
@@ -532,11 +649,9 @@ impl Chrome for Dock {
                                             &sized_fill(
                                                 d,
                                                 d,
-                                                Color::rgba(
-                                                    236,
-                                                    238,
-                                                    248,
-                                                    scaled_alpha(245, content_progress),
+                                                content_faded(
+                                                    dock_colors.launchpad_grid,
+                                                    content_progress,
                                                 ),
                                                 d * 0.3,
                                             ),
@@ -593,11 +708,12 @@ impl Chrome for Dock {
                             h: dot_long,
                         },
                     };
-                    let color = if t.activated {
-                        Color::rgba(236, 238, 245, scaled_alpha(255, content_progress))
+                    let base = if t.activated {
+                        dock_colors.running_dot_active
                     } else {
-                        Color::rgba(200, 204, 220, scaled_alpha(170, content_progress))
+                        dock_colors.running_dot_inactive
                     };
+                    let color = content_faded(base, content_progress);
                     let dot_id = format!("aegis-dock-dot-{}", t.key);
                     f.place(&dot_id, &chrome_place(dot_rect, tile_opts()), |f| {
                         f.column_ex(
@@ -609,19 +725,21 @@ impl Chrome for Dock {
             }
         }
 
-        // A slim divider in the section gap separates the kept strip from the
-        // transient running apps, like macOS's Dock. On a side dock the
-        // divider lies across the strip: a horizontal hairline.
-        if section_gap > 0.0 && content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
+        // A slim divider in the section gap separates the kept strip from
+        // the transient running apps, like macOS's Dock. On a side dock the
+        // divider lies across the strip: a horizontal hairline. The boundary
+        // follows the live preview order, so the divider itself takes part in
+        // the reflow when a drag crosses it.
+        if live_section_gap > 0.0 && content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
             // Sit at the midpoint of the edge-to-edge gap rather than the
             // centre-to-centre midpoint: a boundary tile magnifying toward
             // the divider pushes it aside instead of swallowing it, so the
-            // clearance stays section_gap/2 on both sides through the wave.
-            let divider_axis = (centre(pinned_count - 1)
-                + eased[pinned_count - 1] * 0.5
-                + centre(pinned_count)
-                - eased[pinned_count] * 0.5)
-                * 0.5;
+            // clearance stays one ordinary tile gap on both sides through
+            // the wave.
+            let before = order[section_slot - 1];
+            let after = order[section_slot];
+            let divider_axis =
+                (centre(before) + eased[before] * 0.5 + centre(after) - eased[after] * 0.5) * 0.5;
             let divider_axis =
                 axis_disp * 0.5 + (divider_axis - axis_disp * 0.5) * content_progress;
             let (divider_center, divider_thick) = snapped_hairline(divider_axis, self.scale);
@@ -648,7 +766,7 @@ impl Chrome for Dock {
                         &sized_fill(
                             divider_rect.w,
                             divider_rect.h,
-                            Color::rgba(255, 255, 255, scaled_alpha(80, content_progress)),
+                            content_faded(dock_colors.section_divider, content_progress),
                             // Deliberately sharp: the divider is a hairline,
                             // and any radius at or below 0.5 falls back to the
                             // same sharp rect path in lens anyway.
@@ -699,10 +817,16 @@ impl Chrome for Dock {
                 } else {
                     PressTarget::OtherTile(tile.key.clone())
                 };
+                let section = if tile.pinned {
+                    DropSection::Pinned
+                } else {
+                    DropSection::Transient
+                };
                 self.press = Some(PressState {
                     origin: (cursor.x, cursor.y),
                     target,
                     dragging: false,
+                    section,
                     insert: None,
                     start_position: position,
                 });
@@ -717,6 +841,7 @@ impl Chrome for Dock {
                     origin: (cursor.x, cursor.y),
                     target: PressTarget::Panel,
                     dragging: false,
+                    section: DropSection::Pinned,
                     insert: None,
                     start_position: position,
                 });
@@ -764,20 +889,9 @@ impl Chrome for Dock {
                     // A pinned tile always offers removal from the strip.
                     Some(PinAction::Unpin(self.apps[ai].entry.id.clone()))
                 } else {
-                    // A transient running window offers "Keep in Dock"
-                    // only when its app_id resolves to an enumerated
-                    // desktop entry.
-                    let window_app_id = tile
-                        .windows
-                        .first()
-                        .and_then(|id| self.all_windows.iter().find(|w| w.id == *id))
-                        .and_then(|w| w.app_id.as_deref());
-                    window_app_id.and_then(|app_id| {
-                        self.all_apps
-                            .iter()
-                            .find(|entry| entry_matches_app_id(entry, app_id))
-                            .map(|entry| PinAction::Pin(entry.id.clone()))
-                    })
+                    // A transient tile offers "Keep in Dock" when its app
+                    // resolved to an enumerated desktop entry at build time.
+                    tile.pin_entry.clone().map(PinAction::Pin)
                 };
                 self.app_menu.open(
                     tile.label.clone(),
@@ -856,6 +970,7 @@ impl Chrome for Dock {
             if tile.windows.is_empty() {
                 let rect = tooltip_rect(
                     f,
+                    &self.design,
                     &tile.label,
                     owner,
                     (disp.x, disp.y),
@@ -1303,9 +1418,41 @@ impl Dock {
                 },
                 self.tooltip_alpha,
             )
+            .with_id(liquid_glass_region_id("aegis-dock-hover"))
             .with_focus(focus),
         )
     }
+}
+
+/// The running axis offset of each tile's centre, first to last in preview
+/// `order`. `section_slot` is the slot in `order` where the transient section
+/// begins: that boundary keeps the wider section gap instead of the ordinary
+/// tile gap — the same total the resting geometry (`rest_centre_estimate`,
+/// `rest_bounds`, the bar length) assumes, so a settled strip lands exactly
+/// on the interaction model's geometry and the section divider keeps equal
+/// clearance on both sides.
+pub(super) fn strip_centres(
+    eased: &[f32],
+    order: &[usize],
+    bar_axis_origin: f32,
+    section_slot: usize,
+    section_gap: f32,
+) -> Vec<f32> {
+    let mut centres = vec![0.0_f32; eased.len()];
+    let mut next_axis = bar_axis_origin + DOCK_PAD;
+    for (slot, tile_index) in order.iter().copied().enumerate() {
+        if slot > 0 {
+            let gap = if slot == section_slot {
+                section_gap
+            } else {
+                DOCK_TILE_GAP
+            };
+            next_axis += gap;
+        }
+        centres[tile_index] = next_axis + eased[tile_index] * 0.5;
+        next_axis += eased[tile_index];
+    }
+    centres
 }
 
 /// Snap a hairline's logical center to the device pixel grid and give it
@@ -1410,6 +1557,13 @@ fn scaled_alpha(alpha: u8, progress: f32) -> u8 {
     (f32::from(alpha) * progress.clamp(0.0, 1.0)).round() as u8
 }
 
+/// A dock palette color with its base alpha scaled by an animation progress
+/// (the autohide content drain), preserving the palette's RGB and base alpha.
+fn content_faded(color: Color, progress: f32) -> Color {
+    let (_, _, _, alpha) = color.components();
+    color.with_alpha(scaled_alpha(alpha, progress))
+}
+
 fn mix_channel(collapsed: u8, expanded: u8, progress: f32) -> u8 {
     let progress = progress.clamp(0.0, 1.0);
     (f32::from(collapsed) + (f32::from(expanded) - f32::from(collapsed)) * progress)
@@ -1425,11 +1579,15 @@ fn collapsing_radius(design: &Design, surface_progress: f32, height: f32) -> f32
 
 fn collapsing_dock_material(design: &Design, surface_progress: f32, height: f32) -> LayoutOpts {
     let mut material = materials::glass_panel(design);
+    // The painted tint interpolates between the two palette endpoints as the
+    // surface morphs between the collapsed handle and the expanded bar.
+    let collapsed = design.dock.bar_surface_collapsed.components();
+    let expanded = design.dock.bar_surface_expanded.components();
     material.bg = Color::rgba(
-        mix_channel(240, 255, surface_progress),
-        mix_channel(243, 255, surface_progress),
-        mix_channel(252, 255, surface_progress),
-        mix_channel(64, 12, surface_progress),
+        mix_channel(collapsed.0, expanded.0, surface_progress),
+        mix_channel(collapsed.1, expanded.1, surface_progress),
+        mix_channel(collapsed.2, expanded.2, surface_progress),
+        mix_channel(collapsed.3, expanded.3, surface_progress),
     );
     material.radius = collapsing_radius(design, surface_progress, height);
     material
@@ -1464,14 +1622,15 @@ fn tile_opts() -> LayoutOpts {
 /// into the output beside a side dock's tile.
 fn tooltip_rect(
     frame: &mut Frame,
+    design: &Design,
     label: &str,
     owner: Rect,
     display: (f32, f32),
     _alpha: f32,
     side: PopupSide,
 ) -> Rect {
-    let label = ellipsize(frame, label, 12.5, 224.0 - 22.0);
-    let text = frame.measure_text(&label, 12.5);
+    let label = ellipsize(frame, label, design.typography.label, 224.0 - 22.0);
+    let text = frame.measure_text(&label, design.typography.label);
     let width = (text.width + 22.0).clamp(54.0, 224.0);
     match side {
         PopupSide::Above => {
@@ -1507,7 +1666,12 @@ fn tooltip_rect(
 /// body comes from the compositor's analytic glass pass; this foreground only
 /// supplies a minimal tint and the text.
 fn render_tooltip(frame: &mut Frame, design: &Design, label: &str, rect: Rect, alpha: f32) {
-    let label = ellipsize(frame, label, 12.5, (rect.w - 22.0).max(0.0));
+    let label = ellipsize(
+        frame,
+        label,
+        design.typography.label,
+        (rect.w - 22.0).max(0.0),
+    );
     let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
     let original = frame.theme();
     frame.set_theme(original.with_fg(design.colors.menu_text.with_alpha(opacity(255))));
@@ -1530,7 +1694,7 @@ fn render_tooltip(frame: &mut Frame, design: &Design, label: &str, rect: Rect, a
                     cross: Align::Center,
                     ..Default::default()
                 },
-                |frame| frame.label_compact_sized(&label, 12.5),
+                |frame| frame.label_compact_sized(&label, design.typography.label),
             );
         },
     );
@@ -1730,7 +1894,12 @@ fn render_live_preview_chrome(
             .as_deref()
             .or(window.app_id.as_deref())
             .unwrap_or("Untitled");
-        let label = ellipsize(frame, title, 11.5, (label_rect.w - 16.0).max(0.0));
+        let label = ellipsize(
+            frame,
+            title,
+            design.typography.label,
+            (label_rect.w - 16.0).max(0.0),
+        );
         frame.place(
             &format!("aegis-dock-live-preview-label-{index}"),
             &chrome_place(
@@ -1752,7 +1921,7 @@ fn render_live_preview_chrome(
                         cross: Align::Center,
                         ..Default::default()
                     },
-                    |frame| frame.label_compact_sized(&label, 11.5),
+                    |frame| frame.label_compact_sized(&label, design.typography.label),
                 );
             },
         );

@@ -39,6 +39,17 @@ pub(crate) fn popup_grab_allows_owner_event(
     !grab_client.is_null() && grab_client == focus_client
 }
 
+/// Whether a pointer-focus transition must fall back to the default cursor:
+/// only when focus moves between different clients or to no surface. A client
+/// keeps its last-asserted cursor across its own surfaces — `wl_pointer`
+/// keeps the image until the client changes it — so same-client transitions
+/// (context-menu popup -> submenu popup) must not snap back to the default
+/// arrow: the client may re-assert late or not at all, and a forced reset
+/// there reads as random hand/arrow flicker inside one application.
+fn cursor_reset_needed(old_client: *mut ffi::wl_client, new_client: *mut ffi::wl_client) -> bool {
+    old_client.is_null() || new_client.is_null() || old_client != new_client
+}
+
 /// The xdg role whose surface tree contains `surface`, or null for a
 /// role-less tree. `wl_subsurface` parents are the only links followed here:
 /// an xdg-popup's protocol parent is a separate role surface, not part of the
@@ -963,9 +974,25 @@ impl Server {
         let old = self.state.pointer_focus;
 
         if new_focus != old {
-            self.state.cursor_surface = std::ptr::null_mut();
-            self.state.cursor_shape = 1;
-            self.state.cursor_hidden = false;
+            // Same-client transitions keep the client's last-asserted cursor
+            // (themed shape, cursor surface, or intentional hidden state)
+            // until the client re-asserts for the newly entered surface; only
+            // cross-client moves and focus loss fall back to the default.
+            let old_client = if old.is_null() {
+                std::ptr::null_mut()
+            } else {
+                unsafe { ffi::wl_resource_get_client(old) }
+            };
+            let new_client = if new_focus.is_null() {
+                std::ptr::null_mut()
+            } else {
+                unsafe { ffi::wl_resource_get_client(new_focus) }
+            };
+            if cursor_reset_needed(old_client, new_client) {
+                self.state.cursor_surface = std::ptr::null_mut();
+                self.state.cursor_shape = 1;
+                self.state.cursor_hidden = false;
+            }
         }
 
         if !old.is_null() {
@@ -1234,6 +1261,20 @@ mod resize_tests {
         assert!(popup_grab_allows_owner_event(chrome, chrome));
         assert!(!popup_grab_allows_owner_event(chrome, another_client));
         assert!(!popup_grab_allows_owner_event(chrome, std::ptr::null_mut()));
+    }
+
+    #[test]
+    fn cursor_falls_back_to_default_only_across_clients_or_on_focus_loss() {
+        let client_a = 0x100usize as *mut ffi::wl_client;
+        let client_b = 0x200usize as *mut ffi::wl_client;
+        let none = std::ptr::null_mut();
+
+        // Toplevel -> menu popup -> submenu popup: same client throughout, so
+        // the last-asserted cursor stays; no default-arrow flash.
+        assert!(!cursor_reset_needed(client_a, client_a));
+        assert!(cursor_reset_needed(client_a, client_b));
+        assert!(cursor_reset_needed(client_a, none));
+        assert!(cursor_reset_needed(none, client_a));
     }
 
     #[test]

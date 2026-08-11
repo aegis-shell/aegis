@@ -273,7 +273,7 @@ fn backdrop_regions_cover_only_the_visible_chips() {
     let glass = bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces);
     assert_eq!(glass.len(), 2);
     assert_eq!(glass[0].bounds, regions[0]);
-    assert_eq!(glass[0].corner_radius, CHIP_RADIUS);
+    assert_eq!(glass[0].corner_radius, Design::dark().radii.chip);
     assert_eq!(glass[0].opacity, 1.0);
     assert_eq!(glass[1].opacity, 0.5);
 

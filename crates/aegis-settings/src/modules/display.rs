@@ -151,12 +151,16 @@ impl SettingsModule for DisplayModule {
         out: &mut ModuleEvents,
     ) {
         frame.heading(i18n.text(Message::Display), 2);
-        frame.label_wrapped_sized(i18n.text(Message::DisplayDescription), 12.0, 560.0);
+        frame.label_wrapped_sized(
+            i18n.text(Message::DisplayDescription),
+            design.typography.label,
+            560.0,
+        );
 
         let outputs = self.status.outputs.clone();
         frame.column_ex(&settings_card_layout(design), |frame| {
             if outputs.is_empty() {
-                unavailable_row(frame, i18n.text(Message::NoDisplays), i18n);
+                unavailable_row(frame, i18n.text(Message::NoDisplays), i18n, design);
                 return;
             }
             let output_labels = outputs
@@ -170,7 +174,7 @@ impl SettingsModule for DisplayModule {
                 .collect::<Vec<_>>();
             let output_items = output_labels.iter().map(String::as_str).collect::<Vec<_>>();
             let before_output = self.output_index;
-            frame.label_sized(i18n.text(Message::Displays), 12.0);
+            frame.label_sized(i18n.text(Message::Displays), design.typography.label);
             frame.dropdown(
                 "##settings-display-output",
                 &mut self.output_index,
@@ -189,8 +193,12 @@ impl SettingsModule for DisplayModule {
             let output = outputs[self.output_index as usize].clone();
 
             if !self.status.configurable {
-                frame.label_wrapped_sized(i18n.text(Message::DisplayHostManaged), 11.0, 560.0);
-                display_summary(frame, &output);
+                frame.label_wrapped_sized(
+                    i18n.text(Message::DisplayHostManaged),
+                    design.typography.footnote,
+                    560.0,
+                );
+                display_summary(frame, &output, design);
                 return;
             }
 
@@ -204,16 +212,22 @@ impl SettingsModule for DisplayModule {
             self.mode_index = self
                 .mode_index
                 .clamp(0, modes.len().saturating_sub(1) as i32);
-            frame.label_sized(i18n.text(Message::ResolutionAndRefresh), 12.0);
+            frame.label_sized(
+                i18n.text(Message::ResolutionAndRefresh),
+                design.typography.label,
+            );
             if frame.dropdown("##settings-display-mode", &mut self.mode_index, &mode_items) {
                 self.dirty = true;
             }
 
             frame.row_ex(&section_heading_layout(), |frame| {
-                frame.label_sized(i18n.text(Message::Scale), 12.0);
+                frame.label_sized(i18n.text(Message::Scale), design.typography.label);
                 frame.flex(1.0);
                 frame.spacer(0.0);
-                frame.label_sized(&format!("{:.0}%", self.scale * 100.0), 12.0);
+                frame.label_sized(
+                    &format!("{:.0}%", self.scale * 100.0),
+                    design.typography.label,
+                );
             });
             if frame.slider("##settings-display-scale", &mut self.scale, 0.25, 4.0) {
                 self.scale = (self.scale * 4.0).round() / 4.0;
@@ -221,7 +235,7 @@ impl SettingsModule for DisplayModule {
             }
 
             if self.primary {
-                frame.label_sized(i18n.text(Message::PrimaryDisplay), 12.0);
+                frame.label_sized(i18n.text(Message::PrimaryDisplay), design.typography.label);
             } else {
                 frame.size_next(160.0, 30.0);
                 if frame.button(i18n.text(Message::MakePrimary)) {
@@ -237,13 +251,16 @@ impl SettingsModule for DisplayModule {
                 i18n.text(Message::BelowPrimary),
                 i18n.text(Message::CustomPosition),
             ];
-            frame.label_sized(i18n.text(Message::Arrangement), 12.0);
+            frame.label_sized(i18n.text(Message::Arrangement), design.typography.label);
             let current_primary = outputs
                 .first()
                 .is_some_and(|primary| primary.connector == output.connector);
             if current_primary {
                 self.layout = LAYOUT_CUSTOM;
-                frame.label_sized(i18n.text(Message::CustomPosition), 11.0);
+                frame.label_sized(
+                    i18n.text(Message::CustomPosition),
+                    design.typography.footnote,
+                );
             } else if frame.dropdown(
                 "##settings-display-arrangement",
                 &mut self.layout,
@@ -267,7 +284,10 @@ impl SettingsModule for DisplayModule {
                                 ..Default::default()
                             },
                             |frame| {
-                                frame.label_sized(i18n.text(Message::HorizontalPosition), 11.0);
+                                frame.label_sized(
+                                    i18n.text(Message::HorizontalPosition),
+                                    design.typography.footnote,
+                                );
                                 if frame.textfield("##settings-display-position-x", &mut self.x) {
                                     self.dirty = true;
                                 }
@@ -281,7 +301,10 @@ impl SettingsModule for DisplayModule {
                                 ..Default::default()
                             },
                             |frame| {
-                                frame.label_sized(i18n.text(Message::VerticalPosition), 11.0);
+                                frame.label_sized(
+                                    i18n.text(Message::VerticalPosition),
+                                    design.typography.footnote,
+                                );
                                 if frame.textfield("##settings-display-position-y", &mut self.y) {
                                     self.dirty = true;
                                 }
@@ -294,12 +317,20 @@ impl SettingsModule for DisplayModule {
             let mode = modes[self.mode_index as usize];
             let position = self.position(&output, mode);
             if position.is_none() {
-                frame.label_wrapped_sized(i18n.text(Message::InvalidPosition), 11.0, 560.0);
+                frame.label_wrapped_sized(
+                    i18n.text(Message::InvalidPosition),
+                    design.typography.footnote,
+                    560.0,
+                );
             }
             if let Some(error) = self.status.error.as_deref() {
-                frame.label_wrapped_sized(error, 11.0, 560.0);
+                frame.label_wrapped_sized(error, design.typography.footnote, 560.0);
             }
-            frame.label_wrapped_sized(i18n.text(Message::DisplayApplyHint), 11.0, 560.0);
+            frame.label_wrapped_sized(
+                i18n.text(Message::DisplayApplyHint),
+                design.typography.footnote,
+                560.0,
+            );
             frame.row_ex(
                 &LayoutOpts {
                     height: 32.0,
@@ -391,8 +422,11 @@ fn format_output_mode(mode: &OutputMode) -> String {
     format!("{} × {} · {refresh}", mode.width, mode.height)
 }
 
-fn display_summary(frame: &mut Frame, output: &OutputInfo) {
-    frame.label_sized(&format_output_mode(&output.geometry.mode), 12.0);
+fn display_summary(frame: &mut Frame, output: &OutputInfo, design: &Design) {
+    frame.label_sized(
+        &format_output_mode(&output.geometry.mode),
+        design.typography.label,
+    );
     frame.label_sized(
         &format!(
             "{:.0}% · ({}, {})",
@@ -400,7 +434,7 @@ fn display_summary(frame: &mut Frame, output: &OutputInfo) {
             output.geometry.logical_origin.x,
             output.geometry.logical_origin.y
         ),
-        11.0,
+        design.typography.footnote,
     );
 }
 

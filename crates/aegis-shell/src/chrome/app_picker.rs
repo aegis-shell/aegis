@@ -323,10 +323,10 @@ impl Chrome for AppPicker {
 
         frame.place(
             "aegis-app-picker-title",
-            &materials::chrome_place(layout.title, transparent()),
+            &materials::chrome_place(layout.title, materials::transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
-                    frame.label_sized("Choose Application", 15.0);
+                    frame.label_sized("Choose Application", design.typography.headline);
                 });
             },
         );
@@ -335,15 +335,15 @@ impl Chrome for AppPicker {
             let subject = ellipsize(
                 frame,
                 self.subject.as_deref().unwrap_or_default(),
-                11.5,
+                design.typography.label,
                 subject_rect.w,
             );
             frame.place(
                 "aegis-app-picker-subject",
-                &materials::chrome_place(subject_rect, transparent()),
+                &materials::chrome_place(subject_rect, materials::transparent()),
                 |frame| {
                     frame.row_ex(&stretch(subject_rect), |frame| {
-                        frame.label_compact_sized(&subject, 11.5);
+                        frame.label_compact_sized(&subject, design.typography.label);
                     });
                 },
             );
@@ -371,7 +371,12 @@ impl Chrome for AppPicker {
             let selected = self.selected == row_index;
             let row = &self.rows[row_index];
             let icon = self.icon(row);
-            let row_name = ellipsize(frame, &row.name, 13.0, (rect.w - 48.0).max(0.0));
+            let row_name = ellipsize(
+                frame,
+                &row.name,
+                design.typography.body,
+                (rect.w - 48.0).max(0.0),
+            );
             // Selection is the panel's single optical focus (declared in
             // `liquid_glass_regions`); the painted placement is only the
             // shared neutral fallback wash, never a structural accent fill.
@@ -408,7 +413,7 @@ impl Chrome for AppPicker {
                         },
                     );
                     frame.spacer(8.0);
-                    frame.label_compact_sized(&row_name, 13.0);
+                    frame.label_compact_sized(&row_name, design.typography.body);
                 });
             });
         }
@@ -416,7 +421,7 @@ impl Chrome for AppPicker {
         if self.rows.is_empty() {
             frame.place(
                 "aegis-app-picker-empty",
-                &materials::chrome_place(layout.list, transparent()),
+                &materials::chrome_place(layout.list, materials::transparent()),
                 |frame| {
                     frame.column_ex(
                         &LayoutOpts {
@@ -426,7 +431,7 @@ impl Chrome for AppPicker {
                             ..Default::default()
                         },
                         |frame| {
-                            frame.label_sized("No applications", 13.0);
+                            frame.label_sized("No applications", design.typography.body);
                         },
                     );
                 },
@@ -455,7 +460,7 @@ impl Chrome for AppPicker {
             ),
             |frame| {
                 frame.column_ex(&stretch(layout.cancel), |frame| {
-                    frame.label_sized("Cancel", 13.0);
+                    frame.label_sized("Cancel", design.typography.body);
                 });
             },
         );
@@ -473,17 +478,15 @@ impl Chrome for AppPicker {
             ),
             |frame| {
                 frame.column_ex(&stretch(layout.accept), |frame| {
-                    frame.label_sized("Open", 13.0);
+                    frame.label_sized("Open", design.typography.body);
                 });
             },
         );
 
         frame.set_theme(original_theme);
 
-        if pressed && !contains(layout.panel, cursor.x, cursor.y) {
-            self.cancel(out);
-            return;
-        }
+        // Clicks outside the panel are ignored: consent must be a deliberate
+        // choice, never an accidental click.
         if clicked_cancel {
             self.cancel(out);
             return;
@@ -607,10 +610,11 @@ impl Chrome for AppPicker {
         }
     }
 
-    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+    fn command(&mut self, command: &ChromeCommand<'_>, out: &mut ChromeEvents) {
         match command {
             ChromeCommand::StartAppPick(params) => self.start_app_pick((**params).clone()),
             ChromeCommand::CancelAppPick if self.active => self.close(),
+            ChromeCommand::DismissModal if self.active => self.cancel(out),
             _ => {}
         }
     }
@@ -701,14 +705,6 @@ fn stretch(rect: Rect) -> LayoutOpts {
     }
 }
 
-fn transparent() -> LayoutOpts {
-    LayoutOpts {
-        bg: Color::TRANSPARENT,
-        pad: 0.0,
-        ..materials::surface_layout()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,6 +791,16 @@ mod tests {
             },
             &mut out,
         );
+        assert!(out.app_pick_cancelled);
+        assert!(!picker.app_pick_active());
+    }
+
+    #[test]
+    fn the_panic_chord_command_cancels() {
+        let mut picker = picker_with_catalog();
+        picker.start_app_pick(params(&["firefox.desktop"], None));
+        let mut out = ChromeEvents::default();
+        picker.command(&ChromeCommand::DismissModal, &mut out);
         assert!(out.app_pick_cancelled);
         assert!(!picker.app_pick_active());
     }

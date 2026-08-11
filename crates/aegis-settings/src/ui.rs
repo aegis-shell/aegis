@@ -2,7 +2,7 @@ use aegis_design::{Design, materials};
 use aegis_shell::{Localizer, Message};
 use lens::{Align, Frame, LayoutOpts};
 
-pub(crate) fn unavailable_row(frame: &mut Frame, label: &str, i18n: &Localizer) {
+pub(crate) fn unavailable_row(frame: &mut Frame, label: &str, i18n: &Localizer, design: &Design) {
     frame.row_ex(
         &LayoutOpts {
             height: 26.0,
@@ -11,10 +11,10 @@ pub(crate) fn unavailable_row(frame: &mut Frame, label: &str, i18n: &Localizer) 
             ..Default::default()
         },
         |frame| {
-            frame.label_sized(label, 12.0);
+            frame.label_sized(label, design.typography.label);
             frame.flex(1.0);
             frame.spacer(0.0);
-            frame.label_sized(i18n.text(Message::Unavailable), 11.0);
+            frame.label_sized(i18n.text(Message::Unavailable), design.typography.footnote);
         },
     );
 }

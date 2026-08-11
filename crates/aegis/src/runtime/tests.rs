@@ -19,11 +19,12 @@ fn compiled_chrome_controls_default_input_ownership() {
     let gestures = build_gesture_map(None);
     assert_eq!(
         gestures.lookup(4, GestureAxis::Vertical),
-        Some(GestureAction::Overview)
+        cfg!(feature = "chrome-command-panel").then_some(GestureAction::CommandPanel)
     );
-    assert!(
+    assert_eq!(
         gestures.claims(4),
-        "the four-finger overview gesture is compositor-owned in every build"
+        cfg!(feature = "chrome-command-panel"),
+        "the four-finger command panel gesture is compositor-owned exactly when the panel is built"
     );
 }
 

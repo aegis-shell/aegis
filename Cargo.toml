@@ -25,6 +25,10 @@ flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.1
 lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
 lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
 iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+# prism (material library; ADR-0063) carries the liquid-glass compositor.
+# Canonical resolution needs an optics tag containing prism-rs.
+prism = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+prism-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
 
 # Observability: crates emit through the `log` facade; each binary installs a
 # `tracing`-based subscriber through the shared `aegis-logging` crate, which

@@ -44,9 +44,7 @@ const MIN_DRAG: f32 = 8.0;
 /// is static, so it uses the same full-strength blur as the window switcher
 /// without introducing another component-local material.
 const BACKDROP_BLUR_SIGMA: f32 = 16.0;
-const GLASS_RADIUS: f32 = 18.0;
 const PIXEL_LENS_SIZE: f32 = 48.0;
-const STATUS_FONT_SIZE: f32 = 12.0;
 const STATUS_PAD: f32 = 8.0;
 const STATUS_MARGIN: f32 = 12.0;
 /// Sub-logical-pixel bands keep the inverse rounded-corner mask smooth on
@@ -270,8 +268,12 @@ impl ScreenshotSelector {
         }
     }
 
-    fn glass_radius(rect: LensRect) -> f32 {
-        GLASS_RADIUS.min(rect.w * 0.5).min(rect.h * 0.5)
+    fn glass_radius(&self, rect: LensRect) -> f32 {
+        self.design
+            .radii
+            .glass_panel
+            .min(rect.w * 0.5)
+            .min(rect.h * 0.5)
     }
 
     /// Dim only outside the active optical body. A full-screen translucent
@@ -300,7 +302,7 @@ impl ScreenshotSelector {
             );
         }
         if let Some(hole) = hole {
-            render_rounded_scrim_corners(frame, hole, Self::glass_radius(hole), scrim.bg);
+            render_rounded_scrim_corners(frame, hole, self.glass_radius(hole), scrim.bg);
         }
     }
 
@@ -314,8 +316,8 @@ impl ScreenshotSelector {
         design: &Design,
     ) {
         let max_text_width = (display.0 - 2.0 * (STATUS_MARGIN + STATUS_PAD)).max(1.0);
-        let text = ellipsize(frame, text, STATUS_FONT_SIZE, max_text_width);
-        let metrics = frame.measure_text(&text, STATUS_FONT_SIZE);
+        let text = ellipsize(frame, text, design.typography.label, max_text_width);
+        let metrics = frame.measure_text(&text, design.typography.label);
         let size = (
             metrics.width + STATUS_PAD * 2.0,
             metrics.height + STATUS_PAD * 2.0,
@@ -344,7 +346,7 @@ impl ScreenshotSelector {
                             .with_outline_color(design.hud_foreground.contour)
                             .with_outline_width(design.hud_foreground.text_contour_width),
                     );
-                    frame.label_compact_sized(&text, STATUS_FONT_SIZE);
+                    frame.label_compact_sized(&text, design.typography.label);
                     frame.pop_style();
                 },
             );
@@ -369,7 +371,7 @@ impl ScreenshotSelector {
         // supplies the body, refraction, rim light, and shadow.
         let design = &self.design;
         let mut material = materials::glass_panel(design);
-        material.radius = Self::glass_radius(lens_rect);
+        material.radius = self.glass_radius(lens_rect);
         frame.place(
             "aegis-screenshot-selection",
             &materials::chrome_place(lens_rect, material),
@@ -409,7 +411,7 @@ impl ScreenshotSelector {
         };
         let design = &self.design;
         let mut material = materials::glass_panel(design);
-        material.radius = Self::glass_radius(rect);
+        material.radius = self.glass_radius(rect);
         frame.place(
             "aegis-picker-pixel-lens",
             &materials::chrome_place(rect, material),
@@ -457,7 +459,7 @@ impl ScreenshotSelector {
             "aegis-picker-window",
             &materials::chrome_place(rect, {
                 let mut material = materials::glass_panel(&self.design);
-                material.radius = Self::glass_radius(rect);
+                material.radius = self.glass_radius(rect);
                 material
             }),
             |_| {},
@@ -808,7 +810,7 @@ impl Chrome for ScreenshotSelector {
                     &self.design,
                     GlassRole::FloatingPanel,
                     BackdropRegion::from(rect),
-                    Self::glass_radius(rect),
+                    self.glass_radius(rect),
                     1.0,
                 )]
             })
@@ -1017,7 +1019,7 @@ mod tests {
         assert_eq!(backdrop.len(), 1);
         assert_eq!(glass.len(), 1);
         assert_eq!(glass[0].bounds, backdrop[0]);
-        assert_eq!(glass[0].corner_radius, GLASS_RADIUS);
+        assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert!(glass[0].focus.is_none());
     }
 
@@ -1083,7 +1085,7 @@ mod tests {
 
     #[test]
     fn rounded_scrim_corner_bands_fill_only_the_glass_corner_cutouts() {
-        let radius = GLASS_RADIUS;
+        let radius = Design::dark().radii.glass_panel;
         let bands = rounded_corner_bands(radius);
         assert!(!bands.is_empty());
         assert!(bands.windows(2).all(|pair| pair[0].inset > pair[1].inset));

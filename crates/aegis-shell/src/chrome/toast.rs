@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, Localizer, ellipsize};
+use crate::{Chrome, ChromeEvents, ChromeUpdate, Localizer, ellipsize};
+use aegis_design::Design;
 use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_model::notify::{Notification, NotificationQueue};
 use aegis_model::window::Window;
@@ -48,12 +49,21 @@ pub struct Toast {
     /// `(revision, entries)` of the last clone from the queue; `None` until
     /// the first render (or after do-not-disturb hid the stack).
     cache: Option<(u64, Vec<Notification>)>,
+    /// The design snapshot the toast paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl Toast {
     /// Construct with a shared queue the main loop also pushes to.
     pub fn new(queue: Arc<Mutex<NotificationQueue>>) -> Toast {
-        Toast { queue, cache: None }
+        Toast {
+            queue,
+            cache: None,
+            design: Design::dark(),
+        }
     }
 
     /// The entries eligible for presentation right now: do-not-disturb off,
@@ -87,6 +97,7 @@ impl Chrome for Toast {
         _out: &mut ChromeEvents,
     ) {
         let disp = input.as_raw().display_size;
+        let design = self.design;
         // Re-clone only when the queue's revision moved; otherwise render
         // the cached entries. Newest on top: iterate the tail in reverse,
         // capped.
@@ -157,15 +168,22 @@ impl Chrome for Toast {
                     },
                     |f| {
                         let text_width = (rect.w - 18.0).max(0.0);
-                        let title = ellipsize(f, &title, 12.0, text_width);
-                        f.label_compact_sized(&title, 12.0);
+                        let title = ellipsize(f, &title, design.typography.label, text_width);
+                        f.label_compact_sized(&title, design.typography.label);
                         if !n.body.is_empty() {
-                            let body = ellipsize(f, &n.body, 10.5, text_width);
-                            f.label_compact_sized(&body, 10.5);
+                            let body =
+                                ellipsize(f, &n.body, design.typography.footnote, text_width);
+                            f.label_compact_sized(&body, design.typography.footnote);
                         }
                     },
                 );
             });
+        }
+    }
+
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        if let ChromeUpdate::Appearance(design) = update {
+            self.design = *design;
         }
     }
 

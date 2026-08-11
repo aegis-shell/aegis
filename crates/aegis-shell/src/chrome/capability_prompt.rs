@@ -84,7 +84,7 @@ pub struct CapabilityGroup {
 }
 
 /// The user's answer: the checked operation keys on Allow, or `None` on
-/// Deny/Escape/click-away.
+/// Deny, `Escape`, or the compositor panic chord.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityPickResult {
     pub approved: Option<Vec<String>>,
@@ -395,7 +395,9 @@ impl CapabilityPrompt {
     }
 
     /// Handle one primary-button press at output-space `(x, y)`: toggles a
-    /// row, answers on the buttons, or denies on a click outside the panel.
+    /// row or answers on the buttons. Clicks outside the panel are ignored:
+    /// a capability grant must be a deliberate choice, never an accidental
+    /// click.
     fn press_at(&mut self, x: f32, y: f32, display: (f32, f32), out: &mut ChromeEvents) {
         let layout = self.layout(display);
         if contains(layout.deny, x, y) {
@@ -407,7 +409,6 @@ impl CapabilityPrompt {
             return;
         }
         if !contains(layout.panel, x, y) {
-            self.answer(None, out);
             return;
         }
         if let Some(hit) = self.hit_row(&layout, x, y) {
@@ -470,13 +471,18 @@ impl Chrome for CapabilityPrompt {
             |_| {},
         );
 
-        let title = ellipsize(frame, &self.title, 15.0, layout.title.w);
+        let title = ellipsize(
+            frame,
+            &self.title,
+            design.typography.headline,
+            layout.title.w,
+        );
         frame.place(
             "aegis-capability-prompt-title",
-            &materials::chrome_place(layout.title, transparent()),
+            &materials::chrome_place(layout.title, materials::transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
-                    frame.label_compact_sized(&title, 15.0);
+                    frame.label_compact_sized(&title, design.typography.headline);
                 });
             },
         );
@@ -485,7 +491,7 @@ impl Chrome for CapabilityPrompt {
             let warning = ellipsize(
                 frame,
                 &format!("Warning: {warning}"),
-                12.0,
+                design.typography.label,
                 (rect.w - 12.0).max(0.0),
             );
             frame.place(
@@ -503,7 +509,7 @@ impl Chrome for CapabilityPrompt {
                 ),
                 |frame| {
                     frame.row_ex(&stretch_pad(rect), |frame| {
-                        frame.label_compact_sized(&warning, 12.0);
+                        frame.label_compact_sized(&warning, design.typography.label);
                     });
                 },
             );
@@ -572,12 +578,12 @@ impl Chrome for CapabilityPrompt {
                         LayoutOpts {
                             pad: 0.0,
                             cross: Align::Center,
-                            ..transparent()
+                            ..materials::transparent()
                         },
                     ),
                     |frame| {
                         frame.column_ex(&stretch(chevron_rect(rect)), |frame| {
-                            frame.label_compact_sized(chevron, 11.0);
+                            frame.label_compact_sized(chevron, design.typography.footnote);
                         });
                     },
                 );
@@ -605,26 +611,34 @@ impl Chrome for CapabilityPrompt {
                 |frame| {
                     if let Some(glyph) = check {
                         frame.column_ex(&stretch(check_rect), |frame| {
-                            frame.label_sized(glyph, 12.0);
+                            frame.label_sized(glyph, design.typography.label);
                         });
                     }
                 },
             );
             let text = label_rect(rect, indent);
             let gated_width = if gated {
-                frame.measure_text(GATED_MARK, 11.0).width + 10.0
+                frame
+                    .measure_text(GATED_MARK, design.typography.footnote)
+                    .width
+                    + 10.0
             } else {
                 0.0
             };
-            let label = ellipsize(frame, &label, 13.0, (text.w - gated_width - 6.0).max(0.0));
+            let label = ellipsize(
+                frame,
+                &label,
+                design.typography.body,
+                (text.w - gated_width - 6.0).max(0.0),
+            );
             frame.place(
                 &format!("aegis-capability-prompt-label-{pos}"),
-                &materials::chrome_place(text, transparent()),
+                &materials::chrome_place(text, materials::transparent()),
                 |frame| {
                     frame.row_ex(&stretch_gap(text), |frame| {
-                        frame.label_compact_sized(&label, 13.0);
+                        frame.label_compact_sized(&label, design.typography.body);
                         if gated {
-                            frame.label_compact_sized(GATED_MARK, 11.0);
+                            frame.label_compact_sized(GATED_MARK, design.typography.footnote);
                         }
                     });
                 },
@@ -634,10 +648,10 @@ impl Chrome for CapabilityPrompt {
         if let Some(legend) = layout.legend {
             frame.place(
                 "aegis-capability-prompt-legend",
-                &materials::chrome_place(legend, transparent()),
+                &materials::chrome_place(legend, materials::transparent()),
                 |frame| {
                     frame.row_ex(&stretch(legend), |frame| {
-                        frame.label_compact_sized(GATED_LEGEND, 11.0);
+                        frame.label_compact_sized(GATED_LEGEND, design.typography.footnote);
                     });
                 },
             );
@@ -662,7 +676,7 @@ impl Chrome for CapabilityPrompt {
             ),
             |frame| {
                 frame.column_ex(&stretch(layout.deny), |frame| {
-                    frame.label_sized("Deny", 13.0);
+                    frame.label_sized("Deny", design.typography.body);
                 });
             },
         );
@@ -680,7 +694,7 @@ impl Chrome for CapabilityPrompt {
             ),
             |frame| {
                 frame.column_ex(&stretch(layout.allow), |frame| {
-                    frame.label_sized("Allow", 13.0);
+                    frame.label_sized("Allow", design.typography.body);
                 });
             },
         );
@@ -780,12 +794,13 @@ impl Chrome for CapabilityPrompt {
         }
     }
 
-    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+    fn command(&mut self, command: &ChromeCommand<'_>, out: &mut ChromeEvents) {
         match command {
             ChromeCommand::StartCapabilityPick(params) => {
                 self.start_capability_pick((**params).clone());
             }
             ChromeCommand::CancelCapabilityPick if self.active => self.active = false,
+            ChromeCommand::DismissModal if self.active => self.answer(None, out),
             _ => {}
         }
     }
@@ -910,14 +925,6 @@ fn stretch_gap(rect: Rect) -> LayoutOpts {
         cross: Align::Center,
         gap: 6.0,
         ..Default::default()
-    }
-}
-
-fn transparent() -> LayoutOpts {
-    LayoutOpts {
-        bg: Color::TRANSPARENT,
-        pad: 0.0,
-        ..materials::surface_layout()
     }
 }
 
@@ -1097,11 +1104,21 @@ mod tests {
     }
 
     #[test]
-    fn clicking_outside_denies() {
+    fn clicking_outside_keeps_the_prompt_open() {
         let mut prompt = CapabilityPrompt::new();
         prompt.start_capability_pick(params());
         let mut out = ChromeEvents::default();
         prompt.press_at(4.0, 4.0, (1280.0, 800.0), &mut out);
+        assert!(out.capability_pick_answered.is_none());
+        assert!(prompt.capability_pick_active());
+    }
+
+    #[test]
+    fn the_panic_chord_command_denies() {
+        let mut prompt = CapabilityPrompt::new();
+        prompt.start_capability_pick(params());
+        let mut out = ChromeEvents::default();
+        prompt.command(&ChromeCommand::DismissModal, &mut out);
         assert_eq!(
             out.capability_pick_answered,
             Some(CapabilityPickResult { approved: None })

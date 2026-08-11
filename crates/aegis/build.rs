@@ -14,6 +14,7 @@ fn main() {
         "DEP_LENS_RPATHS",
         "DEP_FLUX_RPATHS",
         "DEP_FLUX_SCENE_GRAPH_RPATHS",
+        "DEP_PRISM_RPATHS",
     ] {
         if let Ok(rpaths) = std::env::var(var) {
             for dir in rpaths.split(';').filter(|s| !s.is_empty()) {
@@ -27,6 +28,7 @@ fn main() {
         "DEP_FLUX_RPATHS",
         "DEP_FLUX_SCENE_GRAPH_RPATHS",
         "DEP_LENS_RPATHS",
+        "DEP_PRISM_RPATHS",
     ] {
         if let Ok(rpaths) = std::env::var(var) {
             if !emitted_dtags {

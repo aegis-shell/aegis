@@ -282,14 +282,14 @@ impl PreviewApp {
         );
         self.logical_size = (size.0.max(1), size.1.max(1));
         let result = if let Some(render) = &mut self.render {
-            render.resize(self.logical_size, self.scale)
+            render.resize(self.logical_size, self.scale as f32)
         } else {
             self.graphics
                 .create_surface(
                     connection,
                     self.window.wl_surface(),
                     self.logical_size,
-                    self.scale,
+                    self.scale as f32,
                 )
                 .map(|render| self.render = Some(render))
         };
@@ -520,7 +520,7 @@ impl CompositorHandler for PreviewApp {
         self.scale = factor.max(1);
         self.window.wl_surface().set_buffer_scale(self.scale);
         if let Some(render) = &mut self.render
-            && let Err(error) = render.resize(self.logical_size, self.scale)
+            && let Err(error) = render.resize(self.logical_size, self.scale as f32)
         {
             self.fail(error.to_string());
             return;

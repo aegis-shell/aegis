@@ -35,17 +35,38 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
-    Connection, Proxy, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface, wl_touch},
+};
+use wayland_protocols::wp::{
+    fractional_scale::v1::client::{
+        wp_fractional_scale_manager_v1::{self, WpFractionalScaleManagerV1},
+        wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+    },
+    viewporter::client::{
+        wp_viewport::{self, WpViewport},
+        wp_viewporter::{self, WpViewporter},
+    },
 };
 
 struct OutputSurface {
     output: wl_output::WlOutput,
     lock: SessionLockSurface,
     render: Option<LockRenderSurface>,
+    viewport: Option<WpViewport>,
+    fractional_scale: Option<WpFractionalScaleV1>,
     logical_size: (u32, u32),
-    scale: i32,
+    /// Output density in 120ths (the `wp_fractional_scale_v1` wire unit): the
+    /// compositor's fractional hint when it provides one, otherwise the
+    /// integer `wl_output` scale × 120.
+    scale_120: u32,
+}
+
+impl OutputSurface {
+    fn scale_factor(&self) -> f32 {
+        self.scale_120 as f32 / 120.0
+    }
 }
 
 struct AppData {
@@ -57,6 +78,8 @@ struct AppData {
     seat_state: SeatState,
     _session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
+    fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
+    viewporter: Option<WpViewporter>,
     outputs: Vec<OutputSurface>,
     keyboards: Vec<wl_keyboard::WlKeyboard>,
     pointers: Vec<wl_pointer::WlPointer>,
@@ -106,6 +129,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let session_lock_state = SessionLockState::new(&globals, &qh);
     let session_lock = session_lock_state.lock(&qh)?;
+    // Fractional scaling needs both protocols: the manager carries the
+    // compositor's exact per-output scale hint and the viewport maps the
+    // physical-pixel buffer onto the logical surface size. Either missing
+    // keeps every surface on the integer `wl_output.scale` fallback.
+    let fractional_scale_manager: Option<WpFractionalScaleManagerV1> =
+        globals.bind(&qh, 1..=1, ()).ok();
+    let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
+    if fractional_scale_manager.is_none() || viewporter.is_none() {
+        log::info!("lock: fractional scaling unavailable; using integer buffer scale");
+    }
     let mut app = AppData {
         loop_handle,
         connection: connection.clone(),
@@ -115,6 +148,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         seat_state: SeatState::new(&globals, &qh),
         _session_lock_state: session_lock_state,
         session_lock: Some(session_lock),
+        fractional_scale_manager,
+        viewporter,
         outputs: Vec::new(),
         keyboards: Vec::new(),
         pointers: Vec::new(),
@@ -175,12 +210,32 @@ impl AppData {
         };
         let surface = self.compositor_state.create_surface(qh);
         let lock_surface = lock.create_lock_surface(surface, &output, qh);
-        let scale = self
+        let integer_scale = self
             .output_state
             .info(&output)
             .map(|info| info.scale_factor.max(1))
             .unwrap_or(1);
-        lock_surface.wl_surface().set_buffer_scale(scale);
+        // Density negotiation: with fractional scaling the buffer scale stays
+        // at 1, the compositor's `preferred_scale` event carries the exact
+        // (possibly fractional) output scale, and a `wp_viewport` destination
+        // pins the surface's logical size. Without protocol support, fall
+        // back to the integer `wl_output.scale` as the buffer scale.
+        let (viewport, fractional_scale) =
+            match (&self.viewporter, &self.fractional_scale_manager) {
+                (Some(viewporter), Some(manager)) => {
+                    let viewport = viewporter.get_viewport(lock_surface.wl_surface(), qh, ());
+                    let fractional = manager.get_fractional_scale(
+                        lock_surface.wl_surface(),
+                        qh,
+                        lock_surface.wl_surface().clone(),
+                    );
+                    (Some(viewport), Some(fractional))
+                }
+                _ => {
+                    lock_surface.wl_surface().set_buffer_scale(integer_scale);
+                    (None, None)
+                }
+            };
         // ext-session-lock configures immediately after the role is created.
         // Unlike xdg-shell, an empty initial commit is forbidden: the first
         // commit must follow ack_configure and already carry a full-size
@@ -190,8 +245,10 @@ impl AppData {
             output,
             lock: lock_surface,
             render: None,
+            viewport,
+            fractional_scale,
             logical_size: (1, 1),
-            scale,
+            scale_120: integer_scale as u32 * 120,
         });
         self.dirty = true;
     }
@@ -208,6 +265,12 @@ impl AppData {
         if let Some(render) = removed.render.take() {
             self.graphics.destroy_surface(render);
         }
+        if let Some(fractional) = removed.fractional_scale.take() {
+            fractional.destroy();
+        }
+        if let Some(viewport) = removed.viewport.take() {
+            viewport.destroy();
+        }
     }
 
     fn update_output(&mut self, output: &wl_output::WlOutput) {
@@ -220,12 +283,15 @@ impl AppData {
             .outputs
             .iter_mut()
             .find(|entry| &entry.output == output)
-            && entry.scale != scale
+            // Fractional-scale surfaces follow `preferred_scale` instead.
+            && entry.fractional_scale.is_none()
+            && entry.scale_120 != scale as u32 * 120
         {
-            entry.scale = scale;
+            entry.scale_120 = scale as u32 * 120;
             entry.lock.wl_surface().set_buffer_scale(scale);
+            let factor = entry.scale_factor();
             if let Some(render) = &mut entry.render
-                && let Err(error) = render.resize(entry.logical_size, scale)
+                && let Err(error) = render.resize(entry.logical_size, factor)
             {
                 self.fail(error.to_string());
                 return;
@@ -249,15 +315,21 @@ impl AppData {
             return;
         };
         entry.logical_size = (size.0.max(1), size.1.max(1));
+        // The viewport destination pins the surface's logical size so the
+        // buffer can carry physical pixels at any fractional density.
+        if let Some(viewport) = &entry.viewport {
+            viewport.set_destination(entry.logical_size.0 as i32, entry.logical_size.1 as i32);
+        }
+        let scale = entry.scale_factor();
         let result = if let Some(render) = &mut entry.render {
-            render.resize(entry.logical_size, entry.scale)
+            render.resize(entry.logical_size, scale)
         } else {
             self.graphics
                 .create_surface(
                     connection,
                     entry.lock.wl_surface(),
                     entry.logical_size,
-                    entry.scale,
+                    scale,
                 )
                 .map(|render| {
                     entry.render = Some(render);
@@ -556,11 +628,14 @@ impl CompositorHandler for AppData {
             .outputs
             .iter_mut()
             .find(|entry| entry.lock.wl_surface() == surface)
+            // Fractional-scale surfaces follow `preferred_scale` instead.
+            && entry.fractional_scale.is_none()
         {
-            entry.scale = factor.max(1);
-            entry.lock.wl_surface().set_buffer_scale(entry.scale);
+            entry.scale_120 = factor.max(1) as u32 * 120;
+            entry.lock.wl_surface().set_buffer_scale(factor.max(1));
+            let scale = entry.scale_factor();
             if let Some(render) = &mut entry.render
-                && let Err(error) = render.resize(entry.logical_size, entry.scale)
+                && let Err(error) = render.resize(entry.logical_size, scale)
             {
                 self.fail(error.to_string());
             }
@@ -603,6 +678,82 @@ impl CompositorHandler for AppData {
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
+    }
+}
+
+impl Dispatch<WpFractionalScaleManagerV1, ()> for AppData {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpFractionalScaleManagerV1,
+        _event: wp_fractional_scale_manager_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // The manager has no events.
+    }
+}
+
+impl Dispatch<WpViewporter, ()> for AppData {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewporter,
+        _event: wp_viewporter::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // The viewporter has no events.
+    }
+}
+
+impl Dispatch<WpViewport, ()> for AppData {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewport,
+        _event: wp_viewport::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // The viewport has no events.
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, wl_surface::WlSurface> for AppData {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        surface: &wl_surface::WlSurface,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wp_fractional_scale_v1::Event::PreferredScale { scale } => {
+                let scale_120 = scale.max(1);
+                let Some(entry) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|entry| entry.lock.wl_surface() == surface)
+                else {
+                    return;
+                };
+                if entry.scale_120 == scale_120 {
+                    return;
+                }
+                entry.scale_120 = scale_120;
+                let scale = entry.scale_factor();
+                if let Some(render) = &mut entry.render
+                    && let Err(error) = render.resize(entry.logical_size, scale)
+                {
+                    state.fail(error.to_string());
+                    return;
+                }
+                state.dirty = true;
+            }
+            _ => {}
+        }
     }
 }
 

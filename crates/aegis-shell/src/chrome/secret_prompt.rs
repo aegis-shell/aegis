@@ -11,7 +11,7 @@
 //! compositor's IPC answer path exactly once (further zeroization is the
 //! caller's job — see the portal's vault KDF).
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
+use lens::{Align, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -228,15 +228,15 @@ impl Chrome for SecretPrompt {
         let title = ellipsize(
             frame,
             &self.title,
-            15.0,
+            design.typography.headline,
             (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
         );
         frame.place(
             "aegis-secret-prompt-title",
-            &materials::chrome_place(layout.title, transparent()),
+            &materials::chrome_place(layout.title, materials::transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
-                    frame.label_sized(&title, 15.0);
+                    frame.label_sized(&title, design.typography.headline);
                 });
             },
         );
@@ -245,15 +245,15 @@ impl Chrome for SecretPrompt {
             let reason = ellipsize(
                 frame,
                 self.reason.as_deref().unwrap_or_default(),
-                11.5,
+                design.typography.label,
                 reason_rect.w,
             );
             frame.place(
                 "aegis-secret-prompt-reason",
-                &materials::chrome_place(reason_rect, transparent()),
+                &materials::chrome_place(reason_rect, materials::transparent()),
                 |frame| {
                     frame.row_ex(&stretch(reason_rect), |frame| {
-                        frame.label_compact_sized(&reason, 11.5);
+                        frame.label_compact_sized(&reason, design.typography.label);
                     });
                 },
             );
@@ -262,8 +262,8 @@ impl Chrome for SecretPrompt {
         // The masked field: one glyph per character, caret after the last
         // (compositor-owned, like the launcher's search field).
         let masked = MASK.repeat(self.buffer.chars().count());
-        let metrics = frame.measure_text(&masked, 14.0);
-        let font_metrics = frame.measure_text("Ag", 14.0);
+        let metrics = frame.measure_text(&masked, design.typography.body);
+        let font_metrics = frame.measure_text("Ag", design.typography.body);
         frame.place(
             "aegis-secret-prompt-field",
             &materials::chrome_place(
@@ -287,7 +287,7 @@ impl Chrome for SecretPrompt {
                     },
                     |frame| {
                         frame.spacer(12.0);
-                        frame.label_compact_sized(&masked, 14.0);
+                        frame.label_compact_sized(&masked, design.typography.body);
                     },
                 );
             },
@@ -332,7 +332,7 @@ impl Chrome for SecretPrompt {
             ),
             |frame| {
                 frame.column_ex(&stretch(layout.cancel), |frame| {
-                    frame.label_sized("Cancel", 13.0);
+                    frame.label_sized("Cancel", design.typography.body);
                 });
             },
         );
@@ -350,17 +350,15 @@ impl Chrome for SecretPrompt {
             ),
             |frame| {
                 frame.column_ex(&stretch(layout.accept), |frame| {
-                    frame.label_sized("Unlock", 13.0);
+                    frame.label_sized("Unlock", design.typography.body);
                 });
             },
         );
 
         frame.set_theme(original_theme);
 
-        if pressed && !contains(layout.panel, cursor.x, cursor.y) {
-            self.cancel(out);
-            return;
-        }
+        // Clicks outside the panel are ignored: a secret handover must be a
+        // deliberate choice, never an accidental click.
         if clicked_cancel {
             self.cancel(out);
             return;
@@ -447,12 +445,13 @@ impl Chrome for SecretPrompt {
         }
     }
 
-    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+    fn command(&mut self, command: &ChromeCommand<'_>, out: &mut ChromeEvents) {
         match command {
             ChromeCommand::StartSecretPrompt(params) => {
                 self.start_secret_prompt((**params).clone());
             }
             ChromeCommand::CancelSecretPrompt if self.active => self.close(),
+            ChromeCommand::DismissModal if self.active => self.cancel(out),
             _ => {}
         }
     }
@@ -515,14 +514,6 @@ fn stretch(rect: Rect) -> LayoutOpts {
         height: rect.h,
         cross: Align::Center,
         ..Default::default()
-    }
-}
-
-fn transparent() -> LayoutOpts {
-    LayoutOpts {
-        bg: Color::TRANSPARENT,
-        pad: 0.0,
-        ..materials::surface_layout()
     }
 }
 
@@ -600,6 +591,18 @@ mod tests {
             },
             &mut out,
         );
+        assert!(out.secret_prompt_cancelled);
+        assert!(!prompt.secret_prompt_active());
+        assert!(prompt.buffer.is_empty());
+    }
+
+    #[test]
+    fn the_panic_chord_command_cancels_and_zeroizes_the_buffer() {
+        let mut prompt = SecretPrompt::new();
+        prompt.start_secret_prompt(params());
+        let mut out = ChromeEvents::default();
+        prompt.key_char(&char_key('x'), &mut out);
+        prompt.command(&ChromeCommand::DismissModal, &mut out);
         assert!(out.secret_prompt_cancelled);
         assert!(!prompt.secret_prompt_active());
         assert!(prompt.buffer.is_empty());

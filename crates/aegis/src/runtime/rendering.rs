@@ -351,6 +351,13 @@ pub(super) fn backdrop_regions_in_capture(
         .collect()
 }
 
+/// A region submits a prism group only when it has area and is visible; the
+/// same predicate gates the submitted-id bookkeeping that aligns the
+/// frame-lagged backdrop statistics with their bodies.
+pub(super) fn glass_region_active(region: &aegis_shell::LiquidGlassRegion) -> bool {
+    region.bounds.w > 0.0 && region.bounds.h > 0.0 && region.opacity > 0.0
+}
+
 /// Convert output-logical liquid-glass declarations into coordinates of the
 /// capture image consumed by Optics. This is the single mapping
 /// used for shape, corner radius, refraction and the final image draw.
@@ -361,13 +368,13 @@ pub(super) fn liquid_glass_groups(
     scale: f32,
     capture_ratio: f32,
     scheme: aegis_model::settings::ColorScheme,
-) -> Vec<flux::LiquidGlassGroup> {
+) -> Vec<prism::LiquidGlassGroup> {
     let capture_scale = scale * capture_ratio;
     regions
         .iter()
-        .filter(|region| region.bounds.w > 0.0 && region.bounds.h > 0.0 && region.opacity > 0.0)
-        .map(|region| flux::LiquidGlassGroup {
-            primary: flux::LiquidGlassShape {
+        .filter(|region| glass_region_active(region))
+        .map(|region| prism::LiquidGlassGroup {
+            primary: prism::LiquidGlassShape {
                 x: region.bounds.x * capture_scale - capture_origin.0 as f32 * capture_ratio,
                 y: region.bounds.y * capture_scale - capture_origin.1 as f32 * capture_ratio,
                 width: region.bounds.w * capture_scale,
@@ -381,8 +388,18 @@ pub(super) fn liquid_glass_groups(
             shadow_blur: region.shadow_blur.max(0.0) * capture_scale,
             shadow_offset_y: region.shadow_offset_y * capture_scale,
             tint_color: glass_tint(scheme),
-            focus: region.focus.map(|focus| flux::LiquidGlassFocus {
-                shape: flux::LiquidGlassShape {
+            // Reference-recipe bodies leave the descriptor defaults alone;
+            // only legs carrying a role override or an adaptation writeback
+            // pin per-group values.
+            frost_strength: (region.frost_strength != 1.0).then_some(region.frost_strength),
+            tint_strength: (region.tint_strength != 1.0).then_some(region.tint_strength),
+            saturation: (region.saturation != 1.0).then_some(region.saturation),
+            plate_polarity: (region.plate_polarity >= 0.0).then_some(region.plate_polarity),
+            backdrop_energy: region
+                .adaptation
+                .map(|adaptation| adaptation.backdrop_energy),
+            focus: region.focus.map(|focus| prism::LiquidGlassFocus {
+                shape: prism::LiquidGlassShape {
                     x: focus.bounds.x * capture_scale - capture_origin.0 as f32 * capture_ratio,
                     y: focus.bounds.y * capture_scale - capture_origin.1 as f32 * capture_ratio,
                     width: focus.bounds.w * capture_scale,
@@ -413,9 +430,9 @@ struct ScreenshotCapture {
     format: flux::Format,
 }
 
-/// Exact backdrop configuration. Float values are stored as IEEE bit patterns
-/// so equality is collision-free and every geometry/material change
-/// invalidates all per-slot effect caches.
+/// Exact backdrop capture configuration. Float values are stored as IEEE bit
+/// patterns so equality is collision-free. A capture-side change invalidates
+/// all per-slot effect caches and re-renders the scene into the capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BackdropCacheKey {
     capture_origin: (u32, u32),
@@ -425,9 +442,75 @@ pub(super) struct BackdropCacheKey {
     scale: u32,
     model_active: bool,
     capture_regions: Vec<BackdropCaptureRegion>,
-    frost_regions: Vec<[u32; 4]>,
-    liquid_regions: Vec<[u32; 16]>,
     scene_overlays: Vec<u64>,
+}
+
+/// Effect-side backdrop configuration: every frost/liquid parameter that
+/// changes only the composite built *from* the capture — region geometry,
+/// opacity fades, shadows, focus fields, per-role material strengths and
+/// the adaptation writeback. A material-only change re-runs blur + glass +
+/// composite over the still-valid capture instead of re-rendering the scene,
+/// so an animated tooltip fade or an adaptation step never churns clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BackdropMaterialKey {
+    frost_regions: Vec<[u32; 4]>,
+    liquid_regions: Vec<[u32; 23]>,
+    glass_tint: [u8; 3],
+}
+
+impl BackdropMaterialKey {
+    pub(super) fn new(
+        frost_regions: &[aegis_shell::BackdropRegion],
+        liquid_regions: &[aegis_shell::LiquidGlassRegion],
+        glass_tint: [u8; 3],
+    ) -> Self {
+        Self {
+            frost_regions: frost_regions
+                .iter()
+                .map(|region| {
+                    [
+                        region.x.to_bits(),
+                        region.y.to_bits(),
+                        region.w.to_bits(),
+                        region.h.to_bits(),
+                    ]
+                })
+                .collect(),
+            liquid_regions: liquid_regions
+                .iter()
+                .map(|region| {
+                    let focus = region.focus.unwrap_or_default();
+                    let adaptation = region.adaptation.unwrap_or_default();
+                    [
+                        region.bounds.x.to_bits(),
+                        region.bounds.y.to_bits(),
+                        region.bounds.w.to_bits(),
+                        region.bounds.h.to_bits(),
+                        region.corner_radius.to_bits(),
+                        region.opacity.to_bits(),
+                        region.shadow_alpha.to_bits(),
+                        region.shadow_blur.to_bits(),
+                        region.shadow_offset_y.to_bits(),
+                        u32::from(region.focus.is_some()),
+                        focus.bounds.x.to_bits(),
+                        focus.bounds.y.to_bits(),
+                        focus.bounds.w.to_bits(),
+                        focus.bounds.h.to_bits(),
+                        focus.corner_radius.to_bits(),
+                        focus.strength.to_bits(),
+                        region.frost_strength.to_bits(),
+                        region.tint_strength.to_bits(),
+                        region.saturation.to_bits(),
+                        region.plate_polarity.to_bits(),
+                        u32::from(region.adaptation.is_some()),
+                        adaptation.plate_luminance.to_bits(),
+                        adaptation.backdrop_energy.to_bits(),
+                    ]
+                })
+                .collect(),
+            glass_tint,
+        }
+    }
 }
 
 impl BackdropCacheKey {
@@ -440,8 +523,6 @@ impl BackdropCacheKey {
         scale: f32,
         model_active: bool,
         capture_regions: &[BackdropCaptureRegion],
-        frost_regions: &[aegis_shell::BackdropRegion],
-        liquid_regions: &[aegis_shell::LiquidGlassRegion],
         window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
         live_previews: &[aegis_shell::LivePreviewPresentation],
     ) -> Self {
@@ -490,41 +571,6 @@ impl BackdropCacheKey {
             scale: scale.to_bits(),
             model_active,
             capture_regions: capture_regions.to_vec(),
-            frost_regions: frost_regions
-                .iter()
-                .map(|region| {
-                    [
-                        region.x.to_bits(),
-                        region.y.to_bits(),
-                        region.w.to_bits(),
-                        region.h.to_bits(),
-                    ]
-                })
-                .collect(),
-            liquid_regions: liquid_regions
-                .iter()
-                .map(|region| {
-                    let focus = region.focus.unwrap_or_default();
-                    [
-                        region.bounds.x.to_bits(),
-                        region.bounds.y.to_bits(),
-                        region.bounds.w.to_bits(),
-                        region.bounds.h.to_bits(),
-                        region.corner_radius.to_bits(),
-                        region.opacity.to_bits(),
-                        region.shadow_alpha.to_bits(),
-                        region.shadow_blur.to_bits(),
-                        region.shadow_offset_y.to_bits(),
-                        u32::from(region.focus.is_some()),
-                        focus.bounds.x.to_bits(),
-                        focus.bounds.y.to_bits(),
-                        focus.bounds.w.to_bits(),
-                        focus.bounds.h.to_bits(),
-                        focus.corner_radius.to_bits(),
-                        focus.strength.to_bits(),
-                    ]
-                })
-                .collect(),
             scene_overlays,
         }
     }
@@ -537,13 +583,17 @@ impl BackdropCacheKey {
 /// device-wide stalls while a 3D wallpaper continues animating.
 pub(super) struct LauncherBackdrop {
     blur: flux::BlurFilter,
-    glass: flux::LiquidGlassFilter,
+    glass: prism::LiquidGlassFilter,
     captures: Vec<Option<BackdropCapture>>,
     /// Source damage missed by each effect-cache slot while another slot was
     /// presented. This mirrors swapchain damage history but is deliberately
     /// independent from output/chrome damage.
     source_slot_damage: Vec<FrameDamage>,
     config: Option<BackdropCacheKey>,
+    /// The effect-side fingerprint. A material-only change (a tooltip fade,
+    /// an adaptation step) rebuilds the composite from the still-valid
+    /// capture instead of re-rendering the scene into it.
+    material: Option<BackdropMaterialKey>,
     was_active: bool,
     failed_session: bool,
     unsupported: bool,
@@ -554,6 +604,9 @@ pub(super) enum BackdropPlan {
     Direct,
     /// Capture the desktop footprint and rebuild this frame slot's effect.
     Refresh(Vec<BackdropCaptureRegion>),
+    /// The capture is still valid; only the effect material changed. Rebuild
+    /// this frame slot's composite from the existing capture image.
+    Recompute,
     /// Reuse the already-composited effect image for this frame slot.
     Cached,
 }
@@ -589,10 +642,11 @@ impl LauncherBackdrop {
     pub(super) fn new(device: &flux::Device) -> Result<Self, flux::Error> {
         Ok(Self {
             blur: flux::BlurFilter::new(device)?,
-            glass: flux::LiquidGlassFilter::new(device)?,
+            glass: prism::LiquidGlassFilter::new(device)?,
             captures: Vec::new(),
             source_slot_damage: Vec::new(),
             config: None,
+            material: None,
             was_active: false,
             failed_session: false,
             unsupported: false,
@@ -603,6 +657,7 @@ impl LauncherBackdrop {
     /// regions' padded union, or the full surface for a live 3D wallpaper);
     /// the capture target is allocated at `extent / BACKDROP_DOWNSAMPLE`.
     /// With full-resolution captures the quotient is the extent itself.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare(
         &mut self,
         active: bool,
@@ -610,12 +665,14 @@ impl LauncherBackdrop {
         surface: &flux::Surface,
         frame: &flux::Frame<'_>,
         config: BackdropCacheKey,
+        material: BackdropMaterialKey,
         source_damage: &FrameDamage,
     ) -> BackdropPlan {
         if !active {
             self.was_active = false;
             self.failed_session = false;
             self.config = None;
+            self.material = None;
             for capture in self.captures.iter_mut().flatten() {
                 capture.valid = false;
             }
@@ -632,6 +689,7 @@ impl LauncherBackdrop {
             return BackdropPlan::Direct;
         }
 
+        let material_changed = self.material.as_ref() != Some(&material);
         if self.config.as_ref() != Some(&config) {
             self.config = Some(config.clone());
             for capture in self.captures.iter_mut().flatten() {
@@ -641,6 +699,7 @@ impl LauncherBackdrop {
                 *pending = FrameDamage::Full;
             }
         }
+        self.material = Some(material);
         let format = match surface.format() {
             flux::Format::FLUX_FORMAT_RGBA8_UNORM | flux::Format::FLUX_FORMAT_BGRA8_UNORM => {
                 flux::Format::FLUX_FORMAT_RGBA8_UNORM
@@ -703,7 +762,14 @@ impl LauncherBackdrop {
             &config.capture_regions,
         );
         if refresh_regions.is_empty() {
-            BackdropPlan::Cached
+            // The capture still holds the current scene; a material-only
+            // change (fade, adaptation step, focus field) rebuilds just the
+            // effect composite.
+            if material_changed {
+                BackdropPlan::Recompute
+            } else {
+                BackdropPlan::Cached
+            }
         } else {
             BackdropPlan::Refresh(refresh_regions)
         }
@@ -765,8 +831,8 @@ impl LauncherBackdrop {
         blur_regions: &[flux::BlurRegion],
         frost_regions: &[flux::BlurRegion],
         all_backdrop_regions: &[flux::BlurRegion],
-        glass_groups: &[flux::LiquidGlassGroup],
-        glass_params: flux::LiquidGlassParams,
+        glass_groups: &[prism::LiquidGlassGroup],
+        glass_params: prism::LiquidGlassParams,
     ) -> bool {
         let slot = frame.index() as usize;
         if let Err(error) = canvas.end_target_checked() {
@@ -779,9 +845,43 @@ impl LauncherBackdrop {
             }
             return false;
         }
+        self.recompute_effects(
+            canvas,
+            frame,
+            sigma,
+            blur_regions,
+            frost_regions,
+            all_backdrop_regions,
+            glass_groups,
+            glass_params,
+        )
+    }
+
+    /// Rebuild this frame slot's effect composite from the still-valid
+    /// capture image: blur, liquid glass, and the composite rewrite, with no
+    /// preceding scene capture. This is the material-only counterpart of
+    /// [`Self::finish_refresh`], entered without an open capture pass.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn recompute_effects(
+        &mut self,
+        canvas: &flux::Canvas,
+        frame: &flux::Frame<'_>,
+        sigma: f32,
+        blur_regions: &[flux::BlurRegion],
+        frost_regions: &[flux::BlurRegion],
+        all_backdrop_regions: &[flux::BlurRegion],
+        glass_groups: &[prism::LiquidGlassGroup],
+        glass_params: prism::LiquidGlassParams,
+    ) -> bool {
+        let slot = frame.index() as usize;
         let Some(capture) = self.captures.get(slot).and_then(Option::as_ref) else {
             return false;
         };
+        // A recompute only makes sense over a scene-capture that is still
+        // current; the planner guarantees it, so this is just a guard.
+        if !capture.valid {
+            return false;
+        }
         let refreshed = (|| -> Result<(), flux::Error> {
             let blurred = self
                 .blur
@@ -878,6 +978,19 @@ impl LauncherBackdrop {
                 false
             }
         }
+    }
+
+    /// Read the per-group backdrop statistics this frame slot last submitted
+    /// (FLUX_MAX_FRAMES_IN_FLIGHT frames ago — the slot fence waited by
+    /// `begin_frame` makes the mapped buffer stable while `frame` records).
+    /// Group `i` of the returned stats aligns with group `i` of that
+    /// submission; the caller keeps the id list to resolve identities.
+    pub(super) fn glass_stats(
+        &mut self,
+        frame: &flux::Frame<'_>,
+        out: &mut [prism::BackdropStats],
+    ) -> Result<usize, flux::Error> {
+        self.glass.stats(frame, out)
     }
 
     /// Draw this frame slot's persistent transparent effect image.
@@ -1371,7 +1484,9 @@ pub(super) fn draw_overview_scene(
     // output drawn live into its tile, independent of the main grid — an
     // empty current workspace must not starve the rail.
     if rail {
-        draw_workspace_rail_tiles(canvas, device, renderer, server, &snapshot, display, scale, t);
+        draw_workspace_rail_tiles(
+            canvas, device, renderer, server, &snapshot, display, scale, t,
+        );
     }
 
     if windows.is_empty() {
@@ -1410,19 +1525,14 @@ pub(super) fn draw_overview_scene(
         .map(|(w, slot)| {
             // Fly-in: the cell starts at the window's real geometry and
             // lands on its aspect-fitted grid slot as `t` reaches 1.
-            let cell = aegis_model::overview::fit(*slot, w.size);
-            let cell = if t >= 1.0 {
-                cell
-            } else {
-                lerp_rect(
-                    aegis_model::Rect {
-                        origin: w.position,
-                        size: w.size,
-                    },
-                    cell,
-                    t,
-                )
-            };
+            let cell = aegis_model::overview::animated_cell(
+                *slot,
+                aegis_model::Rect {
+                    origin: w.position,
+                    size: w.size,
+                },
+                t,
+            );
             (w.id, (cell, w.position, w.size))
         })
         .collect();
@@ -1449,18 +1559,6 @@ pub(super) fn draw_overview_scene(
     let surface_order = server.client_preview_surface_frame_order();
     renderer.draw_surfaces_ordered_mapped(device, canvas, &surface_order, &shm, &dmabuf, &map);
     canvas.restore();
-}
-
-/// Linear interpolation between two rects, used by the overview fly-in to
-/// move each thumbnail from the window's real geometry to its grid cell.
-fn lerp_rect(from: aegis_model::Rect, to: aegis_model::Rect, t: f32) -> aegis_model::Rect {
-    let l = |a: i32, b: i32| (a as f32 + (b - a) as f32 * t).round() as i32;
-    aegis_model::Rect::new(
-        l(from.origin.x, to.origin.x),
-        l(from.origin.y, to.origin.y),
-        l(from.size.w, to.size.w).max(1),
-        l(from.size.h, to.size.h).max(1),
-    )
 }
 
 /// Workspace rail miniatures: each workspace of the output drawn live into
@@ -1521,8 +1619,7 @@ fn draw_workspace_rail_tiles(
                 )
             })
             .collect();
-        let map = move |wid: Option<aegis_model::window::WindowId>,
-                        natural: aegis_model::Rect| {
+        let map = move |wid: Option<aegis_model::window::WindowId>, natural: aegis_model::Rect| {
             let Some((cell, base, win_size)) = wid.and_then(|id| cells.get(&id)) else {
                 return natural;
             };

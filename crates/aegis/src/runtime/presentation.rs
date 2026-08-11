@@ -356,8 +356,46 @@ impl CompositorRuntime {
                 };
                 let blur_sigma = self.shell.backdrop_blur_sigma();
                 let backdrop_regions = self.shell.backdrop_regions(self.input_acc.display_size);
-                let liquid_glass_regions =
+                let mut liquid_glass_regions =
                     self.shell.liquid_glass_regions(self.input_acc.display_size);
+                // Region-level backdrop adaptation: fold the statistics this
+                // frame slot submitted FLUX_MAX_FRAMES_IN_FLIGHT frames ago
+                // into the smoothed policy, then write it back into the
+                // declared regions before cache keys and prism groups are
+                // built from them.
+                let glass_slot = frame.index() as usize;
+                let submitted = self
+                    .submitted_glass_ids
+                    .get(glass_slot)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                if !submitted.is_empty() {
+                    let mut stats = [prism::BackdropStats::default(); 64];
+                    if let Ok(count) = self.launcher_backdrop.glass_stats(&frame, &mut stats) {
+                        let dt = input.as_raw().dt_seconds.max(0.0);
+                        for (index, stat) in
+                            stats.iter().take(count.min(submitted.len())).enumerate()
+                        {
+                            let id = submitted[index];
+                            if id != 0 {
+                                self.glass_adaptation.observe(
+                                    id,
+                                    stat.mean_luminance,
+                                    stat.high_freq_energy,
+                                    dt,
+                                );
+                            }
+                        }
+                    }
+                }
+                let mut live_glass_ids = Vec::with_capacity(liquid_glass_regions.len());
+                for region in &mut liquid_glass_regions {
+                    self.glass_adaptation.apply_to(region);
+                    if region.id != 0 {
+                        live_glass_ids.push(region.id);
+                    }
+                }
+                self.glass_adaptation.retain(&live_glass_ids);
                 let model_active = self
                     .wallpaper
                     .as_ref()
@@ -368,8 +406,12 @@ impl CompositorRuntime {
                 let backdrop_model_active = model_active && !self.screenshot_freeze.active();
                 // Overview mode (M9) swaps the whole client scene for the
                 // thumbnail grid and skips the launcher-blur capture path.
-                let overview_active = self.shell.overview_active();
+                // The grid stays up while the reveal animation runs in
+                // either direction: keying the swap on `open` alone would
+                // pop the desktop back the instant the close fade starts,
+                // stranding the chrome's cell frames mid-flight.
                 let overview_progress = self.shell.overview_progress();
+                let overview_active = self.shell.overview_active() || overview_progress > 0.001;
                 // A screenshot freeze session replaces the whole frame with
                 // the trigger-frame snapshot: the capture frame renders the
                 // desktop scene *and* the chrome into an offscreen target
@@ -441,10 +483,13 @@ impl CompositorRuntime {
                     scale,
                     backdrop_model_active,
                     &capture_regions,
-                    &frost_backdrop_regions,
-                    &liquid_glass_regions,
                     window_switcher.as_ref(),
                     &live_previews,
+                );
+                let backdrop_material_key = BackdropMaterialKey::new(
+                    &frost_backdrop_regions,
+                    &liquid_glass_regions,
+                    glass_tint(color_scheme),
                 );
                 let backdrop_plan = if overview_active
                     || (self.screenshot_freeze.armed && !self.screenshot_freeze.active())
@@ -458,36 +503,56 @@ impl CompositorRuntime {
                         &self.surface,
                         &frame,
                         backdrop_key,
+                        backdrop_material_key,
                         &backdrop_source_damage,
                     )
                 };
+                let recompute_only = matches!(&backdrop_plan, BackdropPlan::Recompute);
                 let refresh_capture_regions = match &backdrop_plan {
                     BackdropPlan::Refresh(regions) => regions.clone(),
+                    BackdropPlan::Direct | BackdropPlan::Recompute | BackdropPlan::Cached => {
+                        Vec::new()
+                    }
+                };
+                let effect_work_regions = match &backdrop_plan {
+                    BackdropPlan::Refresh(regions) => blur_regions_in_capture(
+                        regions,
+                        capture_origin,
+                        capture_extent,
+                        capture_target_extent,
+                    ),
+                    BackdropPlan::Recompute => blur_regions_in_capture(
+                        &capture_regions,
+                        capture_origin,
+                        capture_extent,
+                        capture_target_extent,
+                    ),
                     BackdropPlan::Direct | BackdropPlan::Cached => Vec::new(),
                 };
-                let capture_work_regions = blur_regions_in_capture(
-                    &refresh_capture_regions,
-                    capture_origin,
-                    capture_extent,
-                    capture_target_extent,
-                );
                 let refresh_requested = matches!(&backdrop_plan, BackdropPlan::Refresh(_));
-                let capture_started = capture_work_regions.first().is_some_and(|region| {
-                    self.launcher_backdrop.begin_capture(
-                        &self.canvas,
-                        &frame,
-                        self.clear,
-                        flux::CanvasRenderArea {
-                            x: region.x as i32,
-                            y: region.y as i32,
-                            width: region.width,
-                            height: region.height,
-                        },
-                    )
-                });
+                // Only a Refresh renders the scene into the capture; a
+                // Recompute reuses the still-valid capture image and skips
+                // the capture passes entirely.
+                let capture_started = refresh_requested
+                    && effect_work_regions.first().is_some_and(|region| {
+                        self.launcher_backdrop.begin_capture(
+                            &self.canvas,
+                            &frame,
+                            self.clear,
+                            flux::CanvasRenderArea {
+                                x: region.x as i32,
+                                y: region.y as i32,
+                                width: region.width,
+                                height: region.height,
+                            },
+                        )
+                    });
+                let recompute_ready = recompute_only && !effect_work_regions.is_empty();
 
                 match backdrop_plan {
-                    BackdropPlan::Refresh(_) if capture_started => {
+                    BackdropPlan::Refresh(_) | BackdropPlan::Recompute
+                        if capture_started || recompute_ready =>
+                    {
                         let capture_size = self
                             .launcher_backdrop
                             .capture_size(&frame)
@@ -496,7 +561,15 @@ impl CompositorRuntime {
                         let capture_scale = scale * capture_ratio;
 
                         let mut capture_ok = true;
-                        for (index, region) in capture_work_regions.iter().enumerate() {
+                        // A Recompute skips the scene capture loop: the empty
+                        // iterator keeps every downstream index/capture_ok
+                        // assumption identical to a zero-region Refresh.
+                        let capture_loop_regions: &[flux::BlurRegion] = if recompute_only {
+                            &[]
+                        } else {
+                            &effect_work_regions
+                        };
+                        for (index, region) in capture_loop_regions.iter().enumerate() {
                             if index > 0 {
                                 if let Err(error) = self.canvas.end_target_checked() {
                                     log::warn!(
@@ -640,8 +713,8 @@ impl CompositorRuntime {
                         let capture_covers_output = capture_origin == (0, 0)
                             && capture_extent == physical_size
                             && capture_size == physical_size
-                            && capture_work_regions.len() == 1
-                            && capture_work_regions[0]
+                            && effect_work_regions.len() == 1
+                            && effect_work_regions[0]
                                 == (flux::BlurRegion {
                                     x: 0,
                                     y: 0,
@@ -662,28 +735,69 @@ impl CompositorRuntime {
                             capture_size,
                             scale,
                         );
-                        let refreshed = capture_ok
-                            && self.launcher_backdrop.finish_refresh(
+                        let refreshed = if recompute_only {
+                            self.launcher_backdrop.recompute_effects(
                                 &self.canvas,
                                 &frame,
                                 blur_sigma * capture_scale,
-                                &capture_work_regions,
+                                &effect_work_regions,
                                 &frost_capture_regions,
                                 &all_backdrop_capture_regions,
                                 &glass_groups,
-                                flux::LiquidGlassParams {
+                                prism::LiquidGlassParams {
                                     refraction: 8.0 * capture_pixel_scale,
                                     chromatic_aberration: 1.25 * capture_pixel_scale,
                                     edge_width: 18.0 * capture_pixel_scale,
                                     ..Default::default()
                                 },
-                            );
+                            )
+                        } else {
+                            capture_ok
+                                && self.launcher_backdrop.finish_refresh(
+                                    &self.canvas,
+                                    &frame,
+                                    blur_sigma * capture_scale,
+                                    &effect_work_regions,
+                                    &frost_capture_regions,
+                                    &all_backdrop_capture_regions,
+                                    &glass_groups,
+                                    prism::LiquidGlassParams {
+                                        refraction: 8.0 * capture_pixel_scale,
+                                        chromatic_aberration: 1.25 * capture_pixel_scale,
+                                        edge_width: 18.0 * capture_pixel_scale,
+                                        ..Default::default()
+                                    },
+                                )
+                        };
+
+                        // Bookkeep which region ids this slot's submission
+                        // carries so the frame-lagged prism statistics can be
+                        // resolved back to regions. A failed effect pass
+                        // leaves no trustworthy stats for the slot.
+                        if self.submitted_glass_ids.len() <= glass_slot {
+                            self.submitted_glass_ids
+                                .resize_with(glass_slot + 1, Vec::new);
+                        }
+                        self.submitted_glass_ids[glass_slot] = if refreshed {
+                            liquid_glass_regions
+                                .iter()
+                                .filter(|region| glass_region_active(region))
+                                .map(|region| region.id)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
 
                         // Refreshing the sampled input may change every visible
                         // effect pixel even when the source damage itself lies
                         // just outside the glass body (inside the blur radius).
                         // Add those regions to the final output repaint.
-                        let effect_damage: Vec<_> = refresh_capture_regions
+                        let effect_damage_source = if recompute_only {
+                            &capture_regions
+                        } else {
+                            &refresh_capture_regions
+                        };
+                        let effect_damage: Vec<_> = effect_damage_source
                             .iter()
                             .map(|region| {
                                 aegis_model::Rect::new(
@@ -801,7 +915,7 @@ impl CompositorRuntime {
                             capture_extent,
                         );
                     }
-                    BackdropPlan::Refresh(_) | BackdropPlan::Direct => {
+                    BackdropPlan::Refresh(_) | BackdropPlan::Recompute | BackdropPlan::Direct => {
                         if refresh_requested {
                             // Capture setup failed. Repaint the previous effect
                             // footprint with the direct scene so stale cached

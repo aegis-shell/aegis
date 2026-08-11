@@ -7,7 +7,7 @@ use lens::{Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, ChromeEvents, ChromeUpdate, LiquidGlassRegion, Localizer, Message, PopupSide,
-    WindowAction, ellipsize, place_popup_side,
+    WindowAction, ellipsize, liquid_glass_region_id, place_popup_side,
 };
 
 const MENU_WIDTH: f32 = 236.0;
@@ -192,16 +192,21 @@ impl AppMenu {
     /// [`Chrome::liquid_glass_regions`](crate::Chrome::liquid_glass_regions)
     /// so the compositor backs the popover with real backdrop blur and the
     /// glass treatment on any background, not only where a blur happens to
-    /// sit underneath.
+    /// sit underneath. The `Menu` role carries the legibility material
+    /// strengths, and the stable id opts the body into the compositor's
+    /// region-level backdrop adaptation.
     pub fn liquid_glass_region(&self, display: (f32, f32)) -> Option<LiquidGlassRegion> {
         let bounds = self.bounds(display)?;
-        Some(LiquidGlassRegion::from_role(
-            &self.design,
-            GlassRole::FloatingPanel,
-            BackdropRegion::from(bounds),
-            self.design.radii.popover,
-            1.0,
-        ))
+        Some(
+            LiquidGlassRegion::from_role(
+                &self.design,
+                GlassRole::Menu,
+                BackdropRegion::from(bounds),
+                self.design.radii.popover,
+                1.0,
+            )
+            .with_id(liquid_glass_region_id(self.layer_id)),
+        )
     }
 
     pub fn render(
@@ -402,10 +407,10 @@ impl AppMenu {
                         let heading = ellipsize(
                             frame,
                             &target.label,
-                            11.5,
+                            design.typography.label,
                             (bounds.w - MENU_PAD * 2.0).max(0.0),
                         );
-                        frame.label_compact_sized(&heading, 11.5);
+                        frame.label_compact_sized(&heading, design.typography.label);
                         frame.set_theme(menu_theme);
                         let mut row_index = 0;
                         for (group_index, group) in groups.into_iter().enumerate() {
@@ -543,6 +548,16 @@ mod tests {
         assert_eq!(region.bounds, BackdropRegion::from(bounds));
         assert_eq!(region.corner_radius, menu.design.radii.popover);
         assert_eq!(region.opacity, 1.0);
+        // The Menu role carries the legibility material strengths and opts
+        // into region-level backdrop adaptation under a stable id.
+        let style = menu.design.glass.for_role(GlassRole::Menu);
+        assert_eq!(region.frost_strength, style.frost_strength);
+        assert_eq!(region.tint_strength, style.tint_strength);
+        assert_eq!(region.saturation, style.saturation);
+        assert_eq!(region.plate_polarity, style.plate_polarity);
+        assert!(region.frost_strength > 1.0 && region.tint_strength > 1.0);
+        assert_eq!(region.id, liquid_glass_region_id("test-menu"));
+        assert_eq!(region.adaptation, None);
     }
 
     #[test]

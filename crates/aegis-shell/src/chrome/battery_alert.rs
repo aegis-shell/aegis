@@ -151,10 +151,12 @@ impl BatteryAlert {
     }
 
     /// Handle one primary-button press at output-space `(x, y)`: dismisses
-    /// on the OK button or on a click outside the panel.
+    /// on the OK button. Clicks anywhere else — including the scrim — are
+    /// ignored: a low-battery warning must leave through a deliberate
+    /// action, never through an accidental click.
     fn press_at(&mut self, x: f32, y: f32, display: (f32, f32)) {
         let layout = AlertLayout::for_display(display, self.modal_reserved);
-        if contains(layout.ok, x, y) || !contains(layout.panel, x, y) {
+        if contains(layout.ok, x, y) {
             self.dismiss();
         }
     }
@@ -216,10 +218,9 @@ impl Chrome for BatteryAlert {
 
         // The gauge: a rounded outline with a charge-proportional fill and
         // the battery's terminal nub. The fill carries the meaning: accent
-        // for a plain warning, the lock screen's rejection red
-        // (`REJECTION_RGB` in aegis-lock) when critical.
+        // for a plain warning, the shared critical red when critical.
         let fill_color = if self.critical {
-            Color::rgba(255, 72, 84, 255)
+            design.colors.critical
         } else {
             design.colors.application_accent
         };
@@ -285,10 +286,10 @@ impl Chrome for BatteryAlert {
         let percent = format!("{}%", self.percent);
         frame.place(
             "aegis-battery-alert-percent",
-            &materials::chrome_place(layout.percent, transparent()),
+            &materials::chrome_place(layout.percent, materials::transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.percent), |frame| {
-                    frame.label_sized(&percent, 24.0);
+                    frame.label_sized(&percent, design.typography.hero);
                 });
             },
         );
@@ -301,15 +302,15 @@ impl Chrome for BatteryAlert {
         let title = ellipsize(
             frame,
             title,
-            15.0,
+            design.typography.headline,
             (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
         );
         frame.place(
             "aegis-battery-alert-title",
-            &materials::chrome_place(layout.title, transparent()),
+            &materials::chrome_place(layout.title, materials::transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
-                    frame.label_sized(&title, 15.0);
+                    frame.label_sized(&title, design.typography.headline);
                 });
             },
         );
@@ -319,13 +320,13 @@ impl Chrome for BatteryAlert {
         } else {
             "Connect a charger."
         };
-        let body = ellipsize(frame, body, 12.0, layout.body.w);
+        let body = ellipsize(frame, body, design.typography.label, layout.body.w);
         frame.place(
             "aegis-battery-alert-body",
-            &materials::chrome_place(layout.body, transparent()),
+            &materials::chrome_place(layout.body, materials::transparent()),
             |frame| {
                 frame.row_ex(&stretch_top(layout.body), |frame| {
-                    frame.label_compact_sized(&body, 12.0);
+                    frame.label_compact_sized(&body, design.typography.label);
                 });
             },
         );
@@ -344,7 +345,7 @@ impl Chrome for BatteryAlert {
             ),
             |frame| {
                 frame.column_ex(&stretch(layout.ok), |frame| {
-                    frame.label_sized("OK", 13.0);
+                    frame.label_sized("OK", design.typography.body);
                 });
             },
         );
@@ -430,6 +431,7 @@ impl Chrome for BatteryAlert {
         match command {
             ChromeCommand::StartBatteryAlert(params) => self.start_battery_alert(**params),
             ChromeCommand::CancelBatteryAlert if self.active => self.active = false,
+            ChromeCommand::DismissModal if self.active => self.dismiss(),
             _ => {}
         }
     }
@@ -503,14 +505,6 @@ fn stretch_top(rect: Rect) -> LayoutOpts {
     }
 }
 
-fn transparent() -> LayoutOpts {
-    LayoutOpts {
-        bg: Color::TRANSPARENT,
-        pad: 0.0,
-        ..materials::surface_layout()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,10 +570,18 @@ mod tests {
     }
 
     #[test]
-    fn clicking_outside_dismisses() {
+    fn clicking_outside_keeps_the_alert() {
         let mut alert = BatteryAlert::new();
         alert.start_battery_alert(params());
         alert.press_at(4.0, 4.0, (1280.0, 800.0));
+        assert!(alert.battery_alert_active());
+    }
+
+    #[test]
+    fn the_panic_chord_command_dismisses() {
+        let mut alert = BatteryAlert::new();
+        alert.start_battery_alert(params());
+        alert.command(&ChromeCommand::DismissModal, &mut ChromeEvents::default());
         assert!(!alert.battery_alert_active());
     }
 

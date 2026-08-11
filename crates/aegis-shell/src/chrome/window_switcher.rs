@@ -389,7 +389,12 @@ impl Chrome for WindowSwitcher {
             let item_alpha = self.alpha((255.0 * item_opacity).round() as u8);
             let icon_tint = design.colors.application_text.with_alpha(item_alpha);
             frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(item_alpha)));
-            let label = ellipsize(frame, title, 11.5, (label_rect.w - occupied_width).max(0.0));
+            let label = ellipsize(
+                frame,
+                title,
+                design.typography.label,
+                (label_rect.w - occupied_width).max(0.0),
+            );
             frame.place(
                 &format!("aegis-window-switcher-label-{index}"),
                 &chrome_place(
@@ -421,7 +426,7 @@ impl Chrome for WindowSwitcher {
                                     );
                                 }
                             }
-                            frame.label_compact_sized(&label, 11.5);
+                            frame.label_compact_sized(&label, design.typography.label);
                         },
                     );
                 },

@@ -45,3 +45,4 @@ fills.
 - [Design system crate decision](../../adr/0046-design-system-crate.md)
 - [Liquid glass lens model and full-resolution capture](../../adr/0094-liquid-glass-lens-model-and-full-resolution-capture.md)
 - [Single-body liquid-glass interaction focus](../../adr/0105-single-body-liquid-glass-interaction-focus.md)
+- [Glass material roles and region-level backdrop adaptation](../../adr/0120-glass-material-roles-and-region-level-backdrop-adaptation.md)

@@ -114,12 +114,19 @@ impl SettingsModule for AppearanceModule {
         out: &mut ModuleEvents,
     ) {
         frame.heading(i18n.text(Message::Appearance), 2);
-        frame.label_wrapped_sized(i18n.text(Message::AppearanceDescription), 12.0, 560.0);
+        frame.label_wrapped_sized(
+            i18n.text(Message::AppearanceDescription),
+            design.typography.label,
+            560.0,
+        );
 
         frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::AppearanceColorScheme), 3);
             frame.row_ex(&section_heading_layout(), |frame| {
-                frame.label_sized(i18n.text(Message::AppearanceColorScheme), 12.0);
+                frame.label_sized(
+                    i18n.text(Message::AppearanceColorScheme),
+                    design.typography.label,
+                );
                 frame.flex(1.0);
                 frame.spacer(0.0);
                 let mut selected = match self.draft.color_scheme {
@@ -151,13 +158,14 @@ impl SettingsModule for AppearanceModule {
                 i18n.text(Message::AccentColor),
                 "##settings-accent-color",
                 &mut self.accent_color,
+                design,
             ) {
                 self.dirty = true;
                 self.invalid = false;
             }
 
             frame.row_ex(&section_heading_layout(), |frame| {
-                frame.label_sized(i18n.text(Message::Contrast), 12.0);
+                frame.label_sized(i18n.text(Message::Contrast), design.typography.label);
                 frame.flex(1.0);
                 frame.spacer(0.0);
                 let mut selected = i32::from(self.draft.contrast == Contrast::High);
@@ -200,6 +208,7 @@ impl SettingsModule for AppearanceModule {
                 i18n.text(Message::InterfaceFont),
                 "##settings-interface-font",
                 &mut self.font_name,
+                design,
             ) {
                 self.dirty = true;
                 self.invalid = false;
@@ -209,15 +218,19 @@ impl SettingsModule for AppearanceModule {
                 i18n.text(Message::MonospaceFont),
                 "##settings-monospace-font",
                 &mut self.monospace_font_name,
+                design,
             ) {
                 self.dirty = true;
                 self.invalid = false;
             }
             frame.row_ex(&section_heading_layout(), |frame| {
-                frame.label_sized(i18n.text(Message::TextScale), 12.0);
+                frame.label_sized(i18n.text(Message::TextScale), design.typography.label);
                 frame.flex(1.0);
                 frame.spacer(0.0);
-                frame.label_sized(&format!("{:.0}%", self.draft.text_scale * 100.0), 11.0);
+                frame.label_sized(
+                    &format!("{:.0}%", self.draft.text_scale * 100.0),
+                    design.typography.footnote,
+                );
             });
             let mut scale = self.draft.text_scale as f32;
             if frame.slider("##settings-text-scale", &mut scale, 0.5, 3.0) {
@@ -233,6 +246,7 @@ impl SettingsModule for AppearanceModule {
                 i18n.text(Message::IconTheme),
                 "##settings-icon-theme",
                 &mut self.icon_theme,
+                design,
             ) {
                 self.dirty = true;
                 self.invalid = false;
@@ -242,15 +256,19 @@ impl SettingsModule for AppearanceModule {
                 i18n.text(Message::CursorTheme),
                 "##settings-cursor-theme",
                 &mut self.cursor_theme,
+                design,
             ) {
                 self.dirty = true;
                 self.invalid = false;
             }
             frame.row_ex(&section_heading_layout(), |frame| {
-                frame.label_sized(i18n.text(Message::CursorSize), 12.0);
+                frame.label_sized(i18n.text(Message::CursorSize), design.typography.label);
                 frame.flex(1.0);
                 frame.spacer(0.0);
-                frame.label_sized(&format!("{} px", self.draft.cursor_size), 11.0);
+                frame.label_sized(
+                    &format!("{} px", self.draft.cursor_size),
+                    design.typography.footnote,
+                );
             });
             let mut size = self.draft.cursor_size as f32;
             if frame.slider("##settings-cursor-size", &mut size, 8.0, 128.0) {
@@ -260,9 +278,17 @@ impl SettingsModule for AppearanceModule {
         });
 
         if self.invalid {
-            frame.label_wrapped_sized(i18n.text(Message::InvalidAppearanceSettings), 11.0, 560.0);
+            frame.label_wrapped_sized(
+                i18n.text(Message::InvalidAppearanceSettings),
+                design.typography.footnote,
+                560.0,
+            );
         }
-        frame.label_wrapped_sized(i18n.text(Message::AppearanceApplyHint), 11.0, 560.0);
+        frame.label_wrapped_sized(
+            i18n.text(Message::AppearanceApplyHint),
+            design.typography.footnote,
+            560.0,
+        );
         frame.row_ex(
             &LayoutOpts {
                 height: 32.0,
@@ -299,7 +325,13 @@ impl SettingsModule for AppearanceModule {
     }
 }
 
-fn text_field(frame: &mut Frame, label: &str, id: &str, buffer: &mut TextBuf) -> bool {
+fn text_field(
+    frame: &mut Frame,
+    label: &str,
+    id: &str,
+    buffer: &mut TextBuf,
+    design: &Design,
+) -> bool {
     let mut changed = false;
     frame.column_ex(
         &LayoutOpts {
@@ -308,7 +340,7 @@ fn text_field(frame: &mut Frame, label: &str, id: &str, buffer: &mut TextBuf) ->
             ..Default::default()
         },
         |frame| {
-            frame.label_sized(label, 11.0);
+            frame.label_sized(label, design.typography.footnote);
             changed = frame.textfield(id, buffer);
         },
     );

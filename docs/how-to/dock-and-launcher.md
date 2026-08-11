@@ -68,18 +68,29 @@ need to choose one explicitly.
 ## Pin or Unpin a Dock Application
 
 The Dock splits into two sections: pinned applications on the left, and
-applications that are running but not pinned on the right of a divider. A
+applications that are running but not pinned on the right of a divider. Both
+sections show one tile per application, however many windows it has. A
 transient tile disappears again when its last window closes.
 
 An unconfigured Dock contains only the leading `Applications` tile. Start an
 application from the launcher to make its transient tile available for
 pinning.
 
+Use the application menu:
+
 1. Right-click a Dock tile.
 2. Select `Keep in Dock` to pin a transient application, or `Remove from Dock`
    to unpin a pinned one.
 
-The change is written back to the `[dock] pinned` list in the
+Or drag the tile across the divider:
+
+1. Press a tile and drag it. Neighbouring tiles shift aside to preview the
+   landing slot.
+2. Drop a transient tile inside the pinned strip to pin it at that position.
+   Drop a pinned tile past the divider to unpin it; if it is still running,
+   it stays as a transient tile.
+
+Both paths write the change back to the `[dock] pinned` list in the
 [Configuration Reference](../reference/config.md#dock). To opt into automatic
 selection, empty the list and set `autopopulate = true`.
 

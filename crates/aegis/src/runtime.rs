@@ -13,6 +13,7 @@ mod config;
 mod confirm_pick;
 mod damage;
 mod event_loop;
+mod glass_adapt;
 mod idle;
 mod input;
 mod interaction_domain;
@@ -41,6 +42,7 @@ use commands::*;
 use config::*;
 use confirm_pick::*;
 use damage::*;
+use glass_adapt::*;
 use idle::*;
 use input::*;
 use interaction_domain::*;
@@ -127,15 +129,16 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         "aegis {} — autonomous surface shell",
         env!("CARGO_PKG_VERSION")
     );
+    // Launching outside the delegated systemd service (bare TTY, nested
+    // development) is a documented environment limitation, not a defect: the
+    // limitation is reported again if a sandboxed launch is ever requested,
+    // so startup stays at info level.
     match aegis_launcher::prepare_interaction_domain_host() {
         Ok(root) => log::info!(
             "Interaction Domain cgroup host prepared under delegated root {}",
             root.display()
         ),
-        Err(error) => log::warn!(
-            "InteractionDomain application launch disabled until Aegis runs in its own \
-             cpu/memory/pids-delegated systemd service: {error}"
-        ),
+        Err(error) => log::info!("{error}"),
     }
 
     // Notification queue (M9, over the IPC): shared between the IPC handler
@@ -705,8 +708,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::mpsc::channel::<WallpaperControlRequest>();
     let (interaction_domain_capture_tx, interaction_domain_capture_rx) =
         std::sync::mpsc::channel::<InteractionDomainCaptureRequest>();
-    let (window_capture_tx, window_capture_rx) =
-        std::sync::mpsc::channel::<WindowCaptureRequest>();
+    let (window_capture_tx, window_capture_rx) = std::sync::mpsc::channel::<WindowCaptureRequest>();
     let (interaction_domain_observe_tx, interaction_domain_observe_rx) =
         std::sync::mpsc::sync_channel::<InteractionDomainObserveRequest>(1_024);
     let (actor_action_tx, actor_action_rx) =
@@ -922,6 +924,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         surface,
         canvas,
         launcher_backdrop,
+        glass_adaptation: GlassAdaptation::new(),
+        submitted_glass_ids: Vec::new(),
         screenshot_freeze,
         pending_capture,
         capture_worker,

@@ -9,7 +9,7 @@
 //! [`ChromeEvents::confirm_pick_answered`]. Ordinary modal chrome over the
 //! live scene: no freeze, no screen-content capture.
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
+use lens::{Align, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -56,7 +56,7 @@ pub enum ConfirmPickStyle {
 pub enum ConfirmAnswer {
     /// Yes/no style: the affirmative button (or Enter).
     Confirmed,
-    /// Either style: Deny/Cancel, Escape, or a click outside the panel.
+    /// Either style: Deny/Cancel, `Escape`, or the compositor panic chord.
     Cancelled,
     /// Grant style: allow this one operation only; nothing is recorded.
     AllowOnce,
@@ -208,11 +208,11 @@ impl ConfirmPrompt {
     }
 
     /// Handle one primary-button press at output-space `(x, y)`: answers on
-    /// the style's buttons, or cancels on a click outside the panel.
+    /// the style's buttons. Clicks outside the panel are ignored: consent
+    /// must be a deliberate choice, never an accidental click.
     fn press_at(&mut self, x: f32, y: f32, display: (f32, f32), out: &mut ChromeEvents) {
         let layout = self.layout(display);
         if !contains(layout.panel, x, y) {
-            self.answer(ConfirmAnswer::Cancelled, out);
             return;
         }
         match self.style {
@@ -289,13 +289,18 @@ impl Chrome for ConfirmPrompt {
             |_| {},
         );
 
-        let title = ellipsize(frame, &self.title, 15.0, layout.title.w);
+        let title = ellipsize(
+            frame,
+            &self.title,
+            design.typography.headline,
+            layout.title.w,
+        );
         frame.place(
             "aegis-confirm-prompt-title",
-            &materials::chrome_place(layout.title, transparent()),
+            &materials::chrome_place(layout.title, materials::transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
-                    frame.label_compact_sized(&title, 15.0);
+                    frame.label_compact_sized(&title, design.typography.headline);
                 });
             },
         );
@@ -313,13 +318,13 @@ impl Chrome for ConfirmPrompt {
                 w: layout.body.w,
                 h: BODY_LINE_H,
             };
-            let line = ellipsize(frame, line, 12.0, line_rect.w);
+            let line = ellipsize(frame, line, design.typography.label, line_rect.w);
             frame.place(
                 &format!("aegis-confirm-prompt-body-{index}"),
-                &materials::chrome_place(line_rect, transparent()),
+                &materials::chrome_place(line_rect, materials::transparent()),
                 |frame| {
                     frame.row_ex(&stretch_top(line_rect), |frame| {
-                        frame.label_compact_sized(&line, 12.0);
+                        frame.label_compact_sized(&line, design.typography.label);
                     });
                 },
             );
@@ -346,7 +351,7 @@ impl Chrome for ConfirmPrompt {
                     ),
                     |frame| {
                         frame.column_ex(&stretch(layout.cancel), |frame| {
-                            frame.label_sized("Cancel", 13.0);
+                            frame.label_sized("Cancel", design.typography.body);
                         });
                     },
                 );
@@ -364,7 +369,7 @@ impl Chrome for ConfirmPrompt {
                     ),
                     |frame| {
                         frame.column_ex(&stretch(layout.accept), |frame| {
-                            frame.label_sized(&self.accept_label.clone(), 13.0);
+                            frame.label_sized(&self.accept_label.clone(), design.typography.body);
                         });
                     },
                 );
@@ -398,7 +403,7 @@ impl Chrome for ConfirmPrompt {
                         &materials::chrome_place(*rect, opts),
                         |frame| {
                             frame.column_ex(&stretch(*rect), |frame| {
-                                frame.label_sized(label, 13.0);
+                                frame.label_sized(label, design.typography.body);
                             });
                         },
                     );
@@ -494,10 +499,13 @@ impl Chrome for ConfirmPrompt {
         }
     }
 
-    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+    fn command(&mut self, command: &ChromeCommand<'_>, out: &mut ChromeEvents) {
         match command {
             ChromeCommand::StartConfirmPick(params) => self.start_confirm_pick((**params).clone()),
             ChromeCommand::CancelConfirmPick if self.active => self.active = false,
+            ChromeCommand::DismissModal if self.active => {
+                self.answer(ConfirmAnswer::Cancelled, out);
+            }
             _ => {}
         }
     }
@@ -568,14 +576,6 @@ fn stretch_top(rect: Rect) -> LayoutOpts {
         width: rect.w,
         height: rect.h,
         ..Default::default()
-    }
-}
-
-fn transparent() -> LayoutOpts {
-    LayoutOpts {
-        bg: Color::TRANSPARENT,
-        pad: 0.0,
-        ..materials::surface_layout()
     }
 }
 
@@ -701,12 +701,23 @@ mod tests {
     }
 
     #[test]
-    fn grant_click_outside_denies() {
+    fn grant_click_outside_keeps_the_prompt_open() {
         let mut prompt = ConfirmPrompt::new();
         prompt.start_confirm_pick(grant_params());
         let mut out = ChromeEvents::default();
         prompt.press_at(4.0, 4.0, (1280.0, 800.0), &mut out);
+        assert_eq!(out.confirm_pick_answered, None);
+        assert!(prompt.confirm_pick_active());
+    }
+
+    #[test]
+    fn the_panic_chord_command_cancels() {
+        let mut prompt = ConfirmPrompt::new();
+        prompt.start_confirm_pick(grant_params());
+        let mut out = ChromeEvents::default();
+        prompt.command(&ChromeCommand::DismissModal, &mut out);
         assert_eq!(out.confirm_pick_answered, Some(ConfirmAnswer::Cancelled));
+        assert!(!prompt.confirm_pick_active());
     }
 
     #[test]

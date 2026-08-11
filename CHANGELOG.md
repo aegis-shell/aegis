@@ -7,6 +7,74 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- Dock tiles can be dragged across the section divider: dropping a
+  transient tile inside the pinned strip pins it at the previewed slot,
+  and dropping a pinned tile past the divider unpins it. The strip
+  reflows around the dragged tile — and the divider moves with it — so
+  the landing position is always visible.
+- `Ctrl+Alt+Escape` is a compositor-owned panic chord that forces every
+  open high-priority modal dialog to its safe-negative exit (consent
+  prompts answer denied/cancelled, the low-battery alert dismisses). It
+  is matched before chrome and client input routing, works while modal
+  chrome owns the keyboard, and is deliberately not a configurable
+  `[[keybind]]` entry.
+
+### Changed
+
+- The Dock's transient section now aggregates like the pinned strip: one
+  tile per running application with every window folded in (shared
+  context menu, multi-window previews, and the running stadium dot),
+  instead of one tile per window. The pinned/transient section gap now
+  keeps exactly one ordinary icon gap of clearance on each side of the
+  divider hairline.
+- High-priority modal dialogs — the capability, confirmation, secret,
+  and app-picker consent prompts and the low-battery alert — no longer
+  dismiss on clicks outside the panel; they leave only through their
+  buttons, `Escape`/`Enter`, or the panic chord, so an accidental click
+  can never silently answer a security prompt.
+- The built-in four-finger vertical touchpad swipe opens the command
+  panel again (down opens, up closes), reversing the ADR-0116 rebind to
+  the overview (ADR-0119). The overview keeps `Super+O` and now documents
+  its `Escape` dismissal; the overview gesture remains available as a
+  `[[gesture]]` override (`fingers = 4`, `axis = "vertical"`,
+  `action = "overview"`).
+- Context menus and tooltips use new legibility-tuned liquid-glass
+  roles (ADR-0120): stronger interior frost and adaptive tint, damped
+  backdrop chroma, and a plate polarity pinned against the text tone,
+  keeping menu text at WCAG AA contrast over busy backdrops such as
+  terminals. The Dock and launcher context menus additionally measure
+  their backdrop on the GPU and relax the tint again over calm,
+  friendly content, so the boosted recipe is the worst-case budget
+  rather than the resting look.
+- The compositor's liquid-glass pass moved from `flux::LiquidGlass*` to
+  the new `prism` material library (Optics ADR-0063), which provides
+  per-body material overrides and the backdrop-statistics reduction the
+  menu adaptation consumes; the workspace pins an Optics tag containing
+  prism-rs.
+- Backdrop effect caching split into capture-side and material-side
+  keys: opacity fades and adaptation steps now rebuild only the
+  blur/glass composite over the still-valid capture instead of
+  re-rendering the scene, removing the tooltip-fade capture churn.
+- Design tokens consolidated in `aegis-design`: a chrome type scale,
+  the compositor scene palette (clear colors, scrims, glass tint), the
+  dock palette, critical/validation emphasis colors, and chip/cell/
+  application radii. Chrome components, the modal prompts, and
+  aegis-lock read the shared tokens and helper factories instead of
+  local literals.
+
+### Fixed
+
+- A Dock hover preview card came up blank whenever the previewed window
+  was fully covered on the desktop: the live-preview path read the
+  physical-desktop surface lists, which cull occluded windows. It now
+  uses the preview-dedicated surface lists, matching the window
+  switcher.
+- The liquid-glass `glass_tint` participated in no backdrop cache key,
+  so a color-scheme flip could leave a stale composite on screen; it is
+  now part of the material-side key.
+
 ## [0.0.18] - 2026-08-11
 
 ### Changed

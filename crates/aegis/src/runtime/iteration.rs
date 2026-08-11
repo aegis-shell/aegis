@@ -333,7 +333,8 @@ impl CompositorRuntime {
                     reply,
                     security_generation,
                     picked,
-                } => {                    let result = if self.capture_worker.permits(security_generation) {
+                } => {
+                    let result = if self.capture_worker.permits(security_generation) {
                         picked
                     } else {
                         Err("capture authority changed before delivery".into())

@@ -167,7 +167,11 @@ impl SettingsModule for PowerModule {
         out: &mut ModuleEvents,
     ) {
         frame.heading(i18n.text(Message::PowerManagement), 2);
-        frame.label_wrapped_sized(i18n.text(Message::PowerManagementDescription), 12.0, 560.0);
+        frame.label_wrapped_sized(
+            i18n.text(Message::PowerManagementDescription),
+            design.typography.label,
+            560.0,
+        );
 
         frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::AutomaticIdle), 3);
@@ -197,6 +201,7 @@ impl SettingsModule for PowerModule {
                 Message::DimDisplayDescription,
                 &mut self.draft.dim_after_seconds,
                 editable,
+                design,
             ) {
                 if before != (self.draft.dim_after_seconds != 0) {
                     self.toggle_stage(0, !before);
@@ -207,10 +212,13 @@ impl SettingsModule for PowerModule {
             }
             if self.draft.dim_after_seconds != 0 {
                 frame.row_ex(&section_heading_layout(), |frame| {
-                    frame.label_sized(i18n.text(Message::DimLevel), 12.0);
+                    frame.label_sized(i18n.text(Message::DimLevel), design.typography.label);
                     frame.flex(1.0);
                     frame.spacer(0.0);
-                    frame.label_sized(&format!("{}%", self.draft.dim_percent), 11.0);
+                    frame.label_sized(
+                        &format!("{}%", self.draft.dim_percent),
+                        design.typography.footnote,
+                    );
                 });
                 let mut percent = f32::from(self.draft.dim_percent);
                 if self.draft.enabled && frame.slider("##power-dim-level", &mut percent, 1.0, 100.0)
@@ -233,6 +241,7 @@ impl SettingsModule for PowerModule {
                 Message::LockAfterIdleDescription,
                 &mut self.draft.lock_after_seconds,
                 editable,
+                design,
             ) {
                 if before != (self.draft.lock_after_seconds != 0) {
                     self.toggle_stage(1, !before);
@@ -255,6 +264,7 @@ impl SettingsModule for PowerModule {
                 Message::TurnDisplayOffDescription,
                 &mut self.draft.display_off_after_seconds,
                 editable,
+                design,
             ) {
                 if before != (self.draft.display_off_after_seconds != 0) {
                     self.toggle_stage(2, !before);
@@ -277,6 +287,7 @@ impl SettingsModule for PowerModule {
                 Message::SuspendAutomaticallyDescription,
                 &mut self.draft.suspend_after_seconds,
                 editable,
+                design,
             ) {
                 if before != (self.draft.suspend_after_seconds != 0) {
                     self.toggle_stage(3, !before);
@@ -289,9 +300,17 @@ impl SettingsModule for PowerModule {
 
         self.invalid = self.draft.validate().is_err();
         if self.invalid {
-            frame.label_wrapped_sized(i18n.text(Message::InvalidPowerSettings), 11.0, 560.0);
+            frame.label_wrapped_sized(
+                i18n.text(Message::InvalidPowerSettings),
+                design.typography.footnote,
+                560.0,
+            );
         }
-        frame.label_wrapped_sized(i18n.text(Message::PowerApplyHint), 11.0, 560.0);
+        frame.label_wrapped_sized(
+            i18n.text(Message::PowerApplyHint),
+            design.typography.footnote,
+            560.0,
+        );
         frame.row_ex(
             &LayoutOpts {
                 height: 32.0,
@@ -326,6 +345,7 @@ impl SettingsModule for PowerModule {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_editor(
     frame: &mut Frame,
     i18n: &Localizer,
@@ -334,6 +354,7 @@ fn stage_editor(
     description: Message,
     seconds: &mut u32,
     editable: bool,
+    design: &Design,
 ) -> bool {
     let mut changed = false;
     let mut enabled = *seconds != 0;
@@ -378,7 +399,7 @@ fn stage_editor(
                     changed = true;
                 }
             } else {
-                frame.label_sized(&format_duration(*seconds, i18n), 11.0);
+                frame.label_sized(&format_duration(*seconds, i18n), design.typography.footnote);
             }
         });
     }

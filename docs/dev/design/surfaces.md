@@ -30,7 +30,7 @@ extend `aegis-design` with a semantic factory and document it here.
 |-------|-------|---------|
 | `glass_surface` | white, alpha 12 | Minimal foreground tint shared by analytic glass panels |
 | `glass_border` | alpha 0 | Reserved; the glass rim supplies the edge |
-| `popover_surface` | white, alpha 38 | Popover and menu bodies over frost |
+| `popover_surface` | white, alpha 110 | Popover and menu bodies over frost |
 | `popover_border` | white, alpha 72, 1 px | Popover edge against content |
 | `card_surface` | white, alpha 14 | Card fill on panels |
 | `radii.glass_panel` | 18 px | Shared outer radius for Dock, live-preview, and switcher glass panels |
@@ -49,16 +49,40 @@ extend `aegis-design` with a semantic factory and document it here.
 ## Liquid Glass roles
 
 Liquid Glass uses semantic roles rather than numbered intensity levels.
-Every role keeps the same refraction, adaptive tint, and rim-light identity;
-only the per-body elevation shadow changes.
+Every role keeps the same refraction, rim-light identity, and curve
+shapes. Roles vary in two ways: the per-body elevation shadow, and —
+for text-bearing bodies — the material strengths and plate polarity
+that keep glyphs legible over arbitrary content (see
+[Liquid Glass](liquid-glass.md)).
 
 | Role | Shadow alpha | Blur | Y offset | Use |
 |------|--------------|------|----------|-----|
-| `Chip` | 0.16 | 4 px | 2 px | Compact HUD bodies |
-| `Tooltip` | 0.14 | 10 px | 5 px | Dock labels and similar attached hints |
-| `FloatingPanel` | 0.18 | 16 px | 8 px | Preview panels, switcher, and screenshot selection |
-| `ProminentPanel` | 0.20 | 18 px | 9 px | Primary floating surfaces such as Prism |
+| `Chip` | 0.16 | 4 px | 2 px | HUD chips |
+| `Tooltip` | 0.14 | 10 px | 5 px | Dock hover labels and similar attached hints |
+| `Menu` | 0.18 | 16 px | 8 px | Text-bearing transient surfaces: the Dock context menu and the launcher menu |
+| `FloatingPanel` | 0.18 | 16 px | 8 px | Dock live previews, the window switcher, and the screenshot selection |
+| `ProminentPanel` | 0.20 | 18 px | 9 px | Modal prompts, the app picker, and Prism |
 | `Dock` | 0.20 | 12 px | 6 px | The resting Dock; morphing scales blur and offset with its body |
+
+`Menu` and `Tooltip` are the legibility roles: they multiply interior
+frost and adaptive tint, damp the backdrop's surviving chroma, and pin
+the plate polarity against their text tone (smoke under the dark
+appearance's light text, pearl under the light appearance's dark text).
+The other roles keep the reference recipe and the shader's per-pixel
+polarity. The exact strengths are tokens in `aegis-design`.
+
+The current role-to-component mapping:
+
+| Component | Role |
+|-----------|------|
+| App context menu (Dock, launcher) | `Menu` |
+| Dock bar | `Dock` |
+| Dock hover surface | `Tooltip`, or `FloatingPanel` when it hosts live previews |
+| Window switcher | `FloatingPanel` |
+| Screenshot selection | `FloatingPanel` |
+| Modal prompts and app picker | `ProminentPanel` |
+| Prism | `ProminentPanel` |
+| HUD | `Chip` |
 
 ## Layering rules
 

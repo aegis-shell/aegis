@@ -248,6 +248,32 @@ pub fn fit(slot: Rect, content: Size) -> Rect {
     }
 }
 
+/// The thumbnail rect during the reveal fly-in: the window's real geometry
+/// (`window`) at `t = 0`, its aspect-fitted grid cell at `t = 1`, linearly
+/// interpolated between. The compositor's thumbnail pass and the chrome's
+/// cell frames, labels, and hit-testing must all resolve geometry through
+/// this one function so a cell's border tracks its flying thumbnail exactly
+/// instead of sitting at the final grid position from the first frame.
+pub fn animated_cell(slot: Rect, window: Rect, t: f32) -> Rect {
+    let cell = fit(slot, window.size);
+    if t >= 1.0 {
+        return cell;
+    }
+    lerp_rect(window, cell, t)
+}
+
+/// Linear interpolation between two rects, used by the overview fly-in to
+/// move each thumbnail from the window's real geometry to its grid cell.
+fn lerp_rect(from: Rect, to: Rect, t: f32) -> Rect {
+    let l = |a: i32, b: i32| (a as f32 + (b - a) as f32 * t).round() as i32;
+    Rect::new(
+        l(from.origin.x, to.origin.x),
+        l(from.origin.y, to.origin.y),
+        l(from.size.w, to.size.w).max(1),
+        l(from.size.h, to.size.h).max(1),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

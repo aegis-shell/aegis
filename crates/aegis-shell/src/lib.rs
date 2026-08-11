@@ -25,7 +25,6 @@ use lens::{Frame, Ui};
 
 pub mod chrome;
 pub mod i18n;
-pub mod modal;
 pub mod persona;
 mod popup;
 pub mod preview;
@@ -39,7 +38,6 @@ pub use chrome::{
     SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
-pub use modal::ModalApplicationSpec;
 pub use popup::{POPUP_GAP, POPUP_MARGIN, PopupSide, place_popup, place_popup_side};
 pub use preview::{LivePreviewPresentation, PreviewCard, WindowSwitcherPresentation};
 pub use system::{
@@ -143,7 +141,7 @@ impl From<lens::Rect> for BackdropRegion {
 /// blur and edge lighting, so rounded corners and visibility cannot diverge.
 /// The drop shadow is cast by the body's own SDF; the component configures
 /// it in logical pixels and `shadow_alpha` 0 disables it.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiquidGlassRegion {
     pub bounds: BackdropRegion,
     pub corner_radius: f32,
@@ -151,9 +149,74 @@ pub struct LiquidGlassRegion {
     pub shadow_alpha: f32,
     pub shadow_blur: f32,
     pub shadow_offset_y: f32,
+    /// Material-strength multipliers from the role's
+    /// [`aegis_design::GlassStyle`] (1.0 = the shared reference recipe).
+    pub frost_strength: f32,
+    pub tint_strength: f32,
+    pub saturation: f32,
+    /// Role-pinned plate polarity: 0 pins the whole body to the smoke plate,
+    /// 1 to pearl; negative keeps the shader's per-pixel adaptive polarity.
+    pub plate_polarity: f32,
+    /// Stable cross-frame identity. A component that opts into backdrop
+    /// adaptation declares a unique non-zero id (see
+    /// [`liquid_glass_region_id`]); the compositor keys temporal smoothing
+    /// on it and writes back `adaptation`. 0 = anonymous (the shader's
+    /// legacy per-pixel adaptive tint).
+    pub id: u64,
+    /// Compositor-fed smoothed backdrop statistics for this body. Components
+    /// always declare `None`; the adaptation pass fills it for identified
+    /// regions before the regions are mapped to prism groups.
+    pub adaptation: Option<LiquidGlassAdaptation>,
     /// Optional optical emphasis inside this body. This is one field in the
     /// parent's material, not a nested glass body.
     pub focus: Option<LiquidGlassFocus>,
+}
+
+/// Smoothed per-region backdrop statistics: `plate_luminance` is the
+/// region-mean backdrop luminance (the compositor uses it to scale the
+/// role's tint strength — calm dark backdrops recover translucency);
+/// `backdrop_energy` is the high-frequency energy the shader's tint boost
+/// consumes. Both are 0..1 and temporally smoothed by the compositor.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiquidGlassAdaptation {
+    pub plate_luminance: f32,
+    pub backdrop_energy: f32,
+}
+
+/// Derive a stable liquid-glass region identity from a component's layer id
+/// (FNV-1a). Layer ids are already unique static strings across the product,
+/// so the hash is collision-safe for this use.
+#[must_use]
+pub fn liquid_glass_region_id(layer_id: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in layer_id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+impl Default for LiquidGlassRegion {
+    /// The reference-recipe body: unit material strengths, legacy per-pixel
+    /// polarity, anonymous. `from_role` is the product constructor; this
+    /// exists for tests and incremental struct updates.
+    fn default() -> Self {
+        Self {
+            bounds: BackdropRegion::default(),
+            corner_radius: 0.0,
+            opacity: 0.0,
+            shadow_alpha: 0.0,
+            shadow_blur: 0.0,
+            shadow_offset_y: 0.0,
+            frost_strength: 1.0,
+            tint_strength: 1.0,
+            saturation: 1.0,
+            plate_polarity: -1.0,
+            id: 0,
+            adaptation: None,
+            focus: None,
+        }
+    }
 }
 
 impl LiquidGlassRegion {
@@ -174,8 +237,21 @@ impl LiquidGlassRegion {
             shadow_alpha: style.shadow_alpha,
             shadow_blur: style.shadow_blur,
             shadow_offset_y: style.shadow_offset_y,
+            frost_strength: style.frost_strength,
+            tint_strength: style.tint_strength,
+            saturation: style.saturation,
+            plate_polarity: style.plate_polarity,
+            id: 0,
+            adaptation: None,
             focus: None,
         }
+    }
+
+    /// Opt this body into backdrop adaptation under a stable identity.
+    #[must_use]
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = id;
+        self
     }
 
     /// Attach the parent's single optical interaction focus.
@@ -448,6 +524,13 @@ pub enum ChromeCommand<'a> {
     CancelCapabilityPick,
     StartBatteryAlert(&'a BatteryAlertParams),
     CancelBatteryAlert,
+    /// Force every active high-priority modal overlay to its safe-negative
+    /// exit (the compositor panic chord, `Ctrl+Alt+Escape`). Consent prompts
+    /// answer denied/cancelled through their normal [`ChromeEvents`] answer
+    /// events — unlike the per-dialog `Cancel*` force-closes above, which
+    /// emit no answer — so waiting IPC requests resolve exactly as if the
+    /// user had pressed `Escape`. Non-modal components ignore it.
+    DismissModal,
 }
 
 /// Borrowed host snapshot or presentation-policy update.
@@ -551,6 +634,15 @@ pub trait Chrome {
     /// Whether this component temporarily owns the chrome presentation band.
     /// While a modal component is active, the shell skips ordinary components
     /// so visually covered controls cannot still respond to pointer input.
+    ///
+    /// A modal component owns the session until it is dismissed, so it must
+    /// always offer a way out: render an explicit dismissal affordance (a
+    /// button), map `Escape` to its safe-negative answer in
+    /// [`Chrome::key_char`], and honor [`ChromeCommand::DismissModal`] — the
+    /// compositor panic chord, `Ctrl+Alt+Escape` — with that same answer.
+    /// High-priority consent and alert dialogs must not dismiss on clicks
+    /// outside the panel: an accidental click must never silently answer a
+    /// security question.
     fn modal_active(&self) -> bool {
         false
     }
@@ -612,17 +704,20 @@ pub trait Chrome {
         false
     }
 
-    /// Whether the component's overview mode is currently open — the main
-    /// loop swaps the desktop scene for the overview thumbnail grid.
-    /// Default `false`.
+    /// Whether the component's overview mode is currently open. The main
+    /// loop swaps the desktop scene for the overview thumbnail grid while
+    /// this holds or the reveal animation is still running (see
+    /// [`Chrome::overview_progress`]). Default `false`.
     fn overview_active(&self) -> bool {
         false
     }
 
     /// The component's overview reveal progress (0 = hidden, 1 = fully
-    /// open). The compositor feeds it to the thumbnail pass so windows fly
-    /// in from their real positions instead of popping onto the grid.
-    /// Default `0`.
+    /// open). The compositor samples it at the start of the frame — before
+    /// chrome render advances the animation — and feeds it to the thumbnail
+    /// pass so windows fly in from their real positions instead of popping
+    /// onto the grid; chrome geometry must therefore track the pre-advance
+    /// value. Default `0`.
     fn overview_progress(&self) -> f32 {
         0.0
     }
@@ -1142,8 +1237,9 @@ impl Shell {
         self.broadcast_command(ChromeCommand::ToggleOverview);
     }
 
-    /// Whether overview mode is currently open — the main loop swaps the
-    /// desktop scene for the overview thumbnail grid while this holds.
+    /// Whether overview mode is currently open. The main loop swaps the
+    /// desktop scene for the overview thumbnail grid while this holds or
+    /// the reveal animation is still running (see [`Shell::overview_progress`]).
     pub fn overview_active(&self) -> bool {
         self.components.iter().any(|c| c.overview_active())
     }
@@ -1408,6 +1504,14 @@ impl Shell {
     /// Force-close the low-battery alert.
     pub fn cancel_battery_alert(&mut self) {
         self.broadcast_command(ChromeCommand::CancelBatteryAlert);
+    }
+
+    /// Force every active high-priority modal overlay to its safe-negative
+    /// exit: the compositor panic chord (`Ctrl+Alt+Escape`). Components
+    /// answer through their normal cancellation events, so waiting IPC
+    /// requests resolve exactly as if the user had pressed `Escape`.
+    pub fn dismiss_modal_overlays(&mut self) {
+        self.broadcast_command(ChromeCommand::DismissModal);
     }
 
     /// Whether the low-battery alert is currently open.
@@ -2012,7 +2116,11 @@ mod tests {
             &exclusive, true, true, false, true
         ));
         assert!(!participates_in_shell_pass(
-            &decoration, true, true, false, true
+            &decoration,
+            true,
+            true,
+            false,
+            true
         ));
     }
 

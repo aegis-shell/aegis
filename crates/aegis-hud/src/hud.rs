@@ -19,11 +19,12 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aegis_design::{Design, GlassRole, materials::chrome_place};
+use aegis_design::materials::{chrome_place, sized, sized_fill};
+use aegis_design::{Design, GlassRole, themes};
 use aegis_model::notify::{Notification, NotificationQueue};
 use aegis_model::window::{SpaceUse, Window};
 use aegis_model::workspace::WorkspaceSnapshot;
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect, Theme};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 use aegis_shell::{
     BackdropRegion, BatteryStatus, Chrome, ChromeEvents, ChromeUpdate, HUD_HEIGHT, IconSet,
@@ -42,7 +43,6 @@ const MIN_WORKSPACE_SLOTS: usize = 2;
 const CHIP_TOP: f32 = 8.0;
 const CHIP_SIDE: f32 = 8.0;
 const CHIP_PAD_X: f32 = 10.0;
-const CHIP_RADIUS: f32 = 16.0;
 const CHIP_HEIGHT: f32 = HUD_HEIGHT;
 const CELL_ICON: f32 = 22.0;
 const CELL_BATTERY: f32 = 52.0;
@@ -511,13 +511,13 @@ impl Chrome for Hud {
             let chip = layout.chips[LEFT];
             f.place(
                 "aegis-hud-chip-left",
-                &chrome_place(chip, chip_opts(fade)),
+                &chrome_place(chip, chip_opts(&design, fade)),
                 |f| {
                     f.column_ex(&sized(chip.w, chip.h), |_| {});
                 },
             );
             f.set_theme(
-                faded_theme(original_theme, fade).with_fg(hud_foreground_color(&design, fade)),
+                themes::faded(original_theme, fade).with_fg(hud_foreground_color(&design, fade)),
             );
             let mut x = chip.x + CHIP_PAD_X;
             let mut cell = |width: f32| {
@@ -651,14 +651,22 @@ impl Chrome for Hud {
                     "aegis-hud-tray-overflow",
                     rect,
                     &format!("+{}", fold.hidden.min(99)),
-                    11.0,
+                    design.typography.footnote,
                     fade,
                 );
             }
 
             // Clock and notification bell close out the left chip (ADR-0083).
             let rect = cell(CELL_CLOCK);
-            render_text(f, &design, "aegis-hud-clock", rect, &self.clock, 13.5, fade);
+            render_text(
+                f,
+                &design,
+                "aegis-hud-clock",
+                rect,
+                &self.clock,
+                design.typography.body,
+                fade,
+            );
 
             let bell_w = if notifications.is_empty() { 34.0 } else { 50.0 };
             let rect = cell(bell_w);
@@ -685,7 +693,7 @@ impl Chrome for Hud {
             let chip = layout.chips[CENTER];
             f.place(
                 "aegis-hud-chip-center",
-                &chrome_place(chip, chip_opts(fade)),
+                &chrome_place(chip, chip_opts(&design, fade)),
                 |f| {
                     f.column_ex(&sized(chip.w, chip.h), |_| {});
                 },
@@ -863,7 +871,7 @@ impl Chrome for Hud {
                     &self.design,
                     GlassRole::Chip,
                     BackdropRegion::from(*chip),
-                    CHIP_RADIUS,
+                    self.design.radii.chip,
                     *fade,
                 )
             })

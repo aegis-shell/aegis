@@ -21,8 +21,6 @@ use crate::profile::{Profile, clock_strings};
 
 const INSTANCE_EXTENSIONS: [&CStr; 2] = [c"VK_KHR_surface", c"VK_KHR_wayland_surface"];
 const DEVICE_EXTENSIONS: [&CStr; 1] = [c"VK_KHR_swapchain"];
-const REJECTION_RGB: [u8; 3] = [255, 72, 84];
-const VALIDATION_RGB: [u8; 3] = [190, 226, 255];
 const AVATAR_CAMERA: aegis_shell::persona::VrmCamera =
     aegis_shell::persona::VrmCamera::new(28.0, 0.25, 0.48, 0.0);
 
@@ -220,14 +218,12 @@ impl Graphics {
         connection: &Connection,
         wl_surface: &wl_surface::WlSurface,
         logical_size: (u32, u32),
-        scale: i32,
+        scale: f32,
     ) -> Result<LockRenderSurface, RenderError> {
-        let scale = scale.max(1);
-        wl_surface.set_buffer_scale(scale);
-        let physical_size = (
-            logical_size.0.max(1).saturating_mul(scale as u32),
-            logical_size.1.max(1).saturating_mul(scale as u32),
-        );
+        // Buffer scale is owned by the caller: fractional-scale sessions keep
+        // `wl_surface.buffer_scale` at 1 and carry the density through a
+        // `wp_viewport` destination, so this code must not touch it.
+        let physical_size = physical_size(logical_size, scale);
         let vk_surface = self.ash.create_surface(connection, wl_surface)?;
         let surface = match unsafe {
             flux::Surface::from_vk(
@@ -361,13 +357,25 @@ impl Graphics {
     }
 }
 
+/// Buffer extent for one logical size at an arbitrary (possibly fractional)
+/// output scale. Rounded to the nearest device pixel; the compositor maps the
+/// buffer onto the surface through the `wp_viewport` destination, so a
+/// fractional product does not resample beyond sub-pixel error.
+fn physical_size(logical_size: (u32, u32), scale: f32) -> (u32, u32) {
+    let scale = scale.max(0.01);
+    (
+        (logical_size.0.max(1) as f32 * scale).round().max(1.0) as u32,
+        (logical_size.1.max(1) as f32 * scale).round().max(1.0) as u32,
+    )
+}
+
 pub struct LockRenderSurface {
     surface: flux::Surface,
     canvas: flux::Canvas,
     ui: Ui,
     vk_surface: vk::SurfaceKHR,
     logical_size: (u32, u32),
-    scale: i32,
+    scale: f32,
 }
 
 struct RenderAssets<'a> {
@@ -384,12 +392,12 @@ impl LockRenderSurface {
         surface: flux::Surface,
         vk_surface: vk::SurfaceKHR,
         logical_size: (u32, u32),
-        scale: i32,
+        scale: f32,
         design: &Design,
     ) -> Result<Self, RenderError> {
         let canvas = flux::Canvas::new(&surface)?;
         let mut ui = unsafe { Ui::with_device(device.as_raw().cast::<lens::sys::flux_device>()) }?;
-        ui.set_scale(scale as f32);
+        ui.set_scale(scale);
         ui.set_theme(themes::application(design));
         Ok(Self {
             surface,
@@ -401,18 +409,14 @@ impl LockRenderSurface {
         })
     }
 
-    pub fn resize(&mut self, logical_size: (u32, u32), scale: i32) -> Result<(), RenderError> {
-        let scale = scale.max(1);
-        let physical = (
-            logical_size.0.max(1).saturating_mul(scale as u32),
-            logical_size.1.max(1).saturating_mul(scale as u32),
-        );
+    pub fn resize(&mut self, logical_size: (u32, u32), scale: f32) -> Result<(), RenderError> {
+        let physical = physical_size(logical_size, scale);
         if self.surface.size() != physical {
             self.surface.resize(physical.0, physical.1)?;
         }
         self.logical_size = logical_size;
         self.scale = scale;
-        self.ui.set_scale(scale as f32);
+        self.ui.set_scale(scale);
         Ok(())
     }
 
@@ -450,7 +454,7 @@ impl LockRenderSurface {
                 avatar_status: assets.avatar_status,
                 visual: assets.visual,
                 logical: self.logical_size,
-                scale: self.scale as f32,
+                scale: self.scale,
                 state,
                 progress: visual_progress,
                 feedback_offset,
@@ -858,7 +862,8 @@ fn draw_materials(canvas: &flux::Canvas, presentation: MaterialPresentation<'_>)
     let field_h = layout.field_height * scale;
     match style {
         LockScreenStyle::Centered => {
-            let [error_red, error_green, error_blue] = REJECTION_RGB;
+            let (error_red, error_green, error_blue, _) =
+                visual.design.colors.critical.components();
             canvas.fill_rrect(
                 field_x,
                 field_y,
@@ -880,7 +885,7 @@ fn draw_materials(canvas: &flux::Canvas, presentation: MaterialPresentation<'_>)
                 if state.rejected() {
                     flux::rgba(error_red, error_green, error_blue, (238.0 * p) as u8)
                 } else if state.validation_pending() {
-                    let [red, green, blue] = VALIDATION_RGB;
+                    let (red, green, blue, _) = visual.design.colors.validation.components();
                     flux::rgba(red, green, blue, (168.0 * p) as u8)
                 } else {
                     flux::rgba(255, 255, 255, (62.0 * p) as u8)
@@ -889,10 +894,14 @@ fn draw_materials(canvas: &flux::Canvas, presentation: MaterialPresentation<'_>)
             );
         }
         LockScreenStyle::Cinematic => {
+            let (critical_red, critical_green, critical_blue, _) =
+                visual.design.colors.critical.components();
+            let (validation_red, validation_green, validation_blue, _) =
+                visual.design.colors.validation.components();
             let ([red, green, blue], rail_alpha) = if state.rejected() {
-                (REJECTION_RGB, 218.0)
+                ([critical_red, critical_green, critical_blue], 218.0)
             } else if state.validation_pending() {
-                (VALIDATION_RGB, 132.0)
+                ([validation_red, validation_green, validation_blue], 132.0)
             } else if state.password_len() > 0 {
                 ([245, 247, 252], 132.0)
             } else {
@@ -910,7 +919,15 @@ fn draw_materials(canvas: &flux::Canvas, presentation: MaterialPresentation<'_>)
                 && let Some(progress) = state.validation_feedback_progress(now)
             {
                 draw_cinematic_validation_sweep(
-                    canvas, field_x, field_y, field_w, field_h, scale, progress, p,
+                    canvas,
+                    field_x,
+                    field_y,
+                    field_w,
+                    field_h,
+                    scale,
+                    progress,
+                    p,
+                    visual.design.colors.validation,
                 );
             }
         }
@@ -927,10 +944,12 @@ fn draw_cinematic_validation_sweep(
     scale: f32,
     progress: f32,
     alpha: f32,
+    validation: Color,
 ) {
     let sweep_w = (field_w * 0.28).clamp(72.0 * scale, 144.0 * scale);
     let sweep_x = field_x - sweep_w + (field_w + sweep_w) * progress.clamp(0.0, 1.0);
     let rail_y = field_y + field_h - 1.5 * scale;
+    let (validation_red, validation_green, validation_blue, _) = validation.components();
     canvas.save();
     canvas.clip_rect(field_x, rail_y - 5.0 * scale, field_w, 10.0 * scale);
     canvas.fill_rect_linear_gradient(
@@ -939,7 +958,15 @@ fn draw_cinematic_validation_sweep(
         (sweep_x + sweep_w, rail_y),
         &[
             GradientStop::new(0.0, flux::rgba(150, 210, 255, 0)),
-            GradientStop::new(0.5, flux::rgba(190, 226, 255, (112.0 * alpha) as u8)),
+            GradientStop::new(
+                0.5,
+                flux::rgba(
+                    validation_red,
+                    validation_green,
+                    validation_blue,
+                    (112.0 * alpha) as u8,
+                ),
+            ),
             GradientStop::new(1.0, flux::rgba(150, 210, 255, 0)),
         ],
     );
@@ -1160,11 +1187,9 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
     let credential_label = credential_label(&dots, state.credential_revision());
     let muted = state.password_len() == 0 && !state.rejected() && !state.validation_pending();
     let credential_color = if state.rejected() {
-        let [red, green, blue] = REJECTION_RGB;
-        Color::rgba(red, green, blue, 255)
+        visual.design.colors.critical
     } else if state.validation_pending() {
-        let [red, green, blue] = VALIDATION_RGB;
-        Color::rgba(red, green, blue, 224)
+        visual.design.colors.validation.with_alpha(224)
     } else if muted {
         palette.muted
     } else {

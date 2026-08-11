@@ -127,13 +127,23 @@ pub(crate) unsafe fn fractional_scale_surface_destroyed(surface: *mut SurfaceRec
 }
 
 /// Post `wp_fractional_scale_v1.preferred_scale` for one resource, in 120ths
-/// (the wire unit). Uses the output's fractional scale.
+/// (the wire unit). Lock surfaces follow the output they were created for —
+/// which may not be the focused one; other surfaces use the focused output's
+/// fractional scale.
 pub(crate) unsafe fn send_fractional_scale(res: *mut ffi::wl_resource, state: *mut State) {
     unsafe {
         let scale_120 = if state.is_null() {
             120u32
         } else {
-            ((*state).output_geometry.scale.0 * 120.0).round() as u32
+            let scale_rec = ffi::wl_resource_get_user_data(res) as *mut FractionalScaleRec;
+            let surface = if scale_rec.is_null() {
+                std::ptr::null_mut()
+            } else {
+                (*scale_rec).surface
+            };
+            session_lock_surface_preferred_scale_120(surface).unwrap_or_else(|| {
+                ((*state).output_geometry.scale.0 * 120.0).round() as u32
+            })
         };
         ffi::wl_resource_post_event(res, ffi::WP_FRACTIONAL_SCALE_V1_PREFERRED_SCALE, scale_120);
     }

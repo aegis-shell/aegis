@@ -37,7 +37,7 @@ impl SettingsModule for UnavailableModule {
         _out: &mut ModuleEvents,
     ) {
         frame.heading(i18n.text(self.metadata.title), 2);
-        frame.label_wrapped_sized(i18n.text(self.description), 12.0, 560.0);
+        frame.label_wrapped_sized(i18n.text(self.description), design.typography.label, 560.0);
         frame.column_ex(&settings_card_layout(design), |frame| {
             frame.row_ex(
                 &LayoutOpts {
@@ -52,7 +52,7 @@ impl SettingsModule for UnavailableModule {
             );
             frame.label_wrapped_sized(
                 i18n.text(Message::SettingsBackendUnavailableDescription),
-                11.0,
+                design.typography.footnote,
                 560.0,
             );
         });

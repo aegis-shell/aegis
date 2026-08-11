@@ -34,6 +34,20 @@ fn keybinding_invocation(
     }
 }
 
+/// The compositor-owned panic chord, `Ctrl+Alt+Escape`: force every active
+/// modal chrome overlay to its safe-negative exit. Matched before
+/// chrome/client ownership is decided and consumed on both edges, so a
+/// stuck modal can never hold the session hostage and the focused client
+/// never observes the chord. Like the VT-switch chords it is deliberately
+/// not a configurable `[[keybind]]` entry: the escape hatch must survive
+/// every configuration.
+fn is_modal_escape_chord(key: Option<aegis_model::input::KeyChar>) -> bool {
+    key.is_some_and(|key| {
+        key.keysym == aegis_model::input::XKB_KEY_Escape
+            && key.mods == aegis_model::input::Mods::CTRL | aegis_model::input::Mods::ALT
+    })
+}
+
 impl FrameState {
     /// Preserve edge-triggered chrome input while the presentation backend
     /// owns an in-flight frame. Level state comes from the newest snapshot;
@@ -675,6 +689,7 @@ impl CompositorRuntime {
         let keyboard_captured = !session_locked && self.shell.captures_keyboard();
         let mut event_cursor = pointer_before;
         let mut chrome_owned_key_events = vec![false; events.len()];
+        let mut modal_escape_chord_events = vec![false; events.len()];
         let mut chrome_key_chars = vec![None; events.len()];
         let mut chrome_actions = vec![None; events.len()];
         let mut client_action_candidates = vec![None; events.len()];
@@ -721,8 +736,19 @@ impl CompositorRuntime {
                         // split this batch into separate delivery paths.
                         let prepared = self.server.prepare_keyboard_event(code, state);
                         prepared_key_events[event_index] = prepared;
+                        // The modal escape hatch outranks chrome/client
+                        // ownership: the chord is consumed by the compositor
+                        // on both edges and never forwarded, so a stuck modal
+                        // cannot hold the session hostage. The press fires in
+                        // the routing pass below.
+                        let escape_chord = !session_locked
+                            && is_modal_escape_chord(
+                                prepared.and_then(|prepared| prepared.key_char()),
+                            );
+                        modal_escape_chord_events[event_index] = escape_chord;
                         let route = self.keyboard_capture.route(code, state, keyboard_captured);
-                        let chrome_owned = route == aegis_model::input::KeyRoute::Chrome;
+                        let chrome_owned =
+                            route == aegis_model::input::KeyRoute::Chrome || escape_chord;
                         chrome_owned_key_events[event_index] = chrome_owned;
                         if !chrome_owned
                             && state.is_pressed()
@@ -739,7 +765,7 @@ impl CompositorRuntime {
                                 Some(keybinding_invocation(action, event_cursor, key));
                         }
 
-                        if chrome_owned {
+                        if chrome_owned && !escape_chord {
                             // XKB was already advanced above on both edges;
                             // only feed prepared presses to chrome so text is
                             // not duplicated and no route can reorder state.
@@ -823,7 +849,11 @@ impl CompositorRuntime {
                             &mut forwarded_candidates,
                             session_locked,
                         );
-                        if let Some(invocation) = chrome_actions[event_index] {
+                        if modal_escape_chord_events[event_index] {
+                            if state.is_pressed() {
+                                self.shell.dismiss_modal_overlays();
+                            }
+                        } else if let Some(invocation) = chrome_actions[event_index] {
                             self.dispatch_keybinding(invocation, session_locked);
                         } else if let Some(key) = chrome_key_chars[event_index] {
                             self.shell.key_char(key);
@@ -1399,6 +1429,25 @@ mod tests {
 
         assert!(invocation.super_held);
         assert!(!end_of_batch_mods.has(aegis_model::input::Mods::SUPER));
+    }
+
+    #[test]
+    fn the_modal_escape_chord_matches_ctrl_alt_escape_exactly() {
+        use aegis_model::input::{KeyChar, Mods, XKB_KEY_Escape, XKB_KEY_Return};
+        let chord = |mods, keysym| {
+            is_modal_escape_chord(Some(KeyChar {
+                keysym,
+                ch: None,
+                mods,
+            }))
+        };
+        assert!(chord(Mods::CTRL | Mods::ALT, XKB_KEY_Escape));
+        // A bare Escape, extra modifiers, the wrong key, or a non-key event
+        // are not the chord.
+        assert!(!chord(Mods::NONE, XKB_KEY_Escape));
+        assert!(!chord(Mods::CTRL | Mods::ALT | Mods::SHIFT, XKB_KEY_Escape));
+        assert!(!chord(Mods::CTRL | Mods::ALT, XKB_KEY_Return));
+        assert!(!is_modal_escape_chord(None));
     }
 
     #[test]

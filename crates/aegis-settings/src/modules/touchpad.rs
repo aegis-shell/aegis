@@ -66,13 +66,24 @@ impl SettingsModule for TouchpadModule {
             },
             |frame| {
                 frame.heading(i18n.text(Message::Touchpad), 2);
-                frame.label_sized(i18n.text(Message::TouchpadDescription), 12.0);
+                frame.label_sized(
+                    i18n.text(Message::TouchpadDescription),
+                    design.typography.label,
+                );
                 if !status.configurable {
-                    frame.label_wrapped_sized(i18n.text(Message::TouchpadHostManaged), 11.0, 560.0);
+                    frame.label_wrapped_sized(
+                        i18n.text(Message::TouchpadHostManaged),
+                        design.typography.footnote,
+                        560.0,
+                    );
                 } else if !has_devices {
-                    frame.label_wrapped_sized(i18n.text(Message::NoTouchpadDetected), 11.0, 560.0);
+                    frame.label_wrapped_sized(
+                        i18n.text(Message::NoTouchpadDetected),
+                        design.typography.footnote,
+                        560.0,
+                    );
                 } else {
-                    frame.label_sized(&status.device_names.join(" · "), 11.0);
+                    frame.label_sized(&status.device_names.join(" · "), design.typography.footnote);
                 }
             },
         );
@@ -120,10 +131,13 @@ impl SettingsModule for TouchpadModule {
 
             frame.separator();
             frame.row_ex(&section_heading_layout(), |frame| {
-                frame.label_sized(i18n.text(Message::PointerSpeed), 12.0);
+                frame.label_sized(i18n.text(Message::PointerSpeed), design.typography.label);
                 frame.flex(1.0);
                 frame.spacer(0.0);
-                frame.label_sized(&format!("{:+.0}%", config.pointer_speed * 100.0), 11.0);
+                frame.label_sized(
+                    &format!("{:+.0}%", config.pointer_speed * 100.0),
+                    design.typography.footnote,
+                );
             });
             if can_edit(status.capabilities.pointer_speed) {
                 changed |= frame.slider(
@@ -139,14 +153,14 @@ impl SettingsModule for TouchpadModule {
                         ..Default::default()
                     },
                     |frame| {
-                        frame.label_sized(i18n.text(Message::Slow), 10.0);
+                        frame.label_sized(i18n.text(Message::Slow), design.typography.caption);
                         frame.flex(1.0);
                         frame.spacer(0.0);
-                        frame.label_sized(i18n.text(Message::Fast), 10.0);
+                        frame.label_sized(i18n.text(Message::Fast), design.typography.caption);
                     },
                 );
             } else {
-                unavailable_row(frame, i18n.text(Message::PointerSpeed), i18n);
+                unavailable_row(frame, i18n.text(Message::PointerSpeed), i18n, design);
             }
         });
 
@@ -172,7 +186,7 @@ impl SettingsModule for TouchpadModule {
                     ..Default::default()
                 },
                 |frame| {
-                    frame.label_sized(i18n.text(Message::ScrollMethod), 12.0);
+                    frame.label_sized(i18n.text(Message::ScrollMethod), design.typography.label);
                     frame.flex(1.0);
                     frame.spacer(0.0);
                     if can_two_finger && can_edge {
@@ -197,11 +211,20 @@ impl SettingsModule for TouchpadModule {
                             changed = true;
                         }
                     } else if can_two_finger {
-                        frame.label_sized(i18n.text(Message::TwoFingerScroll), 11.0);
+                        frame.label_sized(
+                            i18n.text(Message::TwoFingerScroll),
+                            design.typography.footnote,
+                        );
                     } else if can_edge {
-                        frame.label_sized(i18n.text(Message::EdgeScroll), 11.0);
+                        frame.label_sized(
+                            i18n.text(Message::EdgeScroll),
+                            design.typography.footnote,
+                        );
                     } else {
-                        frame.label_sized(i18n.text(Message::Unavailable), 11.0);
+                        frame.label_sized(
+                            i18n.text(Message::Unavailable),
+                            design.typography.footnote,
+                        );
                     }
                 },
             );

@@ -160,6 +160,12 @@ impl Chrome for Overview {
         let released =
             raw.mouse_released.first().copied().unwrap_or(false) || (!down && self.prev_down);
 
+        // Geometry tracks the compositor's thumbnail pass, which sampled
+        // `overview_progress` at the start of this frame — i.e. the
+        // visibility left by last frame's advance. Capture it before
+        // advancing so cell frames stay glued to their flying thumbnails;
+        // alpha below uses the freshly advanced visibility.
+        let frame_t = self.visibility;
         self.advance(raw.dt_seconds.max(0.0));
         self.prev_down = down;
         if self.visibility <= 0.001 && !self.open {
@@ -224,7 +230,7 @@ impl Chrome for Overview {
         self.rail_hovered = None;
         self.interaction_domain_hovered = None;
         for (i, (slot, window)) in slots.iter().zip(windows.iter()).enumerate() {
-            let cell = geom::fit(*slot, window.size);
+            let cell = animated_cell(*slot, window, frame_t);
             if contains_rect(cell, cursor.x, cursor.y) {
                 self.hovered = Some(i);
                 if pressed {
@@ -310,6 +316,8 @@ impl Chrome for Overview {
         // and the caption so the thumbnails stay visible. Token hues keep
         // the fade-driven alphas below scheme-aware.
         let colors = self.design.colors;
+        let radii = self.design.radii;
+        let typography = self.design.typography;
         if has_rail {
             for (i, tile) in tiles.iter().enumerate() {
                 let (_, current) = rail_tiles[i];
@@ -336,7 +344,7 @@ impl Chrome for Overview {
                             bg,
                             border,
                             border_width: if current { 2.0 } else { 1.0 },
-                            radius: 10.0,
+                            radius: radii.control,
                             ..surface_layout()
                         },
                     ),
@@ -360,7 +368,7 @@ impl Chrome for Overview {
                                 ..Default::default()
                             },
                             move |frame| {
-                                frame.label_compact_sized(&format!("{}", i + 1), 12.0);
+                                frame.label_compact_sized(&format!("{}", i + 1), typography.label);
                             },
                         );
                     },
@@ -411,7 +419,7 @@ impl Chrome for Overview {
                                 colors.application_border.with_alpha(self.alpha(150))
                             },
                             border_width: if hovered { 2.0 } else { 1.0 },
-                            radius: 12.0,
+                            radius: radii.control,
                             ..surface_layout()
                         },
                     ),
@@ -427,8 +435,8 @@ impl Chrome for Overview {
                             },
                             move |frame| {
                                 frame.heading(&label, 3);
-                                frame.label_sized(status, 10.0);
-                                frame.label_sized(hint, 10.0);
+                                frame.label_sized(status, typography.caption);
+                                frame.label_sized(hint, typography.caption);
                             },
                         );
                     },
@@ -436,9 +444,12 @@ impl Chrome for Overview {
             }
         }
 
-        // Cell frames + labels over the thumbnails the main loop drew.
+        // Cell frames + labels over the thumbnails the main loop drew. Each
+        // cell resolves through the same fly-in interpolation as the
+        // thumbnail pass, so the border rides its thumbnail through the
+        // reveal instead of waiting at the final grid position.
         for (i, (slot, window)) in slots.iter().zip(windows.iter()).enumerate() {
-            let cell = geom::fit(*slot, window.size);
+            let cell = animated_cell(*slot, window, frame_t);
             let hovered = self.hovered == Some(i);
             let border = if window.read_only {
                 // Intentional content color: the amber read-only warning is
@@ -456,7 +467,7 @@ impl Chrome for Overview {
                     LayoutOpts {
                         border,
                         border_width: if hovered { 2.0 } else { 1.0 },
-                        radius: 8.0,
+                        radius: radii.menu_item,
                         ..surface_layout()
                     },
                 ),
@@ -492,7 +503,7 @@ impl Chrome for Overview {
                                 ..Default::default()
                             },
                             move |frame| {
-                                frame.label_compact_sized(&label, 12.0);
+                                frame.label_compact_sized(&label, typography.label);
                             },
                         );
                     },
@@ -515,7 +526,7 @@ impl Chrome for Overview {
                         bg: colors.application_accent.with_alpha(self.alpha(230)),
                         border: colors.application_accent.with_alpha(self.alpha(255)),
                         border_width: 1.0,
-                        radius: 10.0,
+                        radius: radii.control,
                         ..surface_layout()
                     },
                 ),
@@ -528,7 +539,10 @@ impl Chrome for Overview {
                             ..Default::default()
                         },
                         |frame| {
-                            frame.label_sized(i18n.text(Message::MoveToInteractionDomain), 11.0)
+                            frame.label_sized(
+                                i18n.text(Message::MoveToInteractionDomain),
+                                typography.footnote,
+                            )
                         },
                     );
                 },
@@ -626,6 +640,20 @@ fn contains_rect(rect: aegis_model::Rect, x: f32, y: f32) -> bool {
         && y >= rect.origin.y as f32
         && x < (rect.origin.x + rect.size.w) as f32
         && y < (rect.origin.y + rect.size.h) as f32
+}
+
+/// The cell a window's thumbnail occupies this frame: the shared fly-in
+/// interpolation from the window's real geometry to its aspect-fitted grid
+/// slot, keyed on the same progress the compositor's thumbnail pass used.
+fn animated_cell(slot: aegis_model::Rect, window: &Window, t: f32) -> aegis_model::Rect {
+    geom::animated_cell(
+        slot,
+        aegis_model::Rect {
+            origin: window.position,
+            size: window.size,
+        },
+        t,
+    )
 }
 
 fn to_lens(rect: aegis_model::Rect) -> Rect {

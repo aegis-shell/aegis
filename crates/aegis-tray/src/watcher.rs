@@ -270,10 +270,27 @@ impl WatcherIface {
     ) -> zbus::Result<()>;
 }
 
+/// Item proxies disable zbus's property cache: the watcher reads each
+/// property explicitly, and the cache's lazily-populated GetAll races item
+/// teardown, making zbus log a spurious warning from its caching task.
+async fn item_proxy<'a>(
+    conn: &'a zbus::Connection,
+    destination: &'a str,
+    path: &'a str,
+) -> zbus::Result<zbus::Proxy<'a>> {
+    zbus::proxy::Builder::new(conn)
+        .destination(destination)?
+        .path(path)?
+        .interface(ITEM_IFACE)?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+}
+
 /// Read an item's `Title`/`Id`, icon, `Status`, and `Menu` asynchronously
 /// (inside a served watcher method).
 async fn fetch_props_async(conn: &zbus::Connection, destination: &str, path: &str) -> ItemProps {
-    let Ok(proxy) = zbus::Proxy::new(conn, destination, path, ITEM_IFACE).await else {
+    let Ok(proxy) = item_proxy(conn, destination, path).await else {
         return ItemProps::default();
     };
     let id: Option<String> = proxy.get_property("Id").await.ok();
@@ -285,13 +302,27 @@ async fn fetch_props_async(conn: &zbus::Connection, destination: &str, path: &st
     build_props(id, title, status, icon_name, icon_pixmap, menu)
 }
 
+/// Blocking counterpart of [`item_proxy`] for the signal thread.
+fn item_proxy_blocking<'a>(
+    conn: &'a zbus::blocking::Connection,
+    destination: &'a str,
+    path: &'a str,
+) -> zbus::Result<zbus::blocking::Proxy<'a>> {
+    zbus::blocking::proxy::Builder::new(conn)
+        .destination(destination)?
+        .path(path)?
+        .interface(ITEM_IFACE)?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+}
+
 /// Same read through the blocking proxy (signal thread).
 fn fetch_props_blocking(
     conn: &zbus::blocking::Connection,
     destination: &str,
     path: &str,
 ) -> ItemProps {
-    let Ok(proxy) = zbus::blocking::Proxy::new(conn, destination, path, ITEM_IFACE) else {
+    let Ok(proxy) = item_proxy_blocking(conn, destination, path) else {
         return ItemProps::default();
     };
     let id: Option<String> = proxy.get_property("Id").ok();

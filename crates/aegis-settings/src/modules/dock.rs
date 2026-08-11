@@ -57,11 +57,14 @@ impl SettingsModule for DockModule {
         let mut changed = false;
 
         frame.heading(i18n.text(Message::Dock), 2);
-        frame.label_sized(i18n.text(Message::DockDescription), 12.0);
+        frame.label_sized(i18n.text(Message::DockDescription), design.typography.label);
 
         frame.column_ex(&settings_card_layout(design), |frame| {
             frame.row_ex(&section_heading_layout(), |frame| {
-                frame.label_sized(i18n.text(Message::MinimizeAnimation), 12.0);
+                frame.label_sized(
+                    i18n.text(Message::MinimizeAnimation),
+                    design.typography.label,
+                );
                 frame.flex(1.0);
                 frame.spacer(0.0);
                 let mut selected = match settings.minimize_animation {
