@@ -17,6 +17,7 @@ dependencies = [
  "aegis-commands",
  "aegis-compositor",
  "aegis-config",
+ "aegis-design",
  "aegis-desktop-entries",
  "aegis-dock",
  "aegis-hud",
@@ -41,6 +42,8 @@ dependencies = [
  "lens-sys",
  "libc",
  "log",
+ "prism",
+ "prism-sys",
  "resvg",
  "serde",
  "serde_json",
@@ -1194,7 +1197,7 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 [[package]]
 name = "flux"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.13#423de0c8f7adb2d61db31a8b24fdf3302e6a38d2"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
 dependencies = [
  "flux-sys",
 ]
@@ -1202,7 +1205,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.13#423de0c8f7adb2d61db31a8b24fdf3302e6a38d2"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -1213,7 +1216,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.13#423de0c8f7adb2d61db31a8b24fdf3302e6a38d2"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1222,7 +1225,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.13#423de0c8f7adb2d61db31a8b24fdf3302e6a38d2"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1604,7 +1607,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lens"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.13#423de0c8f7adb2d61db31a8b24fdf3302e6a38d2"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
 dependencies = [
  "flux",
  "lens-sys",
@@ -1613,7 +1616,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.13#423de0c8f7adb2d61db31a8b24fdf3302e6a38d2"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1935,6 +1938,26 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "prism"
+version = "0.1.0"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
+dependencies = [
+ "flux",
+ "flux-sys",
+ "prism-sys",
+]
+
+[[package]]
+name = "prism-sys"
+version = "0.1.0"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.14#cd7b30e4918cd15a5911cf8719c836757267f52b"
+dependencies = [
+ "bindgen",
+ "flux-sys",
+ "pkg-config",
 ]
 
 [[package]]
