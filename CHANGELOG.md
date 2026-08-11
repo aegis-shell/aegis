@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-08-12
+
 ### Added
 
 - Dock tiles can be dragged across the section divider: dropping a
