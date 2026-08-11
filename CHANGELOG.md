@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-08-11
+
 ### Changed
 
 - The agent pairing prompt now groups the requested capabilities into
