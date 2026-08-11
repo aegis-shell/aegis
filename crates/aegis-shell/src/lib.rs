@@ -33,10 +33,10 @@ pub mod system;
 mod text;
 pub use chrome::{
     AgentFeedback, AppMenu, AppPickParams, AppPicker, BatteryAlert, BatteryAlertParams,
-    CapabilityGroup, CapabilityPickParams, CapabilityPickResult, CapabilityPrompt, ConfirmAnswer,
-    ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt, ControlledWindowGuard, Launcher, Overview,
-    PickerMode, PinAction, ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast,
-    WindowSwitcher,
+    CapabilityFamily, CapabilityGroup, CapabilityPickParams, CapabilityPickResult,
+    CapabilityPrompt, ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt,
+    ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector,
+    SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;

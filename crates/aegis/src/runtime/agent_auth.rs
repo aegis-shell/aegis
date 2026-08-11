@@ -658,8 +658,8 @@ impl GrantStore {
     }
 }
 
-/// One requestable capability family projected for the pairing checklist:
-/// a stable machine key (the `ActorCapability` variant name, parseable back with
+/// One requestable operation projected for the pairing checklist: a stable
+/// machine key (the `ActorCapability` variant name, parseable back with
 /// [`ActorCapability::from_name`]), a human label, and whether first use is
 /// runtime-gated (ADR-0088).
 pub(crate) struct CapabilityGroupData {
@@ -668,23 +668,130 @@ pub(crate) struct CapabilityGroupData {
     pub gated: bool,
 }
 
+/// Display families over the agent-requestable operations: the pairing
+/// checklist shows one row per family with the operations as expandable
+/// detail, so a broad request reads as a handful of intent areas instead of
+/// a wall of checkboxes. Every agent-requestable operation belongs to
+/// exactly one family (enforced by a test).
+const CAPABILITY_FAMILIES: &[(&str, &str, &[ActorCapability])] = &[
+    (
+        "observe",
+        "Observe the desktop",
+        &[
+            ActorCapability::ObserveWindows,
+            ActorCapability::ObserveWorkspaces,
+            ActorCapability::ObserveOutputs,
+            ActorCapability::ObserveNotifications,
+            ActorCapability::ObserveJournal,
+            ActorCapability::ObserveSettings,
+            ActorCapability::ObserveSystem,
+        ],
+    ),
+    (
+        "windows",
+        "Control windows",
+        &[
+            ActorCapability::Focus,
+            ActorCapability::Minimize,
+            ActorCapability::Close,
+            ActorCapability::Move,
+            ActorCapability::SetWindowGeometry,
+            ActorCapability::Cycle,
+            ActorCapability::ToggleTiling,
+            ActorCapability::ToggleOverview,
+        ],
+    ),
+    (
+        "workspaces",
+        "Manage workspaces",
+        &[
+            ActorCapability::SwitchWorkspace,
+            ActorCapability::SwitchWorkspaceTo,
+            ActorCapability::MoveToWorkspace,
+        ],
+    ),
+    (
+        "domains",
+        "Act in Interaction Domains",
+        &[
+            ActorCapability::ObserveInteractionDomains,
+            ActorCapability::ObserveInteractionDomain,
+            ActorCapability::CreateInteractionDomain,
+            ActorCapability::TransactInteractionDomain,
+            ActorCapability::RevokeInteractionDomain,
+            ActorCapability::InjectInteractionDomainInput,
+            ActorCapability::CaptureInteractionDomain,
+            ActorCapability::LaunchInInteractionDomain,
+        ],
+    ),
+    (
+        "notify",
+        "Send notifications",
+        &[
+            ActorCapability::Notify,
+            ActorCapability::DismissNotification,
+        ],
+    ),
+    (
+        "launch",
+        "Launch applications",
+        &[ActorCapability::LaunchApp],
+    ),
+    (
+        "capture",
+        "Capture window contents",
+        &[ActorCapability::CaptureWindow],
+    ),
+    (
+        "data",
+        "Files, network, and secrets",
+        &[
+            ActorCapability::ReadFile,
+            ActorCapability::WriteFile,
+            ActorCapability::AccessNetworkOrigin,
+            ActorCapability::PromptSecret,
+            ActorCapability::RequestPayment,
+        ],
+    ),
+];
+
+/// One display family projected for the pairing checklist: a stable machine
+/// key, a human label, and the requested operations in display order.
+pub(crate) struct CapabilityFamilyData {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub members: Vec<CapabilityGroupData>,
+}
+
 /// The checklist rows for a pairing request: the requested set filtered
-/// down to the agent-requestable families and deduplicated, each marked
-/// with its runtime-gated flag.
-pub(crate) fn capability_groups(requested: &[ActorCapability]) -> Vec<CapabilityGroupData> {
-    AGENT_REQUESTABLE
+/// down to the agent-requestable operations, grouped into display families,
+/// each operation marked with its runtime-gated flag. Families with no
+/// requested operation drop out.
+pub(crate) fn capability_families(requested: &[ActorCapability]) -> Vec<CapabilityFamilyData> {
+    CAPABILITY_FAMILIES
         .iter()
-        .filter(|op| requested.contains(op))
-        .map(|op| CapabilityGroupData {
-            key: op_key(*op),
-            label: op.label(),
-            gated: is_runtime_gated(*op),
+        .filter_map(|(key, label, ops)| {
+            let members: Vec<CapabilityGroupData> = ops
+                .iter()
+                .filter(|op| requested.contains(op))
+                .map(|op| CapabilityGroupData {
+                    key: op_key(*op),
+                    label: op.label(),
+                    gated: is_runtime_gated(*op),
+                })
+                .collect();
+            (!members.is_empty()).then_some(CapabilityFamilyData {
+                key,
+                label,
+                members,
+            })
         })
         .collect()
 }
 
-/// The stable machine key of an agent-requestable family: its `ActorCapability`
-/// variant name, which [`ActorCapability::from_name`] parses back.
+/// The stable machine key of one agent-requestable operation: its
+/// `ActorCapability` variant name, which [`ActorCapability::from_name`]
+/// parses back.
 fn op_key(op: ActorCapability) -> &'static str {
     match op {
         ActorCapability::ObserveWindows => "ObserveWindows",
@@ -723,7 +830,7 @@ fn op_key(op: ActorCapability) -> &'static str {
         ActorCapability::LaunchInInteractionDomain => "LaunchInInteractionDomain",
         ActorCapability::LaunchApp => "LaunchApp",
         // Component-only families never reach the pairing checklist:
-        // `capability_groups` filters them out first.
+        // `capability_families` filters them out first.
         _ => unreachable!("op_key is only called for agent-requestable ops"),
     }
 }
@@ -1072,33 +1179,50 @@ mod tests {
     }
 
     #[test]
-    fn capability_groups_filter_dedup_and_mark_gated() {
-        let groups = capability_groups(&[
+    fn capability_families_filter_dedup_and_mark_gated() {
+        let families = capability_families(&[
             ActorCapability::Focus,
             ActorCapability::CaptureInteractionDomain,
             ActorCapability::Focus,
             ActorCapability::PickConfirm, // component-only, must be dropped
         ]);
-        assert_eq!(groups.len(), 2);
-        let focus = &groups[0];
+        assert_eq!(families.len(), 2);
+        assert_eq!(families[0].key, "windows");
+        let focus = &families[0].members[0];
         assert_eq!(focus.key, "Focus");
         assert_eq!(focus.label, "Focus windows");
         assert!(!focus.gated);
-        let capture = &groups[1];
+        assert_eq!(families[1].key, "domains");
+        let capture = &families[1].members[0];
         assert_eq!(capture.key, "CaptureInteractionDomain");
         assert_eq!(capture.label, "Capture its Interaction Domain");
         assert!(capture.gated);
     }
 
     #[test]
-    fn capability_group_keys_round_trip_through_from_name() {
-        let groups = capability_groups(AGENT_REQUESTABLE);
-        assert_eq!(groups.len(), AGENT_REQUESTABLE.len());
-        for group in &groups {
-            assert_eq!(
-                ActorCapability::from_name(group.key).map(|op| op.label()),
-                Some(group.label)
-            );
+    fn capability_families_cover_every_requestable_op_exactly_once() {
+        let mut table_ops: Vec<ActorCapability> = CAPABILITY_FAMILIES
+            .iter()
+            .flat_map(|(_, _, ops)| ops.iter().copied())
+            .collect();
+        table_ops.sort_by_key(|op| op_key(*op));
+        let mut requestable = AGENT_REQUESTABLE.to_vec();
+        requestable.sort_by_key(|op| op_key(*op));
+        assert_eq!(table_ops, requestable);
+    }
+
+    #[test]
+    fn capability_family_member_keys_round_trip_through_from_name() {
+        let families = capability_families(AGENT_REQUESTABLE);
+        assert_eq!(families.len(), CAPABILITY_FAMILIES.len());
+        for family in &families {
+            assert!(!family.members.is_empty());
+            for member in &family.members {
+                assert_eq!(
+                    ActorCapability::from_name(member.key).map(|op| op.label()),
+                    Some(member.label)
+                );
+            }
         }
     }
 

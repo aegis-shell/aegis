@@ -22,7 +22,7 @@ use aegis_model::window::Window;
 const PANEL_W: f32 = 460.0;
 const PANEL_PAD: f32 = 16.0;
 const TITLE_H: f32 = 24.0;
-const BODY_H: f32 = 40.0;
+const BODY_LINE_H: f32 = 18.0;
 const BUTTON_H: f32 = 30.0;
 const BUTTON_W: f32 = 96.0;
 const BACKDROP_BLUR_SIGMA: f32 = 18.0;
@@ -93,14 +93,15 @@ struct PromptLayout {
 }
 
 impl PromptLayout {
-    fn for_display(display: (f32, f32), reserved: Reserved) -> PromptLayout {
+    fn for_display(display: (f32, f32), reserved: Reserved, body_lines: usize) -> PromptLayout {
         let left = reserved.left.max(0) as f32;
         let top = reserved.top.max(0) as f32;
         let usable_w = (display.0 - left - reserved.right.max(0) as f32).max(1.0);
         let usable_h = (display.1 - top - reserved.bottom.max(0) as f32).max(1.0);
 
         let panel_w = PANEL_W.min((usable_w - 32.0).max(240.0));
-        let panel_h = PANEL_PAD + TITLE_H + 4.0 + BODY_H + 10.0 + BUTTON_H + PANEL_PAD;
+        let body_h = body_lines.max(1) as f32 * BODY_LINE_H;
+        let panel_h = PANEL_PAD + TITLE_H + 4.0 + body_h + 10.0 + BUTTON_H + PANEL_PAD;
         let panel = Rect {
             x: left + ((usable_w - panel_w) * 0.5).max(0.0),
             y: top + ((usable_h - panel_h) * 0.5).max(0.0),
@@ -120,7 +121,7 @@ impl PromptLayout {
             x: inner_x,
             y: title.y + title.h + 4.0,
             w: inner_w,
-            h: BODY_H,
+            h: body_h,
         };
         let buttons_y = panel.y + panel.h - PANEL_PAD - BUTTON_H;
         let accept = Rect {
@@ -196,10 +197,20 @@ impl ConfirmPrompt {
         self.active = true;
     }
 
+    /// The body renders one label per line: lens labels do not break on
+    /// `\n`, so the panel height derives from the line count here.
+    fn body_lines(&self) -> Vec<&str> {
+        self.body.split('\n').collect()
+    }
+
+    fn layout(&self, display: (f32, f32)) -> PromptLayout {
+        PromptLayout::for_display(display, self.modal_reserved, self.body_lines().len())
+    }
+
     /// Handle one primary-button press at output-space `(x, y)`: answers on
     /// the style's buttons, or cancels on a click outside the panel.
     fn press_at(&mut self, x: f32, y: f32, display: (f32, f32), out: &mut ChromeEvents) {
-        let layout = PromptLayout::for_display(display, self.modal_reserved);
+        let layout = self.layout(display);
         if !contains(layout.panel, x, y) {
             self.answer(ConfirmAnswer::Cancelled, out);
             return;
@@ -248,7 +259,7 @@ impl Chrome for ConfirmPrompt {
         let cursor = raw.cursor;
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
         let design = self.design;
-        let layout = PromptLayout::for_display(display, self.modal_reserved);
+        let layout = self.layout(display);
 
         frame.place(
             "aegis-confirm-prompt-scrim",
@@ -278,32 +289,41 @@ impl Chrome for ConfirmPrompt {
             |_| {},
         );
 
-        let title = ellipsize(
-            frame,
-            &self.title,
-            15.0,
-            (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
-        );
+        let title = ellipsize(frame, &self.title, 15.0, layout.title.w);
         frame.place(
             "aegis-confirm-prompt-title",
             &materials::chrome_place(layout.title, transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
-                    frame.label_sized(&title, 15.0);
+                    frame.label_compact_sized(&title, 15.0);
                 });
             },
         );
 
-        let body = ellipsize(frame, &self.body, 12.0, layout.body.w);
-        frame.place(
-            "aegis-confirm-prompt-body",
-            &materials::chrome_place(layout.body, transparent()),
-            |frame| {
-                frame.row_ex(&stretch_top(layout.body), |frame| {
-                    frame.label_compact_sized(&body, 12.0);
-                });
-            },
-        );
+        // One compact label per body line; empty lines stay as blank
+        // spacing. Every line's left edge aligns with the title's.
+        let lines = self.body_lines();
+        for (index, line) in lines.iter().enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let line_rect = Rect {
+                x: layout.body.x,
+                y: layout.body.y + index as f32 * BODY_LINE_H,
+                w: layout.body.w,
+                h: BODY_LINE_H,
+            };
+            let line = ellipsize(frame, line, 12.0, line_rect.w);
+            frame.place(
+                &format!("aegis-confirm-prompt-body-{index}"),
+                &materials::chrome_place(line_rect, transparent()),
+                |frame| {
+                    frame.row_ex(&stretch_top(line_rect), |frame| {
+                        frame.label_compact_sized(&line, 12.0);
+                    });
+                },
+            );
+        }
 
         match self.style {
             ConfirmPickStyle::YesNo => {
@@ -437,7 +457,7 @@ impl Chrome for ConfirmPrompt {
         if !self.active {
             return None;
         }
-        let layout = PromptLayout::for_display(display, self.modal_reserved);
+        let layout = self.layout(display);
         let over_button = match self.style {
             ConfirmPickStyle::YesNo => {
                 contains(layout.accept, x, y) || contains(layout.cancel, x, y)
@@ -503,7 +523,7 @@ impl Chrome for ConfirmPrompt {
         if !self.active {
             return Vec::new();
         }
-        let layout = PromptLayout::for_display(display, self.modal_reserved);
+        let layout = self.layout(display);
         // One region exactly matching the glass body below: the runtime drops
         // it from the rectangular frost set, so the analytic pass alone owns
         // the rounded panel.
@@ -519,7 +539,7 @@ impl Chrome for ConfirmPrompt {
         if !self.active {
             return Vec::new();
         }
-        let layout = PromptLayout::for_display(display, self.modal_reserved);
+        let layout = self.layout(display);
         vec![LiquidGlassRegion::from_role(
             &self.design,
             GlassRole::ProminentPanel,
@@ -646,12 +666,29 @@ mod tests {
         for (index, expected) in GRANT_ANSWERS.iter().enumerate() {
             let mut prompt = ConfirmPrompt::new();
             prompt.start_confirm_pick(grant_params());
-            let rect = PromptLayout::for_display(display, Reserved::default()).grant[index];
+            let rect = prompt.layout(display).grant[index];
             let mut out = ChromeEvents::default();
             prompt.press_at(rect.x + 4.0, rect.y + 4.0, display, &mut out);
             assert_eq!(out.confirm_pick_answered, Some(*expected), "button {index}");
             assert!(!prompt.confirm_pick_active());
         }
+    }
+
+    #[test]
+    fn each_body_line_gets_its_own_row() {
+        let mut prompt = ConfirmPrompt::new();
+        prompt.start_confirm_pick(grant_params());
+        let one_line = prompt.layout((1280.0, 800.0));
+        assert_eq!(one_line.body.h, BODY_LINE_H);
+
+        let mut prompt = ConfirmPrompt::new();
+        prompt.start_confirm_pick(ConfirmPickParams {
+            body: "Close windows\n\nAllow once: just this time.\nAlways: remembered.".to_string(),
+            ..grant_params()
+        });
+        let multi_line = prompt.layout((1280.0, 800.0));
+        assert_eq!(multi_line.body.h, 4.0 * BODY_LINE_H);
+        assert_eq!(multi_line.panel.h - one_line.panel.h, 3.0 * BODY_LINE_H);
     }
 
     #[test]

@@ -20,10 +20,11 @@ The binary is `target/release/aegis-mcp`.
 
 There is nothing to declare in the Aegis configuration. The first time the
 bridge connects — during `check`, `smoke`, or the first agent prompt — the
-compositor opens a **pairing prompt**: a checklist of the capability groups
-the agent product wants to borrow (window management, workspaces,
-notifications, and the sensitive groups marked "confirmed again on first
-use"). Untick anything you do not want to lend, then choose **Allow**.
+compositor opens a **pairing prompt**: one row per requested capability
+family (observation, window control, workspaces, Interaction Domains, …),
+each expanding to its per-operation detail. Operations marked † are
+sensitive and ask again on first use. Untick anything you do not want to
+lend, then choose **Allow**.
 
 The approved set becomes the principal's ceiling, and the compositor issues
 a credential the bridge persists under its data directory. Later starts,

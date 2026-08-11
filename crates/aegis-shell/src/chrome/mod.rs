@@ -36,7 +36,7 @@ pub use app_menu::{AppMenu, PinAction};
 pub use app_picker::{AppPickParams, AppPicker};
 pub use battery_alert::{BatteryAlert, BatteryAlertParams};
 pub use capability_prompt::{
-    CapabilityGroup, CapabilityPickParams, CapabilityPickResult, CapabilityPrompt,
+    CapabilityFamily, CapabilityGroup, CapabilityPickParams, CapabilityPickResult, CapabilityPrompt,
 };
 pub use confirm_prompt::{ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt};
 pub use controlled_window_guard::ControlledWindowGuard;

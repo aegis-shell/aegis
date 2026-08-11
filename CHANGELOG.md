@@ -7,6 +7,29 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- The agent pairing prompt now groups the requested capabilities into
+  display families ("Observe the desktop", "Control windows", …) with one
+  checkbox each, expanding to per-operation detail on click, instead of
+  presenting one row per operation. Operations whose first use is
+  runtime-gated carry a † marker with a single legend line, and the list
+  is height-capped with wheel scrolling, so broad requests no longer
+  overflow the display (ADR-0088).
+
+### Fixed
+
+- Fix a recurring compositor crash (SIGSEGV in `text_input_focus_changed`)
+  on keyboard-focus changes: seat migration moved `text_input` resources
+  between per-seat lists without retargeting the record's seat, so the
+  destroy path pruned the wrong list and left a dangling entry behind.
+  Migration now retargets the records, and destruction prunes every seat
+  list.
+- Consent dialogs align their title, body, and button rows on a common
+  left edge, and multi-line confirmation bodies (such as the runtime
+  grant explanation) render one line per label instead of a single
+  ellipsized line with missing-glyph boxes.
+
 ## [0.0.17] - 2026-08-10
 
 ### Changed

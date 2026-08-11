@@ -94,9 +94,11 @@ compositor opens the **pairing prompt**, a capability checklist in
 compositor chrome:
 
 > **"Aegis Agent" wants to borrow desktop capabilities**
-> ☐ window observations ☐ window management ☐ workspaces ☐ notifications
-> ☐ sensitive (confirmed again on first use): close windows, Interaction Domain capture,
-> semantic Interaction Domain observation, Interaction Domain input, Interaction Domain management, sandboxed launch
+> ☑ Observe the desktop ☑ Control windows ☑ Manage workspaces
+> ☑ Act in Interaction Domains ☑ Send notifications ☑ Launch applications …
+>
+> one row per requested family, expanding to per-operation detail;
+> operations marked † are confirmed again on first use.
 
 The set approved here becomes the principal's **ceiling**, stored in the
 compositor-held registry. The compositor then issues the principal id and

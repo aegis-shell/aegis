@@ -529,6 +529,15 @@ impl State {
             migrate!(tablet_devices);
             migrate!(tablet_tools);
             migrate!(text_inputs);
+
+            // A text_input record keeps its seat authoritative for routing
+            // and destruction; retarget the migrated records to the seat
+            // list now holding them.
+            for resource in self.seats[&target].text_inputs.iter().copied() {
+                if !resource.is_null() && ffi::wl_resource_get_client(resource) == client {
+                    crate::extensions::reseat_text_input(resource, target);
+                }
+            }
         }
     }
 
@@ -591,6 +600,17 @@ impl State {
             restore!(tablet_devices);
             restore!(tablet_tools);
             restore!(text_inputs);
+
+            // A text_input record keeps its seat authoritative for routing
+            // and destruction; retarget the restored records to the seat
+            // list now holding them.
+            for (seat, runtime) in &self.seats {
+                for resource in runtime.text_inputs.iter().copied() {
+                    if !resource.is_null() && ffi::wl_resource_get_client(resource) == client {
+                        crate::extensions::reseat_text_input(resource, *seat);
+                    }
+                }
+            }
         }
     }
 

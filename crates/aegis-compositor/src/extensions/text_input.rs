@@ -153,7 +153,12 @@ unsafe extern "C" fn text_input_resource_destroy(resource: *mut ffi::wl_resource
         let state = (*rec).state;
         if !state.is_null() {
             let _guard = crate::ActiveSeatGuard::enter_existing(&mut *state, (*rec).seat);
-            (*state).text_inputs.retain(|r| *r != resource);
+            // Prune every seat list, not just the record's seat: a resource
+            // migrated between seats after creation must not leave a stale
+            // entry behind (use-after-free on the next focus change).
+            for runtime in (*state).seats.values_mut() {
+                runtime.text_inputs.retain(|r| *r != resource);
+            }
             if (*rec).current.enabled {
                 route_or_queue_text_input_state(
                     state,
@@ -165,6 +170,21 @@ unsafe extern "C" fn text_input_resource_destroy(resource: *mut ffi::wl_resource
             (*state).untrack_seat_resource(resource);
         }
         drop(Box::from_raw(rec));
+    }
+}
+
+/// Retarget a text_input to the seat whose list now holds it. The record's
+/// seat is authoritative for routing and for destruction, so seat
+/// migration must keep it current.
+pub(crate) unsafe fn reseat_text_input(
+    resource: *mut ffi::wl_resource,
+    seat: aegis_model::interaction_domain::SeatId,
+) {
+    unsafe {
+        let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+        if !rec.is_null() {
+            (*rec).seat = seat;
+        }
     }
 }
 

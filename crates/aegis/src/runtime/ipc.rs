@@ -1020,13 +1020,21 @@ impl aegis_ipc::Handler for LiveState {
         );
         let warning = collision
             .then(|| "A different installation already registered under this name.".to_owned());
-        let groups = capability_groups(requested)
+        let families = capability_families(requested)
             .into_iter()
-            .map(|group| aegis_shell::CapabilityGroup {
-                key: group.key.to_owned(),
-                label: group.label.to_owned(),
-                gated: group.gated,
-                enabled: true,
+            .map(|family| aegis_shell::CapabilityFamily {
+                key: family.key.to_owned(),
+                label: family.label.to_owned(),
+                members: family
+                    .members
+                    .into_iter()
+                    .map(|member| aegis_shell::CapabilityGroup {
+                        key: member.key.to_owned(),
+                        label: member.label.to_owned(),
+                        gated: member.gated,
+                        enabled: true,
+                    })
+                    .collect(),
             })
             .collect();
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -1039,7 +1047,7 @@ impl aegis_ipc::Handler for LiveState {
                     params: aegis_shell::CapabilityPickParams {
                         title,
                         warning,
-                        groups,
+                        families,
                     },
                     reply: reply_tx,
                 },
