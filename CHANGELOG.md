@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-08-12
+
 ### Changed
 
 - Agent operation feedback is now a semi-transparent mask plus an operation

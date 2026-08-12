@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.19"
+version = "0.0.20"
 edition = "2024"
 # Workspace crates contain MIT-licensed source. The `aegis` binary crate
 # overrides this because it embeds the GPL-3.0-only Bibata cursor assets.
