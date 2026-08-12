@@ -1,11 +1,22 @@
 //! Trusted visual feedback for input applied by an Agent Interaction Domain.
 //!
-//! The physical user's XDG cursor remains untouched. This component draws a
-//! separate crosshair, click pulse, movement trail, and operation label over a
-//! read-only human mirror. If the target is not visible, it draws a compact
-//! background-operation pill instead. Because this is Shell chrome, directed
-//! Interaction Domain capture never includes it and an Agent cannot steer from its own
-//! feedback layer.
+//! The physical user's XDG cursor remains untouched. This component projects
+//! each applied operation onto the human's read-only mirror as a
+//! semi-transparent mask plus a text label naming the external operation, so
+//! the observer still sees the window content underneath. An arrow-cursor
+//! sprite marks the applied pointer position and a simplified mouse sprite
+//! with the pressed button highlighted marks clicks and scrolls; both sprites
+//! render below the mask and label. If the target is not visible, a compact
+//! background-operation pill is drawn instead. Colors come from the shared
+//! design tokens — operations are identified by the mask, sprite shape, and
+//! text, never by per-domain hues. Because this is Shell chrome, directed
+//! Interaction Domain capture never includes it and an Agent cannot steer from
+//! its own feedback layer.
+//!
+//! The projection is window-scoped today: the feedback region is the mirror
+//! window's rectangle. The [`OperationRegion`] seam keeps a future
+//! workspace-scoped domain (an entire workspace handed to an Interaction
+//! Domain) open without changing the mask, sprite, or label drawing.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -28,11 +39,79 @@ use crate::{
 const HOLD_FOR: Duration = Duration::from_secs(4);
 const FADE_FOR: Duration = Duration::from_secs(2);
 const VISIBLE_FOR: Duration = Duration::from_secs(6);
-const CLICK_PULSE_FOR: Duration = Duration::from_millis(650);
-const TRAIL_FOR: Duration = Duration::from_millis(360);
-const MARKER_DIAMETER: f32 = 24.0;
+const CLICK_GLYPH_FOR: Duration = Duration::from_millis(650);
+const SCROLL_GLYPH_FOR: Duration = Duration::from_millis(450);
 const LABEL_HEIGHT: f32 = 28.0;
 const BACKGROUND_HEIGHT: f32 = 34.0;
+const CURSOR_SIZE: f32 = 22.0;
+/// Bibata `left_ptr` hotspot (55, 17) in its 256-unit view box.
+const CURSOR_HOTSPOT: (f32, f32) = (55.0 / 256.0, 17.0 / 256.0);
+const CLICK_SIZE: (f32, f32) = (21.0, 30.0);
+/// The click point lands between the mouse buttons, not the body center.
+const CLICK_ANCHOR: (f32, f32) = (0.5, 0.175);
+
+// Arrow cursor: Bibata Modern Ice `left_ptr` (GPL-3.0), the same theme the
+// compositor's software cursor embeds under `assets/cursors/`. The Agent
+// pointer is an ordinary arrow by design — the mask and text carry the
+// operation signal, not an exotic marker shape.
+const CURSOR_SVG: &str = include_str!("../../assets/agent/cursor.svg");
+// Simplified mouse glyphs authored for this component: one shared body with
+// the left, right, or middle (wheel) button highlighted.
+const MOUSE_LEFT_SVG: &str = include_str!("../../assets/agent/mouse-left.svg");
+const MOUSE_RIGHT_SVG: &str = include_str!("../../assets/agent/mouse-right.svg");
+const MOUSE_MIDDLE_SVG: &str = include_str!("../../assets/agent/mouse-middle.svg");
+
+/// Where an applied Agent operation is projected for the human observer.
+///
+/// Window-scoped today: the region is the visible rectangle of the read-only
+/// mirror of the Agent-controlled window. A future workspace-scoped domain
+/// would resolve to a whole-output rectangle here; the mask, sprite, and
+/// label rendering below is region-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OperationRegion {
+    /// Mirror-window rectangle clipped to the display, with the corner
+    /// radius that matches the window's presentation state.
+    Window { rect: Rect, radius: f32 },
+}
+
+/// Raster sprites uploaded once from the embedded SVGs. `None` only when the
+/// GPU upload fails (or in tests); the feedback then falls back to a plain
+/// neutral dot so the applied position is still visible.
+struct AgentSprites {
+    cursor: flux::Image,
+    click_left: flux::Image,
+    click_right: flux::Image,
+    click_middle: flux::Image,
+}
+
+impl AgentSprites {
+    fn upload(device: &flux::Device) -> Option<Self> {
+        Some(Self {
+            cursor: upload_sprite(device, CURSOR_SVG, 96, 96)?,
+            click_left: upload_sprite(device, MOUSE_LEFT_SVG, 84, 120)?,
+            click_right: upload_sprite(device, MOUSE_RIGHT_SVG, 84, 120)?,
+            click_middle: upload_sprite(device, MOUSE_MIDDLE_SVG, 84, 120)?,
+        })
+    }
+
+    fn glyph(&self, glyph: PointerGlyph) -> &flux::Image {
+        match glyph {
+            PointerGlyph::Cursor => &self.cursor,
+            PointerGlyph::ClickLeft => &self.click_left,
+            PointerGlyph::ClickRight => &self.click_right,
+            PointerGlyph::ClickMiddle => &self.click_middle,
+        }
+    }
+}
+
+/// Which pointer sprite an applied operation shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerGlyph {
+    Cursor,
+    ClickLeft,
+    ClickRight,
+    ClickMiddle,
+}
 
 /// Non-interactive, compositor-owned projection of Agent input activity.
 pub struct AgentFeedback {
@@ -43,6 +122,7 @@ pub struct AgentFeedback {
     /// [`crate::Shell::add`] and refreshed when the desktop color scheme
     /// changes; defaults to the dark appearance until the first update arrives.
     design: Design,
+    sprites: Option<AgentSprites>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,38 +131,43 @@ struct VisualActivity {
     latest_at: Instant,
     pointer_window: Option<WindowId>,
     pointer_position: Option<Point>,
-    previous_pointer: Option<Point>,
-    pointer_at: Option<Instant>,
     click_pulse: Option<ClickPulse>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct ClickPulse {
     position: Point,
+    button: u32,
     at: Instant,
 }
 
 impl AgentFeedback {
-    /// Construct an empty feedback layer.
+    /// Construct the feedback layer, uploading the pointer sprites through
+    /// the composition root's flux device. The device is borrowed for the
+    /// upload only; the root declares it before the shell and drops it after.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(device: &flux::Device) -> Self {
+        Self::with_sprites(AgentSprites::upload(device))
+    }
+
+    fn with_sprites(sprites: Option<AgentSprites>) -> Self {
         Self {
             interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             activity: BTreeMap::new(),
             design: Design::dark(),
+            sprites,
         }
+    }
+
+    #[cfg(test)]
+    fn without_sprites() -> Self {
+        Self::with_sprites(None)
     }
 
     #[cfg(test)]
     fn update_agent_activity(&mut self, activity: &AgentActivity) {
         <Self as Chrome>::update(self, ChromeUpdate::AgentActivity(activity));
-    }
-}
-
-impl Default for AgentFeedback {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -115,6 +200,7 @@ impl Chrome for AgentFeedback {
         let display = (raw.display_size.x.max(1.0), raw.display_size.y.max(1.0));
         let interaction_domains = &self.interaction_domains;
         let design = &self.design;
+        let sprites = self.sprites.as_ref();
         let mut background = Vec::new();
         for (interaction_domain, activity) in &self.activity {
             let interaction_domain_state = interaction_domains
@@ -128,20 +214,18 @@ impl Chrome for AgentFeedback {
             let projected = activity
                 .pointer_window
                 .zip(activity.pointer_position)
-                .filter(|(window, position)| {
-                    windows.iter().any(|candidate| {
-                        candidate.id == *window
-                            && candidate.read_only
-                            && !candidate.minimized
-                            && window_contains(candidate, *position)
-                    }) && point_in_display(*position, display)
+                .filter(|(_, position)| point_in_display(*position, display))
+                .and_then(|(window, position)| {
+                    operation_region(windows, window, position, display)
+                        .map(|region| (region, position))
                 });
 
-            if let Some((_, position)) = projected {
+            if let Some((region, position)) = projected {
                 render_pointer_feedback(
                     f,
                     *interaction_domain,
                     activity,
+                    region,
                     position,
                     display,
                     interaction_domain_state,
@@ -149,6 +233,7 @@ impl Chrome for AgentFeedback {
                     now,
                     i18n,
                     design,
+                    sprites,
                 );
             } else {
                 background.push((
@@ -212,21 +297,18 @@ impl Chrome for AgentFeedback {
                             return;
                         }
                         if let Some(position) = activity.position {
-                            state.previous_pointer = (state.pointer_window
-                                == Some(activity.window))
-                            .then_some(state.pointer_position)
-                            .flatten();
                             state.pointer_window = Some(activity.window);
                             state.pointer_position = Some(position);
-                            state.pointer_at = Some(now);
-                            if matches!(activity.kind, AgentInputKind::Click { .. }) {
-                                state.click_pulse = Some(ClickPulse { position, at: now });
+                            if let AgentInputKind::Click { button } = activity.kind {
+                                state.click_pulse = Some(ClickPulse {
+                                    position,
+                                    button,
+                                    at: now,
+                                });
                             }
                         } else if state.pointer_window != Some(activity.window) {
                             state.pointer_window = None;
                             state.pointer_position = None;
-                            state.previous_pointer = None;
-                            state.pointer_at = None;
                         }
                         state.latest = activity.clone();
                         state.latest_at = now;
@@ -239,11 +321,16 @@ impl Chrome for AgentFeedback {
                                 latest_at: now,
                                 pointer_window: activity.position.map(|_| activity.window),
                                 pointer_position: activity.position,
-                                previous_pointer: None,
-                                pointer_at: activity.position.map(|_| now),
                                 click_pulse: activity.position.and_then(|position| {
-                                    matches!(activity.kind, AgentInputKind::Click { .. })
-                                        .then_some(ClickPulse { position, at: now })
+                                    if let AgentInputKind::Click { button } = activity.kind {
+                                        Some(ClickPulse {
+                                            position,
+                                            button,
+                                            at: now,
+                                        })
+                                    } else {
+                                        None
+                                    }
                                 }),
                             },
                         );
@@ -261,11 +348,41 @@ impl Chrome for AgentFeedback {
     }
 }
 
+/// Resolve the feedback region for an applied pointer position: the visible
+/// rectangle of the read-only mirror the position landed in.
+fn operation_region(
+    windows: &[Window],
+    window: WindowId,
+    position: Point,
+    display: (f32, f32),
+) -> Option<OperationRegion> {
+    let window = windows.iter().find(|candidate| {
+        candidate.id == window
+            && candidate.read_only
+            && !candidate.minimized
+            && window_contains(candidate, position)
+    })?;
+    let left = (window.position.x as f32).max(0.0);
+    let top = (window.position.y as f32).max(0.0);
+    let right = (window.position.x as f32 + window.size.w as f32).min(display.0);
+    let bottom = (window.position.y as f32 + window.size.h as f32).min(display.1);
+    (right > left && bottom > top).then_some(OperationRegion::Window {
+        rect: Rect {
+            x: left,
+            y: top,
+            w: right - left,
+            h: bottom - top,
+        },
+        radius: if window.state.fullscreen { 0.0 } else { 7.0 },
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_pointer_feedback(
     f: &mut Frame,
     interaction_domain: InteractionDomainId,
     activity: &VisualActivity,
+    region: OperationRegion,
     position: Point,
     display: (f32, f32),
     interaction_domain_state: InteractionDomainState,
@@ -273,90 +390,35 @@ fn render_pointer_feedback(
     now: Instant,
     i18n: &Localizer,
     design: &Design,
+    sprites: Option<&AgentSprites>,
 ) {
-    let accent = interaction_domain_color(interaction_domain).with_alpha(alpha);
-    if let (Some(previous), Some(pointer_at)) = (activity.previous_pointer, activity.pointer_at)
-        && now.saturating_duration_since(pointer_at) < TRAIL_FOR
-        && previous != position
-    {
-        for (index, amount) in [0.2_f32, 0.45, 0.7].into_iter().enumerate() {
-            let x = previous.x as f32 + (position.x - previous.x) as f32 * amount;
-            let y = previous.y as f32 + (position.y - previous.y) as f32 * amount;
-            let size = 4.0 + index as f32 * 1.5;
-            render_shape(
-                f,
-                &format!("aegis-agent-trail-{}-{index}", interaction_domain.0),
-                Rect {
-                    x: x - size * 0.5,
-                    y: y - size * 0.5,
-                    w: size,
-                    h: size,
-                },
-                accent.with_alpha(alpha.saturating_sub((2 - index) as u8 * 42)),
-                Color::TRANSPARENT,
-                0.0,
-                size * 0.5,
-            );
-        }
-    }
+    // Pointer sprite first: it stays below the mask and label so the
+    // semi-transparent overlay never hides where the operation landed.
+    let glyph = pointer_glyph(activity, position, now);
+    render_glyph(f, interaction_domain, glyph, position, alpha, sprites);
 
-    if let Some(pulse) = activity.click_pulse {
-        let pulse_age = now.saturating_duration_since(pulse.at);
-        if pulse_age < CLICK_PULSE_FOR && pulse.position == position {
-            let progress = pulse_age.as_secs_f32() / CLICK_PULSE_FOR.as_secs_f32();
-            let diameter = MARKER_DIAMETER + 10.0 + 24.0 * progress;
-            let pulse_alpha = ((1.0 - progress) * f32::from(alpha)).round() as u8;
-            render_shape(
-                f,
-                &format!("aegis-agent-click-pulse-{}", interaction_domain.0),
-                centered_rect(position, diameter),
-                Color::TRANSPARENT,
-                interaction_domain_color(interaction_domain).with_alpha(pulse_alpha),
-                2.0,
-                diameter * 0.5,
-            );
-        }
-    }
-
+    // The mask marks the operated window as externally driven while keeping
+    // its content readable.
+    let OperationRegion::Window { rect, radius } = region;
     render_shape(
         f,
-        &format!("aegis-agent-marker-{}", interaction_domain.0),
-        centered_rect(position, MARKER_DIAMETER),
+        &format!("aegis-agent-mask-{}", interaction_domain.0),
+        rect,
+        design.colors.scrim.with_alpha(scaled_alpha(alpha, 6, 17)),
         design
             .colors
-            .application_surface
-            .with_alpha(scaled_alpha(alpha, 3, 4)),
-        accent,
-        2.0,
-        MARKER_DIAMETER * 0.5,
+            .application_border
+            .with_alpha(scaled_alpha(alpha, 2, 3)),
+        1.0,
+        radius,
     );
-    render_shape(
-        f,
-        &format!("aegis-agent-marker-center-{}", interaction_domain.0),
-        centered_rect(position, 6.0),
-        accent,
-        Color::TRANSPARENT,
-        0.0,
-        3.0,
-    );
-    for (suffix, rect) in marker_ticks(position).into_iter() {
-        render_shape(
-            f,
-            &format!("aegis-agent-marker-{suffix}-{}", interaction_domain.0),
-            rect,
-            accent,
-            Color::TRANSPARENT,
-            0.0,
-            1.0,
-        );
-    }
 
     let label = activity_label(&activity.latest, interaction_domain_state, i18n, true);
     let measured = f.measure_text(&label, design.typography.footnote).width;
     let width = (measured + 20.0)
         .clamp(128.0, 290.0)
         .min((display.0 - 16.0).max(1.0));
-    let label_rect = marker_label_rect(position, width, display);
+    let label_rect = pointer_label_rect(position, width, display);
     let label = ellipsize(
         f,
         &label,
@@ -372,7 +434,10 @@ fn render_pointer_feedback(
                     .colors
                     .application_surface
                     .with_alpha(scaled_alpha(alpha, 9, 10)),
-                border: accent,
+                border: design
+                    .colors
+                    .application_border
+                    .with_alpha(scaled_alpha(alpha, 3, 4)),
                 border_width: 1.0,
                 radius: LABEL_HEIGHT * 0.5,
                 ..surface_layout()
@@ -391,6 +456,48 @@ fn render_pointer_feedback(
             );
         },
     );
+}
+
+fn render_glyph(
+    f: &mut Frame,
+    interaction_domain: InteractionDomainId,
+    glyph: PointerGlyph,
+    position: Point,
+    alpha: u8,
+    sprites: Option<&AgentSprites>,
+) {
+    let id = format!("aegis-agent-glyph-{}", interaction_domain.0);
+    let rect = glyph_rect(glyph, position);
+    match sprites {
+        Some(sprites) => {
+            let image = sprites.glyph(glyph);
+            f.place(
+                &id,
+                &chrome_place(rect, LayoutOpts::default()),
+                |f| unsafe {
+                    // SAFETY: the sprite textures are owned by this component and
+                    // outlive the frame's `Ui::render`.
+                    f.image_tinted(
+                        image.as_raw() as *mut lens::sys::flux_image,
+                        rect.w,
+                        rect.h,
+                        Color::rgba(255, 255, 255, alpha),
+                    );
+                },
+            );
+        }
+        None => {
+            render_shape(
+                f,
+                &id,
+                centered_rect(position, 8.0),
+                Color::rgba(244, 246, 252, alpha),
+                Color::TRANSPARENT,
+                0.0,
+                4.0,
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -422,7 +529,10 @@ fn render_background_activity(
         design.typography.footnote,
         (rect.w - 31.0).max(0.0),
     );
-    let accent = interaction_domain_color(interaction_domain).with_alpha(alpha);
+    let border = design
+        .colors
+        .application_border
+        .with_alpha(scaled_alpha(alpha, 1, 2));
     f.place(
         &format!("aegis-agent-background-{}", interaction_domain.0),
         &chrome_place(
@@ -432,7 +542,7 @@ fn render_background_activity(
                     .colors
                     .application_surface
                     .with_alpha(scaled_alpha(alpha, 9, 10)),
-                border: accent,
+                border,
                 border_width: 1.0,
                 radius: BACKGROUND_HEIGHT * 0.5,
                 ..surface_layout()
@@ -453,7 +563,7 @@ fn render_background_activity(
                         &LayoutOpts {
                             width: 7.0,
                             height: 7.0,
-                            bg: accent,
+                            bg: design.colors.menu_heading.with_alpha(alpha),
                             radius: 3.5,
                             ..Default::default()
                         },
@@ -464,6 +574,45 @@ fn render_background_activity(
             );
         },
     );
+}
+
+/// Which pointer sprite to show at the applied position: a brief mouse glyph
+/// with the pressed button highlighted for clicks, the wheel for fresh
+/// scrolls, and the plain arrow cursor otherwise.
+fn pointer_glyph(activity: &VisualActivity, position: Point, now: Instant) -> PointerGlyph {
+    if let Some(pulse) = activity.click_pulse
+        && pulse.position == position
+        && now.saturating_duration_since(pulse.at) < CLICK_GLYPH_FOR
+    {
+        return match pulse.button {
+            0x111 => PointerGlyph::ClickRight,
+            0x112 => PointerGlyph::ClickMiddle,
+            _ => PointerGlyph::ClickLeft,
+        };
+    }
+    if matches!(activity.latest.kind, AgentInputKind::Scroll { .. })
+        && now.saturating_duration_since(activity.latest_at) < SCROLL_GLYPH_FOR
+    {
+        return PointerGlyph::ClickMiddle;
+    }
+    PointerGlyph::Cursor
+}
+
+fn glyph_rect(glyph: PointerGlyph, position: Point) -> Rect {
+    match glyph {
+        PointerGlyph::Cursor => Rect {
+            x: position.x as f32 - CURSOR_SIZE * CURSOR_HOTSPOT.0,
+            y: position.y as f32 - CURSOR_SIZE * CURSOR_HOTSPOT.1,
+            w: CURSOR_SIZE,
+            h: CURSOR_SIZE,
+        },
+        PointerGlyph::ClickLeft | PointerGlyph::ClickRight | PointerGlyph::ClickMiddle => Rect {
+            x: position.x as f32 - CLICK_SIZE.0 * CLICK_ANCHOR.0,
+            y: position.y as f32 - CLICK_SIZE.1 * CLICK_ANCHOR.1,
+            w: CLICK_SIZE.0,
+            h: CLICK_SIZE.1,
+        },
+    }
 }
 
 fn activity_label(
@@ -528,21 +677,31 @@ fn scaled_alpha(alpha: u8, numerator: u16, denominator: u16) -> u8 {
     u8::try_from(scaled.min(255)).unwrap_or(255)
 }
 
-pub(super) fn interaction_domain_color(interaction_domain: InteractionDomainId) -> Color {
-    // Intentional content colors: per-domain identity hues that distinguish
-    // concurrent Interaction Domains. They are content styling, independent
-    // of the desktop color scheme.
-    const PALETTE: [(u8, u8, u8); 6] = [
-        (92, 214, 255),
-        (255, 184, 76),
-        (225, 113, 255),
-        (91, 224, 151),
-        (255, 111, 140),
-        (139, 142, 255),
-    ];
-    let index = usize::try_from(interaction_domain.0 % PALETTE.len() as u64).unwrap_or(0);
-    let (r, g, b) = PALETTE[index];
-    Color::rgba(r, g, b, 255)
+/// Rasterize an embedded SVG to premultiplied BGRA8 and upload it as one
+/// sprite texture. Same path-only pipeline as the compositor's software
+/// cursor: tiny-skia emits premultiplied RGBA8, flux samples premultiplied
+/// BGRA8, so the red and blue channels swap on upload.
+fn upload_sprite(device: &flux::Device, svg: &str, width: u32, height: u32) -> Option<flux::Image> {
+    let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).ok()?;
+    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+    let size = tree.size();
+    let transform = tiny_skia::Transform::from_scale(
+        width as f32 / size.width(),
+        height as f32 / size.height(),
+    );
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let mut pixels = pixmap.take();
+    for chunk in pixels.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+    flux::Image::from_bytes(
+        device,
+        width,
+        height,
+        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+        &pixels,
+    )
+    .ok()
 }
 
 fn window_contains(window: &Window, position: Point) -> bool {
@@ -570,50 +729,7 @@ fn centered_rect(position: Point, diameter: f32) -> Rect {
     }
 }
 
-fn marker_ticks(position: Point) -> [(&'static str, Rect); 4] {
-    let x = position.x as f32;
-    let y = position.y as f32;
-    [
-        (
-            "north",
-            Rect {
-                x: x - 1.0,
-                y: y - 16.0,
-                w: 2.0,
-                h: 7.0,
-            },
-        ),
-        (
-            "south",
-            Rect {
-                x: x - 1.0,
-                y: y + 9.0,
-                w: 2.0,
-                h: 7.0,
-            },
-        ),
-        (
-            "west",
-            Rect {
-                x: x - 16.0,
-                y: y - 1.0,
-                w: 7.0,
-                h: 2.0,
-            },
-        ),
-        (
-            "east",
-            Rect {
-                x: x + 9.0,
-                y: y - 1.0,
-                w: 7.0,
-                h: 2.0,
-            },
-        ),
-    ]
-}
-
-fn marker_label_rect(position: Point, width: f32, display: (f32, f32)) -> Rect {
+fn pointer_label_rect(position: Point, width: f32, display: (f32, f32)) -> Rect {
     let right = position.x as f32 + 20.0;
     let x = if right + width <= display.0 - 8.0 {
         right
@@ -683,9 +799,30 @@ mod tests {
         }
     }
 
+    fn visual_of(activity: AgentActivity) -> VisualActivity {
+        let now = Instant::now();
+        VisualActivity {
+            click_pulse: activity.position.and_then(|position| {
+                if let AgentInputKind::Click { button } = activity.kind {
+                    Some(ClickPulse {
+                        position,
+                        button,
+                        at: now,
+                    })
+                } else {
+                    None
+                }
+            }),
+            latest_at: now,
+            latest: activity,
+            pointer_window: None,
+            pointer_position: None,
+        }
+    }
+
     #[test]
     fn keyboard_activity_keeps_same_window_pointer_without_exposing_a_key() {
-        let mut feedback = AgentFeedback::new();
+        let mut feedback = AgentFeedback::without_sprites();
         feedback.update_agent_activity(&activity(
             1,
             AgentInputKind::PointerMove,
@@ -707,7 +844,7 @@ mod tests {
 
     #[test]
     fn stale_activity_cannot_rewind_visual_state() {
-        let mut feedback = AgentFeedback::new();
+        let mut feedback = AgentFeedback::without_sprites();
         feedback.update_agent_activity(&activity(2, AgentInputKind::Keyboard, None));
         feedback.update_agent_activity(&activity(
             1,
@@ -723,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn marker_projects_only_inside_a_read_only_human_mirror() {
+    fn region_projects_only_inside_a_read_only_human_mirror() {
         let mut window = Window::new(WindowId(42));
         window.position = Point { x: 20, y: 30 };
         window.size = aegis_model::Size { w: 100, h: 80 };
@@ -732,6 +869,70 @@ mod tests {
         window.read_only = true;
         assert!(window.read_only && window_contains(&window, Point { x: 25, y: 35 }));
         assert!(!window_contains(&window, Point { x: 120, y: 35 }));
+    }
+
+    #[test]
+    fn click_glyphs_highlight_the_pressed_button() {
+        let position = Point { x: 50, y: 50 };
+        let now = Instant::now();
+        for (button, glyph) in [
+            (0x110, PointerGlyph::ClickLeft),
+            (0x111, PointerGlyph::ClickRight),
+            (0x112, PointerGlyph::ClickMiddle),
+        ] {
+            let visual = visual_of(activity(
+                1,
+                AgentInputKind::Click { button },
+                Some(position),
+            ));
+            assert_eq!(pointer_glyph(&visual, position, now), glyph);
+        }
+        // The glyph is transient: it falls back to the arrow cursor.
+        let mut visual = visual_of(activity(
+            1,
+            AgentInputKind::Click { button: 0x110 },
+            Some(position),
+        ));
+        visual.click_pulse = visual.click_pulse.map(|pulse| ClickPulse {
+            at: pulse.at - CLICK_GLYPH_FOR,
+            ..pulse
+        });
+        assert_eq!(
+            pointer_glyph(&visual, position, Instant::now()),
+            PointerGlyph::Cursor
+        );
+        // A click somewhere else is not where the pointer is now.
+        let visual = visual_of(activity(
+            2,
+            AgentInputKind::Click { button: 0x110 },
+            Some(Point { x: 10, y: 10 }),
+        ));
+        assert_eq!(pointer_glyph(&visual, position, now), PointerGlyph::Cursor);
+    }
+
+    #[test]
+    fn fresh_scrolls_show_the_wheel_glyph() {
+        let position = Point { x: 50, y: 50 };
+        let visual = visual_of(activity(
+            1,
+            AgentInputKind::Scroll { dx: 0.0, dy: -1.0 },
+            Some(position),
+        ));
+        assert_eq!(
+            pointer_glyph(&visual, position, Instant::now()),
+            PointerGlyph::ClickMiddle
+        );
+        let mut stale = visual.clone();
+        stale.latest_at -= SCROLL_GLYPH_FOR;
+        assert_eq!(
+            pointer_glyph(&stale, position, Instant::now()),
+            PointerGlyph::Cursor
+        );
+        let movement = visual_of(activity(2, AgentInputKind::PointerMove, Some(position)));
+        assert_eq!(
+            pointer_glyph(&movement, position, Instant::now()),
+            PointerGlyph::Cursor
+        );
     }
 
     #[test]

@@ -709,6 +709,56 @@ impl Server {
         self.state.compositor_pointer_grab = false;
     }
 
+    /// Begin an interactive move of a read-only mirror, initiated by trusted
+    /// shell chrome (the mirror guard's drag). Unlike
+    /// [`start_interactive_move`](Self::start_interactive_move) this targets a
+    /// window the human only observes: keyboard focus and stacking stay
+    /// untouched — focusing a mirror would defocus the human's own window,
+    /// and moving must not grant the Agent's window any new prominence.
+    /// `origin` is the physical cursor position supplied by chrome, because
+    /// pointer motion is not forwarded to the server while the guard captures
+    /// the pointer. Agent input uses target-local coordinates, so an applied
+    /// operation stays correct while the mirror moves.
+    pub fn start_mirror_move(
+        &mut self,
+        surface_id: aegis_model::window::WindowId,
+        origin: (f32, f32),
+    ) {
+        let observed_mirror = !self
+            .state
+            .authority
+            .seat_controls_window(HUMAN_SEAT, surface_id)
+            && self.state.authority.interaction_domain_observes_window(
+                aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+                surface_id,
+            );
+        if self.state.interactive.is_some() || !observed_mirror {
+            return;
+        }
+        let rec = self.find_surface_by_window_id(surface_id);
+        if rec.is_null() || unsafe { (*rec).xdg_toplevel.is_null() } {
+            return;
+        }
+        unsafe {
+            let layout_changed =
+                (*rec).window.layout_role != aegis_model::layout::LayoutRole::Floating;
+            (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
+            (*rec).layout_target = None;
+            let state_changed = (*rec).window.state.maximized || (*rec).window.state.fullscreen;
+            (*rec).window.state.maximized = false;
+            (*rec).window.state.fullscreen = false;
+            if state_changed || layout_changed {
+                reconfigure_with_state(rec);
+            }
+        }
+        self.state.interactive = Some(aegis_model::window::Interactive::Move {
+            window_id: surface_id,
+            origin,
+            start_position: unsafe { (*rec).position },
+        });
+        self.state.compositor_pointer_grab = false;
+    }
+
     /// Begin an interactive resize from the shell. Same serial-less contract
     /// as [`start_interactive_move`](Self::start_interactive_move).
     pub fn start_interactive_resize(

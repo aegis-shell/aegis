@@ -347,9 +347,13 @@ remains excluded from client input and every window-control command path.
 The physical mirror carries a compositor-owned controlled-window guard. Its
 subdued presentation, authority label, and `not-allowed` pointer communicate
 that the window is visible for supervision rather than available for use.
-The server-side Interaction Domain model remains the authority boundary; the guard is a
+The one gesture the guard accepts is a press-and-drag that repositions the
+mirror: position is presentation state, and Agent operations stay correct
+because their coordinates are target-local. The server-side Interaction
+Domain model remains the authority boundary; the guard is a
 trusted explanation of that state and an additional physical pointer barrier.
-Successful Agent operations use a separate ephemeral marker above the guard,
+Successful Agent operations use a separate ephemeral mask, sprite, and label
+above the guard,
 so persistent ownership and recent activity remain distinct signals.
 
 Clients without proven native multi-seat behavior move as a complete

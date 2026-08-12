@@ -1593,6 +1593,13 @@ impl CompositorRuntime {
                         ts,
                     );
                 }
+                // Mirror-guard drags move a read-only mirror's presentation
+                // position. Like a title-bar move grab this is a
+                // chrome-owned gesture, not a journaled command.
+                if let Some(mirror_move) = self.shell.take_mirror_move() {
+                    self.server
+                        .start_mirror_move(mirror_move.window, mirror_move.cursor);
+                }
                 if let Some(id) = self.shell.take_switch_workspace() {
                     let cmd = aegis_ipc::Command::SwitchWorkspaceTo { id };
                     apply_command_and_journal(

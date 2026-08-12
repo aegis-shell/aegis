@@ -15,7 +15,9 @@ use aegis_shell::Message;
 use module::{
     ApplyPolicy, ModuleAvailability, ModuleCategory, ModuleId, ModuleMetadata, ModuleRegistry,
 };
-use modules::{AppearanceModule, DisplayModule, DockModule, PowerModule, TouchpadModule, UnavailableModule};
+use modules::{
+    AppearanceModule, DisplayModule, DockModule, PowerModule, TouchpadModule, UnavailableModule,
+};
 
 /// Construct the built-in module set in stable navigation order.
 pub fn builtin_settings_modules() -> ModuleRegistry {

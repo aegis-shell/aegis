@@ -345,10 +345,7 @@ mod tests {
         assert_eq!(with_rail.size.h, 700 - RAIL_HEIGHT);
         let with_both = grid_area_with_interaction_domain_shelf(display, true, true);
         assert_eq!(with_both.origin.y, RAIL_HEIGHT);
-        assert_eq!(
-            with_both.size.w,
-            1000 - INTERACTION_DOMAIN_SHELF_WIDTH
-        );
+        assert_eq!(with_both.size.w, 1000 - INTERACTION_DOMAIN_SHELF_WIDTH);
         assert_eq!(with_both.size.h, 700 - RAIL_HEIGHT);
     }
 
@@ -373,7 +370,10 @@ mod tests {
             let content = tile_content(*tile);
             assert!(content.origin.x >= tile.origin.x);
             assert!(content.origin.y >= tile.origin.y);
-            assert_eq!(content.size.h, tile.size.h - RAIL_LABEL_H - 2 * RAIL_TILE_PAD);
+            assert_eq!(
+                content.size.h,
+                tile.size.h - RAIL_LABEL_H - 2 * RAIL_TILE_PAD
+            );
         }
     }
 
@@ -391,7 +391,10 @@ mod tests {
         }
         // grid() is grid_with_spacing with the default constants.
         let big = Rect::new(0, 0, 1280, 800);
-        assert_eq!(grid(big, 5), grid_with_spacing(big, 5, GRID_MARGIN, SLOT_GAP));
+        assert_eq!(
+            grid(big, 5),
+            grid_with_spacing(big, 5, GRID_MARGIN, SLOT_GAP)
+        );
     }
 
     #[test]
@@ -399,7 +402,12 @@ mod tests {
         let area = Rect::new(0, 0, 1280, 800);
         let id = |n: u64| crate::window::WindowId(n);
         let windows: Vec<(crate::window::WindowId, Rect)> = (0..6)
-            .map(|n| (id(n), Rect::new(10 + n as i32 * 37, 20 + n as i32 * 53, 800, 600)))
+            .map(|n| {
+                (
+                    id(n),
+                    Rect::new(10 + n as i32 * 37, 20 + n as i32 * 53, 800, 600),
+                )
+            })
             .collect();
         let first = assign_slots(area, &windows);
         let second = assign_slots(area, &windows);

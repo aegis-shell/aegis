@@ -17,9 +17,13 @@ impl Server {
         if !allowed {
             new_focus = std::ptr::null_mut();
         }
-        if !new_focus.is_null() {
+        if !new_focus.is_null() && self.state.synthetic_target.is_none() {
             // The clicked surface may be a subsurface; raise its root
-            // toplevel so the window comes forward as a unit.
+            // toplevel so the window comes forward as a unit. Targeted agent
+            // input (`synthetic_target`) deliberately skips the raise: the
+            // agent seat's focus is per-seat, so an agent-operated window
+            // must not keep jumping above the physical user's windows on
+            // every batch — stacking stays the human's.
             let rec = unsafe { ffi::wl_resource_get_user_data(new_focus) as *mut SurfaceRec };
             let root = unsafe { surface_root_toplevel(rec) };
             if !root.is_null() {

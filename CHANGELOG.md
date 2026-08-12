@@ -7,6 +7,23 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- Agent operation feedback is now a semi-transparent mask plus an operation
+  label over the operated read-only mirror: the applied pointer shows as an
+  arrow-cursor sprite, clicks and scrolls flash a simplified mouse sprite
+  with the pressed button highlighted, and the per-domain blue/purple
+  identity colors, crosshair, movement trail, and click pulse are gone
+  (ADR-0121).
+- Agent-operated windows no longer jump above the user's own windows on
+  every applied input batch; the Agent seat's keyboard focus stays per-seat
+  and the global stacking order is left alone, so other windows may cover
+  the operated window (ADR-0121).
+- Read-only mirror windows can be moved: press-and-drag anywhere on the
+  mirror's guard starts a normal interactive move without focusing the
+  window or granting content input. Agent clicks stay correct afterwards
+  because Agent coordinates are window-local (ADR-0121).
+
 ## [0.0.19] - 2026-08-12
 
 ### Added

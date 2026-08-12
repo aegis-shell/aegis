@@ -317,7 +317,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // it above the mirror guard so activity remains legible, but below the HUD,
     // notifications, and modal trusted chrome. Directed Interaction Domain capture renders
     // client surfaces directly and therefore never includes this layer.
-    shell.add(Box::new(aegis_shell::AgentFeedback::new()));
+    shell.add(Box::new(aegis_shell::AgentFeedback::new(&device)));
     // The optional SNI tray service is spawned once when at least one compiled
     // consumer is active. The cloneable handle keeps the snapshot and command
     // side together across HUD-only, panel-only, and combined builds.

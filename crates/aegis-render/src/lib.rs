@@ -1233,8 +1233,7 @@ impl Renderer {
                             Some(src) => viewport_uv(src, (tw, th), f.geometry.buffer_scale),
                             None => (0.0, 0.0, 1.0, 1.0),
                         };
-                        for strip in genie_strips(x, y, dst_w, dst_h, warp.target, warp.progress)
-                        {
+                        for strip in genie_strips(x, y, dst_w, dst_h, warp.target, warp.progress) {
                             canvas.draw_image_sub(
                                 img,
                                 strip.dst_x,
@@ -1576,8 +1575,7 @@ impl Renderer {
                             }
                             None => (0.0, 0.0, 1.0, 1.0),
                         };
-                        for strip in genie_strips(x, y, dst_w, dst_h, warp.target, warp.progress)
-                        {
+                        for strip in genie_strips(x, y, dst_w, dst_h, warp.target, warp.progress) {
                             canvas.draw_image_sub(
                                 img,
                                 strip.dst_x,
@@ -1912,7 +1910,10 @@ mod tests {
             (bottom_centre - 700.0).abs() < 30.0,
             "bottom edge converges on the icon: {bottom:?}"
         );
-        assert!(bottom.dst_w < 200.0, "bottom edge nearly closes: {bottom:?}");
+        assert!(
+            bottom.dst_w < 200.0,
+            "bottom edge nearly closes: {bottom:?}"
+        );
         // Vertical coverage stays intact: the funnel is horizontal only.
         let covered = strips.iter().map(|strip| strip.dst_h).sum::<f32>();
         assert!((covered - 240.0).abs() < 1e-3);

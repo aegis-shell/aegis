@@ -575,18 +575,13 @@ impl Server {
 
     /// Paint order for the window-capture frames: the target toplevel's
     /// surface tree plus its popup trees, with no presentation filtering.
-    pub fn window_capture_frame_order(
-        &self,
-        window: aegis_model::window::WindowId,
-    ) -> Vec<usize> {
+    pub fn window_capture_frame_order(&self, window: aegis_model::window::WindowId) -> Vec<usize> {
         let roots = self
             .state
             .live_surfaces()
             .filter(|pointer| unsafe {
                 let surface = &**pointer;
-                surface.mapped
-                    && !surface.xdg_toplevel.is_null()
-                    && surface.window.id == window
+                surface.mapped && !surface.xdg_toplevel.is_null() && surface.window.id == window
             })
             .collect::<Vec<_>>();
         let popups = self

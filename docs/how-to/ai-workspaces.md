@@ -31,12 +31,15 @@ aegis transfers the window's complete interaction group in one transaction.
 The agent Interaction Domain becomes the only input authority. The physical desktop keeps
 a read-only mirror by default, so the window stays visible but does not
 receive physical clicks or keystrokes. The mirror is also an input barrier:
-clicks do not pass through it to a window underneath.
+clicks do not pass through it to a window underneath. You can still
+reposition it: press-and-drag anywhere on the mirror moves it like an
+ordinary window, without focusing it or delivering content input.
 
 Identify the mirror by its subdued guard and Interaction Domain status label. Hover over
 it to see the `not-allowed` cursor. The guard remains visible between Agent
-operations and while the Interaction Domain is paused; the Agent's short-lived movement,
-click, scroll, or keyboard feedback appears separately above it.
+operations and while the Interaction Domain is paused; the Agent's short-lived
+operation feedback (a semi-transparent mask, an arrow cursor, and an
+operation label) appears separately above it.
 
 Drag the mirror to **Physical desktop** in Overview to return control.
 

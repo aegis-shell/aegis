@@ -170,14 +170,19 @@ model is cheaper and more stable, while pixels require a separate capability,
 live lease, and fail-closed lock and lifecycle checks.
 
 The physical user observes those actions through a separate trusted feedback
-layer ([ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md)).
-An applied Agent pointer appears as a labeled circular crosshair, movement
-trail, and click pulse over the human's read-only mirror; keyboard or hidden-
-target activity becomes a background-operation pill. This is not the user's
-XDG cursor and never changes it. The compositor emits the feedback only after
-the Interaction Domain seat accepts the input, omits key contents, hides it on lock, and
-keeps it out of directed Interaction Domain capture so the Agent cannot observe its own
-feedback loop.
+layer ([ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md),
+amended by [ADR-0121](../adr/0121-neutral-mask-feedback-movable-mirrors-and-non-raising-agent-input.md)).
+An applied Agent pointer appears as an arrow-cursor sprite over a
+semi-transparent mask that labels the external operation on the human's
+read-only mirror, with a mouse sprite highlighting the pressed button for
+clicks and scrolls; keyboard or hidden-target activity becomes a
+background-operation pill. The mirror itself can be dragged aside and the
+operated window never jumps above the user's own windows, while
+target-local coordinates keep every applied operation correct. This is not
+the user's XDG cursor and never changes it. The compositor emits the
+feedback only after the Interaction Domain seat accepts the input, omits key
+contents, hides it on lock, and keeps it out of directed Interaction Domain
+capture so the Agent cannot observe its own feedback loop.
 
 ## The Strategic Bet
 

@@ -145,7 +145,10 @@ pub struct Window {
     pub state: WindowState,
     /// This snapshot is a presentation-only mirror for the physical human
     /// seat. Chrome may display and transfer it, but must not emit focus,
-    /// move, resize, minimize, close, or client input operations.
+    /// resize, minimize, close, or client input operations. The one permitted
+    /// mutation is moving the window (position is presentation state): the
+    /// mirror guard's drag starts a compositor-owned move grab, and Agent
+    /// input keeps working because its coordinates are target-local.
     #[cfg_attr(feature = "serde", serde(default))]
     pub read_only: bool,
     /// Compositor-internal minimized flag. Unlike the `state` bits this is not

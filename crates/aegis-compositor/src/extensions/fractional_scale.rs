@@ -141,9 +141,8 @@ pub(crate) unsafe fn send_fractional_scale(res: *mut ffi::wl_resource, state: *m
             } else {
                 (*scale_rec).surface
             };
-            session_lock_surface_preferred_scale_120(surface).unwrap_or_else(|| {
-                ((*state).output_geometry.scale.0 * 120.0).round() as u32
-            })
+            session_lock_surface_preferred_scale_120(surface)
+                .unwrap_or_else(|| ((*state).output_geometry.scale.0 * 120.0).round() as u32)
         };
         ffi::wl_resource_post_event(res, ffi::WP_FRACTIONAL_SCALE_V1_PREFERRED_SCALE, scale_120);
     }

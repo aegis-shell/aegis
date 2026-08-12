@@ -92,8 +92,8 @@ target/release/aegis-mcp smoke --input-window <window-id> --observe-seconds 10
 
 This opt-in probe temporarily transfers only that window, retains it as a
 read-only mirror on the physical desktop, and applies one pointer move at
-its center. The user's XDG cursor does not move. Look for a colored
-circular crosshair, a short movement trail, and an
+its center. The user's XDG cursor does not move. Look for a semi-transparent
+mask over the mirror with an arrow cursor at its center and an
 `AGENT · Aegis Agent · Pointer move` label. The command obtains a semantic
 observation, commits the pointer move with its single-use token, waits for
 the matching `ActorAction` journal entry, and returns the window to the

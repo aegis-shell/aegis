@@ -15,7 +15,6 @@ default = []
 persona = [
     "dep:aegis-desktop-entries",
     "dep:fastrand",
-    "dep:flux",
     "dep:flux-sys",
     "dep:flux-scene-graph",
     "dep:flux-scene-graph-sys",
@@ -32,7 +31,10 @@ aegis-model = { workspace = true }
 aegis-design = { workspace = true }
 aegis-desktop-entries = { workspace = true, optional = true }
 fastrand = { workspace = true, optional = true }
-flux = { workspace = true, optional = true }
+# Agent-feedback sprites: SVG rasterization (resvg/usvg/tiny-skia, same
+# default-features-off policy as the `aegis` crate's cursor pipeline) and a
+# borrowed flux device for texture upload, mirroring `aegis-hud`.
+flux = { workspace = true }
 flux-sys = { workspace = true, optional = true }
 flux-scene-graph = { workspace = true, optional = true }
 flux-scene-graph-sys = { workspace = true, optional = true }
@@ -41,9 +43,12 @@ lens = { workspace = true }
 lens-sys = { workspace = true }
 log.workspace = true
 notify = { workspace = true, optional = true }
+resvg = { workspace = true }
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+tiny-skia = { workspace = true }
+usvg = { workspace = true }
 # statvfs for the resource probe's root-filesystem usage sample.
 libc.workspace = true
 # The secret prompt's edit buffer is zeroized on close (password hygiene).

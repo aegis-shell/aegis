@@ -183,7 +183,10 @@ impl InteractionDomainSession {
 
     /// Atomically persist the latest per-window capture under its own name
     /// so it never overwrites the directed Interaction Domain capture.
-    pub fn store_window_capture(&self, png: &[u8]) -> Result<PathBuf, InteractionDomainSessionError> {
+    pub fn store_window_capture(
+        &self,
+        png: &[u8],
+    ) -> Result<PathBuf, InteractionDomainSessionError> {
         self.store.write_capture_named("window", png)
     }
 }

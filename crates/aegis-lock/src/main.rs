@@ -220,22 +220,22 @@ impl AppData {
         // (possibly fractional) output scale, and a `wp_viewport` destination
         // pins the surface's logical size. Without protocol support, fall
         // back to the integer `wl_output.scale` as the buffer scale.
-        let (viewport, fractional_scale) =
-            match (&self.viewporter, &self.fractional_scale_manager) {
-                (Some(viewporter), Some(manager)) => {
-                    let viewport = viewporter.get_viewport(lock_surface.wl_surface(), qh, ());
-                    let fractional = manager.get_fractional_scale(
-                        lock_surface.wl_surface(),
-                        qh,
-                        lock_surface.wl_surface().clone(),
-                    );
-                    (Some(viewport), Some(fractional))
-                }
-                _ => {
-                    lock_surface.wl_surface().set_buffer_scale(integer_scale);
-                    (None, None)
-                }
-            };
+        let (viewport, fractional_scale) = match (&self.viewporter, &self.fractional_scale_manager)
+        {
+            (Some(viewporter), Some(manager)) => {
+                let viewport = viewporter.get_viewport(lock_surface.wl_surface(), qh, ());
+                let fractional = manager.get_fractional_scale(
+                    lock_surface.wl_surface(),
+                    qh,
+                    lock_surface.wl_surface().clone(),
+                );
+                (Some(viewport), Some(fractional))
+            }
+            _ => {
+                lock_surface.wl_surface().set_buffer_scale(integer_scale);
+                (None, None)
+            }
+        };
         // ext-session-lock configures immediately after the role is created.
         // Unlike xdg-shell, an empty initial commit is forbidden: the first
         // commit must follow ack_configure and already carry a full-size

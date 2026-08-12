@@ -4,23 +4,30 @@
 //! this chrome component only makes that boundary legible to the human. It
 //! dims read-only mirrors, identifies the controlling Interaction Domain, consumes physical
 //! chrome input over their complete rectangles, and requests the standard
-//! `not-allowed` cursor.
+//! `not-allowed` cursor. A press-and-drag on a mirror is the one permitted
+//! gesture: it asks the compositor to move the window (position is
+//! presentation state; the human still cannot focus, resize, close, or
+//! deliver content input to it).
 
 use aegis_design::Design;
 use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_model::interaction_domain::{
-    InteractionDomain, InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
+    InteractionDomain, InteractionDomainSnapshot, InteractionDomainState,
 };
 use aegis_model::window::{Window, WindowId};
 use aegis_model::workspace::WorkspaceSnapshot;
 use lens::{Align, Frame, Input, LayoutOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, ChromeUpdate, CursorShape, Localizer, Message, ellipsize};
+use crate::{
+    Chrome, ChromeEvents, ChromeUpdate, CursorShape, Localizer, Message, MirrorMove, ellipsize,
+};
 
 const WASH_ALPHA: u8 = 92;
 const BADGE_HEIGHT: f32 = 28.0;
 const BADGE_MARGIN: f32 = 8.0;
 const SCANLINE_GAP: f32 = 44.0;
+/// Pointer travel before a press on a mirror becomes a move drag.
+const DRAG_THRESHOLD: f32 = 6.0;
 
 /// Trusted visual and pointer-routing boundary over physical read-only mirrors.
 pub struct ControlledWindowGuard {
@@ -31,6 +38,12 @@ pub struct ControlledWindowGuard {
     /// [`crate::Shell::add`] and refreshed when the desktop color scheme
     /// changes; defaults to the dark appearance until the first update arrives.
     design: Design,
+    /// Mirror window pressed this stroke, with the press position. Becomes a
+    /// move request once the pointer travels past [`DRAG_THRESHOLD`].
+    drag_candidate: Option<(WindowId, (f32, f32))>,
+    /// The current stroke already emitted its one move request.
+    drag_emitted: bool,
+    prev_down: bool,
 }
 
 impl ControlledWindowGuard {
@@ -41,6 +54,9 @@ impl ControlledWindowGuard {
                 .snapshot(),
             has_guarded_windows: false,
             design: Design::dark(),
+            drag_candidate: None,
+            drag_emitted: false,
+            prev_down: false,
         }
     }
 
@@ -55,6 +71,40 @@ impl ControlledWindowGuard {
             .interaction_domains
             .iter()
             .find(|candidate| candidate.id == interaction_domain)
+    }
+
+    /// Track the physical primary button over mirror rectangles. A press
+    /// arms a drag candidate; traveling past the threshold emits exactly one
+    /// move request for the stroke (the compositor's interactive-move grab
+    /// then follows the pointer until release). Clicks that never travel
+    /// stay swallowed: the mirror remains an input barrier.
+    fn track_mirror_drag(
+        &mut self,
+        windows: &[Window],
+        cursor: (f32, f32),
+        down: bool,
+    ) -> Option<MirrorMove> {
+        let pressed = down && !self.prev_down;
+        self.prev_down = down;
+        if !down {
+            self.drag_candidate = None;
+            self.drag_emitted = false;
+            return None;
+        }
+        if pressed {
+            self.drag_candidate =
+                guarded_window_at(windows, cursor.0, cursor.1).map(|window| (window, cursor));
+            self.drag_emitted = false;
+        }
+        if self.drag_emitted {
+            return None;
+        }
+        let (window, origin) = self.drag_candidate?;
+        if (cursor.0 - origin.0).hypot(cursor.1 - origin.1) < DRAG_THRESHOLD {
+            return None;
+        }
+        self.drag_emitted = true;
+        Some(MirrorMove { window, cursor })
     }
 }
 
@@ -72,26 +122,27 @@ impl Chrome for ControlledWindowGuard {
         windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
         i18n: &Localizer,
-        _out: &mut ChromeEvents,
+        out: &mut ChromeEvents,
     ) {
         let raw = input.as_raw();
+        let cursor = (raw.cursor.x, raw.cursor.y);
+        let down = raw.mouse_down.first().copied().unwrap_or(false);
+        if let Some(request) = self.track_mirror_drag(windows, cursor, down) {
+            out.mirror_move = Some(request);
+        }
         let display = (raw.display_size.x.max(1.0), raw.display_size.y.max(1.0));
         for window in windows.iter().filter(|window| is_guarded_window(window)) {
             let Some(rect) = clipped_window_rect(window, display) else {
                 continue;
             };
             let interaction_domain = self.controlling_interaction_domain(window.id);
-            let interaction_domain_id = interaction_domain
-                .map(|interaction_domain| interaction_domain.id)
-                .unwrap_or(InteractionDomainId(0));
             let state = interaction_domain
                 .map(|interaction_domain| interaction_domain.state)
                 .unwrap_or(InteractionDomainState::Active);
-            let accent = super::agent_feedback::interaction_domain_color(interaction_domain_id);
             let border = if state == InteractionDomainState::Paused {
                 self.design.colors.menu_disabled.with_alpha(210)
             } else {
-                accent.with_alpha(220)
+                self.design.colors.application_border.with_alpha(210)
             };
 
             frame.place(
@@ -216,7 +267,13 @@ impl Chrome for ControlledWindowGuard {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Option<CursorShape> {
-        Some(CursorShape::NotAllowed)
+        // A plain click is still barred, but once the stroke becomes a move
+        // drag the mirror follows the pointer like any grabbed window.
+        if self.drag_emitted {
+            Some(CursorShape::Default)
+        } else {
+            Some(CursorShape::NotAllowed)
+        }
     }
 
     fn update(&mut self, update: ChromeUpdate<'_>) {
@@ -301,6 +358,51 @@ mod tests {
         assert_eq!(
             guard.cursor_shape_at(25.0, 35.0, (800.0, 600.0), &windows, &workspaces),
             Some(CursorShape::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn press_and_drag_on_a_mirror_requests_one_move() {
+        let mut guard = ControlledWindowGuard::new();
+        let windows = vec![mirror()];
+        // A press inside the mirror arms the drag without emitting yet.
+        assert_eq!(guard.track_mirror_drag(&windows, (25.0, 35.0), true), None);
+        // Jitter below the threshold stays a (swallowed) click.
+        assert_eq!(
+            guard.track_mirror_drag(&windows, (25.0 + DRAG_THRESHOLD - 2.0, 35.0), true),
+            None
+        );
+        // Crossing the threshold emits exactly one move request per stroke.
+        let request = guard.track_mirror_drag(&windows, (60.0, 60.0), true);
+        assert_eq!(
+            request,
+            Some(MirrorMove {
+                window: WindowId(7),
+                cursor: (60.0, 60.0)
+            })
+        );
+        assert_eq!(guard.track_mirror_drag(&windows, (80.0, 80.0), true), None);
+        // Release resets the stroke; the next press re-arms.
+        assert_eq!(guard.track_mirror_drag(&windows, (80.0, 80.0), false), None);
+        assert_eq!(guard.track_mirror_drag(&windows, (25.0, 35.0), true), None);
+        assert!(
+            guard
+                .track_mirror_drag(&windows, (90.0, 90.0), true)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn presses_outside_a_mirror_never_start_a_drag() {
+        let mut guard = ControlledWindowGuard::new();
+        let windows = vec![mirror()];
+        assert_eq!(
+            guard.track_mirror_drag(&windows, (500.0, 500.0), true),
+            None
+        );
+        assert_eq!(
+            guard.track_mirror_drag(&windows, (600.0, 600.0), true),
+            None
         );
     }
 }

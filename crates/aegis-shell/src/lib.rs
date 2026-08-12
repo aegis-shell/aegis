@@ -362,6 +362,21 @@ pub enum WindowAction {
     Close(aegis_model::window::WindowId),
 }
 
+/// The mirror guard's drag on a read-only mirror became a move request.
+///
+/// Position is presentation state, so the human may rearrange a mirror even
+/// though content input, focus, resize, and close stay barred. `cursor` is
+/// the physical pointer position when the drag threshold was crossed; the
+/// compositor uses it as the grab origin because pointer motion is not
+/// forwarded to the server while the guard captures the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MirrorMove {
+    /// Mirror window to move.
+    pub window: aegis_model::window::WindowId,
+    /// Physical cursor position at drag-recognition time.
+    pub cursor: (f32, f32),
+}
+
 /// Trusted Interaction Domain-management intent emitted by compositor-owned chrome.
 ///
 /// The shell never mutates compositor authority directly. The main loop
@@ -423,6 +438,9 @@ pub struct ChromeEvents {
     pub overview_pick: Option<aegis_model::window::WindowId>,
     /// Window id clicked in the held-modifier switcher.
     pub window_switcher_pick: Option<aegis_model::window::WindowId>,
+    /// A mirror-guard drag asked the compositor to move a read-only mirror
+    /// window this frame.
+    pub mirror_move: Option<MirrorMove>,
     /// The switcher was dismissed by clicking outside its cards.
     pub window_switcher_cancel: bool,
     /// Workspace id the overview's rail asked to switch to. Drained through
@@ -1113,6 +1131,11 @@ impl Shell {
     /// Drain ordered window actions emitted by application context menus.
     pub fn take_window_actions(&mut self) -> Vec<WindowAction> {
         std::mem::take(&mut self.events.window_actions)
+    }
+
+    /// Drain the mirror-guard move request of this frame, if any.
+    pub fn take_mirror_move(&mut self) -> Option<MirrorMove> {
+        self.events.mirror_move.take()
     }
 
     /// Drain the desktop entry the chrome asked to launch this frame, if any.
