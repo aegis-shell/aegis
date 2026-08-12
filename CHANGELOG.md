@@ -7,6 +7,14 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-08-12
+
+### Fixed
+
+- The committed canonical `Cargo.lock` again records the workspace crates at
+  the released version. The v0.0.20 tag shipped a lockfile still at 0.0.19,
+  so `--locked` package builds of that source export failed.
+
 ## [0.0.20] - 2026-08-12
 
 ### Changed
