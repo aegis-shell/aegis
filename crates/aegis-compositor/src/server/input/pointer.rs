@@ -598,10 +598,9 @@ impl Server {
         // Always posting modifiers (even when unchanged) is simpler; the
         // client-side xkbcommon treats a no-op update cheaply. A delta check
         // can be added if profiling ever shows it matters.
-        let outcome = if let Some(kb) = self.state.keyboard.as_mut() {
+        let outcome = {
+            let kb = self.state.keyboard.as_mut()?;
             kb.update_key(evdev_code, state.is_pressed())
-        } else {
-            return None;
         };
         self.state.depressed_mods = aegis_model::input::Mods(outcome.depressed);
         // Console VT switch (Ctrl+Alt+Fn → XF86Switch_VT_N): libinput owns

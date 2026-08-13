@@ -63,7 +63,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwayland-dev wayland-protocols \
-            libclang-dev pkg-config
+            libclang-dev libxkbcommon-dev pkg-config
       - name: Test flux-free crates
         run: >-
           cargo test --locked
@@ -98,7 +98,9 @@ jobs:
             vulkan-validationlayers mesa-vulkan-drivers \
             libfreetype-dev libharfbuzz-dev libfontconfig1-dev libfribidi-dev \
             libglfw3-dev libxkbcommon-dev libsystemd-dev libclang-dev \
-            libinput-dev libseat-dev libpam0g-dev
+            libinput-dev libseat-dev libpam0g-dev python3-pip
+          # optics' meson.build requires >=1.8.0; Ubuntu 24.04's apt ships 1.3.2.
+          sudo python3 -m pip install --break-system-packages 'meson>=1.8'
       - name: Build and install optics C libraries
         run: |
           meson setup optics/build optics \
