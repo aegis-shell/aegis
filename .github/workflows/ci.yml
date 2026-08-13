@@ -101,9 +101,12 @@ jobs:
             libinput-dev libseat-dev libpam0g-dev python3-pip
           # optics' meson.build requires >=1.8.0; Ubuntu 24.04's apt ships 1.3.2.
           sudo python3 -m pip install --break-system-packages 'meson>=1.8'
+          # optics builds with c_std=c23; Ubuntu 24.04's GCC 13 has no
+          # c23 mode, so compile the C libraries with Clang.
+          sudo apt-get install -y clang
       - name: Build and install optics C libraries
         run: |
-          meson setup optics/build optics \
+          CC=clang CXX=clang++ meson setup optics/build optics \
             -Dexamples=false -Dtests=false --buildtype=release
           meson compile -C optics/build
           sudo meson install -C optics/build
