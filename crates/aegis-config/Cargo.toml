@@ -14,8 +14,10 @@ rust-version.workspace = true
 aegis-model = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 toml = { workspace = true }
-# Preserving edits to the user-editable TOML file (e.g. dock pins).
-toml_edit = "0.22"
+# Preserving edits to the user-editable TOML file (e.g. dock pins). Kept on
+# the same 0.25 line as the rest of the workspace TOML stack (toml 1.x) so
+# only one parser copy is compiled.
+toml_edit = "0.25"
 # `$XDG_CONFIG_HOME` / `~/.config` resolution for the default config path.
 # Already a workspace dependency (aegis-desktop-entries uses it for XDG data dirs).
 dirs = { workspace = true }

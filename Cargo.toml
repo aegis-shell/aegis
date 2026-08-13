@@ -51,7 +51,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 # linking an agent stack into the compositor (ADR-0047, ADR-0087).
 base64 = "0.22"
 fastrand = "2"
-getrandom = "0.3"
+getrandom = "0.4"
 notify = "8.2"
 sha2 = "0.10"
 atspi = { version = "0.30", features = ["zbus"] }
@@ -141,7 +141,10 @@ aegis-mcp = { path = "crates/aegis-mcp" }
 # unambiguous grammar. `serde_json` is the IPC wire format (ADR-0027):
 # human-debuggable and schema-driven, distinct from adopting the i3 protocol.
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+# toml 1.x shares the toml_parser/toml_datetime/winnow 1.x stack with the
+# toml_edit 0.25 line used by aegis-config, so the old toml_edit 0.22 /
+# toml_datetime 0.6 / winnow 0.7 copies drop out of the graph.
+toml = "1"
 serde_json = "1"
 
 # Image decode for the wallpaper crate. default-features off so the
@@ -193,3 +196,14 @@ codegen-units = 256
 # one-time optimization cost is amortized by Cargo's build cache.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Release builds favor a smaller binary: thin LTO plus a single codegen unit
+# deduplicates generics across crate boundaries, and the symbol table is
+# stripped. Panic messages still carry file:line, but stripped binaries
+# resolve no function names in backtraces — keep that in mind when debugging
+# production crashes.
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -5,6 +5,17 @@ config_path=".cargo/config.toml"
 patch_header='[patch."https://github.com/ming2k/optics"]'
 
 if [ -f "$config_path" ] && grep -Fqx "$patch_header" "$config_path"; then
+    if git diff --cached -U0 -- Cargo.toml | grep -Eq '^\+version = "'; then
+        printf '%s\n' \
+            "Local Optics mode: refusing a release-shaped commit." \
+            "The staged Cargo.toml bumps the workspace version, but local" \
+            "mode cannot produce a committable canonical Cargo.lock." \
+            "Move $config_path aside, regenerate the lockfile in canonical" \
+            "mode, verify with cargo check --locked --workspace, and commit" \
+            "the release there." >&2
+        exit 1
+    fi
+
     excluded=
 
     if ! git diff --cached --quiet -- Cargo.lock; then

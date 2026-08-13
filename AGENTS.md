@@ -17,3 +17,11 @@ Local Optics mode is active when `.cargo/config.toml` contains
   if necessary.
 - Update the canonical committed lockfile only after intentionally disabling
   local Optics mode to promote a released Optics revision.
+
+Release commits are always canonical. A commit that bumps the
+`workspace.package` version in `Cargo.toml` must be created with local
+Optics mode disabled: regenerate the canonical `Cargo.lock`, stage it with
+the version bump, and verify `cargo check --locked --workspace` passes. The
+pre-commit hook refuses release-shaped commits in local Optics mode. Tag and
+push a release only when CI on that commit is green; CI validates the
+canonical lockfile on pushes to `main` and `dev`.

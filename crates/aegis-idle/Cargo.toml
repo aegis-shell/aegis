@@ -13,7 +13,6 @@ aegis-ipc.workspace = true
 log.workspace = true
 aegis-logging.workspace = true
 libc.workspace = true
-thiserror.workspace = true
 wayland-client.workspace = true
 wayland-protocols.workspace = true
 zbus.workspace = true
