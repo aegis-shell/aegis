@@ -7,6 +7,23 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-08-13
+
+### Changed
+
+- Dependency hygiene: `toml` 1.x and `toml_edit` 0.25 unify the TOML
+  parser stack on a single `toml_parser`/`toml_datetime`/`winnow` copy,
+  and `getrandom` moves to 0.4. Unused manifest entries were dropped:
+  `thiserror` (aegis-idle), `wayland-backend` (aegis-lock),
+  `log`/`tracing` (aegis-logging), and `getrandom` (aegis).
+- Release builds now use thin LTO with a single codegen unit and strip
+  the symbol table at `opt-level` 2. Panic messages still carry
+  file:line, but stripped binaries resolve no function names in
+  backtraces.
+- CI now also runs on pushes to `dev`, and the pre-commit hook refuses
+  release-shaped commits while local Optics mode is active (the
+  canonical-lockfile release rule is recorded in `AGENTS.md`).
+
 ## [0.0.21] - 2026-08-12
 
 ### Fixed
