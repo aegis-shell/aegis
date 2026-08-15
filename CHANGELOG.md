@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.26] - 2026-08-15
+
 ### Fixed
 
 - A second concurrently running compositor could append to the durable audit
