@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-08-15
+
 ### Added
 
 - `aegis-session` wrapper script and `aegis-shutdown.target`: a session
