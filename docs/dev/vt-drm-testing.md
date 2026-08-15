@@ -53,6 +53,9 @@ direct command:
 systemctl --user start --wait aegis.service
 ```
 
+`--wait` returns once the compositor reports readiness (`Type=notify`), not
+when the process forks.
+
 The service used for development must point at the binary under test and
 delegate the CPU, memory, and process controllers. A directly started binary
 may test graphics, but the Interaction Domain launch warning is expected because it does

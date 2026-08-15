@@ -1,14 +1,18 @@
 [Unit]
 Description=Aegis Wayland Compositor
-# Wayland compositor convention (sway.service): bind to the user's
-# graphical-session so D-Bus-activated session services such as
+# Wayland compositor convention (sway.service/niri.service): bind to the
+# user's graphical-session so D-Bus-activated session services such as
 # xdg-desktop-portal start and stop with the compositor.
 BindsTo=graphical-session.target
+Before=graphical-session.target
 Wants=graphical-session-pre.target
 After=graphical-session-pre.target
 
 [Service]
-Type=simple
+# Readiness (`READY=1`) is reported once the session environment is exported
+# and the Wayland socket listens, so `--wait` and ordered units cannot race
+# the compositor.
+Type=notify
 ExecStart=/usr/bin/aegis
 Restart=on-failure
 RestartSec=1

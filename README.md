@@ -58,8 +58,12 @@ compositor runs without it. An installed core package can start the
 compositor as a user service:
 
 ```bash
-systemctl --user enable --now aegis.service
+systemctl --user start --wait aegis.service
 ```
+
+Greeters and TTY logins should use the `aegis-session` wrapper instead; it
+additionally manages the login environment and the `graphical-session.target`
+lifecycle.
 
 ## Controls
 

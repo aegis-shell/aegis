@@ -43,6 +43,98 @@ pub(crate) fn publish(socket_name: &str, nested: bool) {
     export_activation_environment();
 }
 
+/// Readiness notification for the service manager. With `Type=notify` the
+/// unit is not considered started until this arrives, so
+/// `systemctl --user start --wait aegis.service` and units ordered after the
+/// compositor cannot race the Wayland socket. Outside a service context this
+/// is a no-op: the manager sets `NOTIFY_SOCKET`, and it is consumed here so
+/// supervised children (idle coordinator, semantic adapter) cannot notify on
+/// the compositor's behalf.
+pub(crate) fn notify_ready() {
+    let Some(socket) = std::env::var_os("NOTIFY_SOCKET") else {
+        return;
+    };
+    // SAFETY: same startup window as `publish` — no spawned thread reads the
+    // process environment yet.
+    unsafe {
+        std::env::remove_var("NOTIFY_SOCKET");
+    }
+    match send_ready(socket.as_encoded_bytes()) {
+        Ok(()) => log::info!("session: service manager notified that the compositor is ready"),
+        Err(error) => log::warn!("session: could not send readiness notification: {error}"),
+    }
+}
+
+/// `READY=1` over the manager's datagram socket. Written against libc because
+/// the stable std API cannot connect to abstract-namespace addresses, which
+/// the manager uses in containers.
+fn send_ready(socket: &[u8]) -> std::io::Result<()> {
+    const MESSAGE: &[u8] = b"READY=1";
+
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let base = std::mem::offset_of!(libc::sockaddr_un, sun_path);
+    let capacity = address.sun_path.len();
+    let length = match socket.strip_prefix(b"@") {
+        // Abstract namespace: the leading '@' stands in for a NUL byte, and
+        // the address length must be exact — trailing padding would name a
+        // different socket.
+        Some(name) if !name.is_empty() && name.len() < capacity => {
+            // SAFETY: `1 + name.len() <= capacity`, within `sun_path`.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    name.as_ptr(),
+                    address.sun_path.as_mut_ptr().cast::<u8>().add(1),
+                    name.len(),
+                );
+            }
+            base + 1 + name.len()
+        }
+        // Pathname address; the zeroed struct supplies the terminating NUL.
+        None if !socket.is_empty() && socket.len() < capacity => {
+            // SAFETY: `socket.len() < capacity`, within `sun_path`.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    socket.as_ptr(),
+                    address.sun_path.as_mut_ptr().cast::<u8>(),
+                    socket.len(),
+                );
+            }
+            base + socket.len() + 1
+        }
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NOTIFY_SOCKET address is empty or too long",
+            ));
+        }
+    };
+
+    // SAFETY: socket/sendto/close are used with valid arguments; the fd is
+    // closed exactly once on every path below.
+    unsafe {
+        let fd = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let sent = libc::sendto(
+            fd,
+            MESSAGE.as_ptr().cast(),
+            MESSAGE.len(),
+            libc::MSG_NOSIGNAL,
+            (&raw const address).cast(),
+            length as libc::socklen_t,
+        );
+        let result = if sent == MESSAGE.len() as isize {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+        libc::close(fd);
+        result
+    }
+}
+
 /// Best-effort export of the session environment to the D-Bus activation
 /// environment and, via `--systemd`, the systemd --user manager, so services
 /// activated later (portals, flatpak-spawn helpers) inherit it. A missing

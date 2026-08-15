@@ -7,6 +7,22 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- `aegis-session` wrapper script and `aegis-shutdown.target`: a session
+  entry point modeled on `niri-session`. The wrapper imports the login
+  environment into the systemd user manager, starts `aegis.service`, waits
+  for the compositor to exit, then stops `graphical-session.target` and
+  unsets the session environment.
+
+### Changed
+
+- `aegis.service` now uses `Type=notify` and orders itself
+  `Before=graphical-session.target`. The compositor reports readiness
+  (`READY=1`) once the session environment is exported and the Wayland
+  socket listens, so `systemctl --user start --wait aegis.service` and
+  units ordered after the compositor can no longer race startup.
+
 ## [0.0.22] - 2026-08-13
 
 ### Changed

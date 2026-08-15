@@ -40,11 +40,20 @@ Use the packaged `aegis.service` instead of the direct binary when testing
 Interaction Domain application launch. The service delegates the cgroup controllers that
 mandatory memory, process, CPU, freeze, and revoke boundaries require. It
 also binds to `graphical-session.target`, so session services such as
-xdg-desktop-portal start and stop with the compositor.
+xdg-desktop-portal start and stop with the compositor. The unit uses
+`Type=notify`: the compositor reports readiness once the session environment
+is exported and the Wayland socket listens, so `--wait` and ordered units
+cannot race startup.
 
 ```bash
 systemctl --user start --wait aegis.service
 ```
+
+For a complete login session — from a greeter or straight from the TTY —
+start the compositor through the `aegis-session` wrapper instead. It imports
+the login environment into the systemd user manager, starts `aegis.service`,
+waits for the compositor to exit, then stops `graphical-session.target`
+through `aegis-shutdown.target` and unsets the session environment.
 
 ## Session environment
 

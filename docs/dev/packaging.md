@@ -113,6 +113,8 @@ inside the package build root.
 | Portal: Meson FileChooser executable | `/usr/libexec/aegis-portal-prompter` by default | portal |
 | `target/release/aegis-mcp` | `/usr/bin/aegis-mcp` | agent integration |
 | `contrib/systemd/user/aegis.service` | `/usr/lib/systemd/user/aegis.service` | core |
+| `contrib/systemd/user/aegis-shutdown.target` | `/usr/lib/systemd/user/aegis-shutdown.target` | core |
+| `contrib/systemd/aegis-session` | `/usr/bin/aegis-session` | core |
 | `contrib/pam/aegis-lock` | `/etc/pam.d/aegis-lock` | core |
 | Portal: generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
 | Portal: optional Meson PAM artifact | `/usr/lib/security/pam_aegis.so` by default | portal |
@@ -217,7 +219,7 @@ Test the completed packages in a clean environment rather than running out of
 `target/release`:
 
 ```bash
-systemd-analyze --user verify aegis.service
+systemd-analyze --user verify aegis.service aegis-shutdown.target
 pkg-config --modversion flux flux-scene-graph lens iris
 test -x /usr/bin/aegis-idle
 test -x /usr/bin/aegis-atspi
@@ -339,6 +341,10 @@ package() {
 
   install -Dm0644 contrib/systemd/user/aegis.service \
     "$pkgdir/usr/lib/systemd/user/aegis.service"
+  install -Dm0644 contrib/systemd/user/aegis-shutdown.target \
+    "$pkgdir/usr/lib/systemd/user/aegis-shutdown.target"
+  install -Dm0755 contrib/systemd/aegis-session \
+    "$pkgdir/usr/bin/aegis-session"
   install -Dm0644 contrib/pam/aegis-lock \
     "$pkgdir/etc/pam.d/aegis-lock"
 

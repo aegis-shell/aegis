@@ -269,6 +269,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Publish the session environment now that the socket name is known, so
     // launched clients and D-Bus-activated services can connect back.
     session::publish(server.socket(), host.name() == "nested");
+    // With `Type=notify` the unit is only considered started now: the
+    // environment is exported and the Wayland socket is listening.
+    session::notify_ready();
     if let Some(c) = config.as_ref() {
         server.set_output_policies(c.output_policies());
     }
