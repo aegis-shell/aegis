@@ -7,6 +7,18 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A second concurrently running compositor could append to the durable audit
+  journal (`$XDG_DATA_HOME/aegis/audit/events-v2.jsonl`) from stale sequence
+  state, interleaving records whose sequence numbers then failed chain
+  verification on the next start, so every later launch died with
+  `aegis: audit sequence mismatch: expected ..., got ...`. Opening the store
+  now takes an exclusive advisory lock held for the store's lifetime, and a
+  second live opener fails fast with a clear "locked by another live
+  instance" error instead of corrupting the chain. The startup error for a
+  failed verification also names the journal path and how to quarantine it.
+
 ## [0.0.25] - 2026-08-15
 
 ### Fixed

@@ -157,8 +157,11 @@ The live journal is backed by
 `$XDG_DATA_HOME/aegis/audit/events-v2.jsonl` (or the equivalent default data
 directory). The owner-only append store synchronizes successful writes and
 verifies monotonic sequence numbers, record bounds, and a SHA-256 hash chain
-when reopening. Hash mismatches, unsafe ownership/mode, symlinks, malformed
-JSON, sequence gaps, or an incomplete trailing record fail closed. Creation also
+when reopening. An open store also holds an exclusive advisory lock for its
+lifetime, so a second live compositor fails fast instead of interleaving
+appends from stale sequence state. Hash mismatches, unsafe ownership/mode,
+symlinks, malformed JSON, sequence gaps, or an incomplete trailing record
+fail closed. Creation also
 synchronizes the containing directory before the store is accepted, so a
 reported durable log cannot depend on an uncommitted directory entry. This is
 a durable decision/audit log, not a promise to resurrect external Wayland

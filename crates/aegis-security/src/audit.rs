@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -285,6 +286,11 @@ where
 {
     /// Open and verify an existing store, or create a new owner-only store.
     /// The returned events are complete and hash-verified in sequence order.
+    ///
+    /// A successful open holds the store's exclusive advisory lock for the
+    /// store's lifetime. A second live opener fails fast with
+    /// [`AuditError::Locked`] instead of interleaving appends from stale
+    /// sequence state, which would corrupt the chain seen by the next open.
     pub fn open(path: impl Into<PathBuf>) -> Result<(Self, Vec<T>), AuditError> {
         let path = path.into();
         let parent = path.parent().ok_or(AuditError::NoParent)?.to_path_buf();
@@ -296,6 +302,7 @@ where
 
         let (file, created) = open_store_file(&path)?;
         validate_private_file(&path, &file)?;
+        lock_store_file(&path, &file)?;
         if created {
             // `sync_data` on later appends cannot make the directory entry
             // that first named this file durable. Persist that entry before
@@ -372,6 +379,27 @@ where
     pub fn tail_hash(&self) -> &str {
         &self.tail_hash
     }
+}
+
+/// Take the store's exclusive advisory lock without blocking. The lock is
+/// bound to the open file description, so the store holds it through `writer`
+/// until drop or process exit releases it. Two live writers on one store
+/// replay the same tail and then interleave appends whose sequences no longer
+/// match either writer, corrupting the chain for the next open; the loser of
+/// this lock must fail fast instead.
+fn lock_store_file(path: &Path, file: &File) -> Result<(), AuditError> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(());
+    }
+    let source = std::io::Error::last_os_error();
+    if source.kind() == std::io::ErrorKind::WouldBlock {
+        return Err(AuditError::Locked(path.to_path_buf()));
+    }
+    Err(AuditError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn open_store_file(path: &Path) -> Result<(File, bool), AuditError> {
@@ -576,6 +604,8 @@ pub enum AuditError {
     Decode(serde_json::Error),
     #[error("unsupported audit store version {0}")]
     Version(u32),
+    #[error("audit store is locked by another live instance: {0}")]
+    Locked(PathBuf),
     #[error("audit sequence mismatch: expected {expected}, got {actual}")]
     Sequence { expected: u64, actual: u64 },
     #[error("audit sequence space exhausted")]
@@ -678,6 +708,23 @@ mod tests {
             ChainedEventStore::<Entry>::open(&path),
             Err(AuditError::IncompleteRecord(1))
         ));
+    }
+
+    #[test]
+    fn a_second_live_opener_fails_fast_instead_of_corrupting_the_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit/events.jsonl");
+        let (mut store, _) = ChainedEventStore::<Entry>::open(&path).unwrap();
+        store.append(&entry(1, "one")).unwrap();
+        assert!(matches!(
+            ChainedEventStore::<Entry>::open(&path),
+            Err(AuditError::Locked(_))
+        ));
+        drop(store);
+
+        let (reopened, replayed) = ChainedEventStore::<Entry>::open(&path).unwrap();
+        assert_eq!(replayed, vec![entry(1, "one")]);
+        assert_eq!(reopened.next_sequence(), 2);
     }
 
     #[test]
