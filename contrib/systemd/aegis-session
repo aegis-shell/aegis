@@ -39,8 +39,14 @@ if hash systemctl >/dev/null 2>&1; then
     # Reset failed state of all user units.
     systemctl --user reset-failed
 
-    # Import the login manager environment.
-    systemctl --user import-environment
+    # Import the login manager environment. systemd >= 256 deprecates
+    # `import-environment` without an explicit variable list, so enumerate
+    # the login environment names; values are read from this process.
+    login_env_names=$(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ' ')
+    if [ -n "$login_env_names" ]; then
+        # Word splitting is intended: each name is a separate argument.
+        systemctl --user import-environment $login_env_names
+    fi
 
     # DBus activation environment is independent from systemd. While most of
     # dbus-activated services are already using `SystemdService` directive,

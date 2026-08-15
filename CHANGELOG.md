@@ -18,6 +18,9 @@ project cuts a tagged release.
   second live opener fails fast with a clear "locked by another live
   instance" error instead of corrupting the chain. The startup error for a
   failed verification also names the journal path and how to quarantine it.
+- `aegis-session` called `systemctl --user import-environment` without a
+  variable list, which systemd >= 256 rejects with a deprecation warning; the
+  script now passes the login environment's variable names explicitly.
 
 ## [0.0.25] - 2026-08-15
 
