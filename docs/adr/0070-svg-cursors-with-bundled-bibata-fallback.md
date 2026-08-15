@@ -1,6 +1,6 @@
 # ADR-0070: SVG cursors with a bundled Bibata fallback
 
-- Status: Accepted
+- Status: Superseded by ADR-0122
 - Date: 2026-07-29
 
 ## Context

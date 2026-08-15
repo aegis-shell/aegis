@@ -4,8 +4,9 @@ description = "autonomous surface shell — a Wayland compositor"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
-# The compositor binary embeds assets/cursors/Bibata-Modern-Ice.
-license = "MIT AND GPL-3.0-only"
+# The compositor binary embeds the original MIT-licensed cursor theme under
+# assets/cursors/Aegis.
+license.workspace = true
 rust-version.workspace = true
 default-run = "aegis"
 
@@ -72,7 +73,7 @@ libc = { workspace = true }
 resvg = { workspace = true }
 usvg = { workspace = true }
 tiny-skia = { workspace = true }
-# Embeds the bundled Bibata-Modern-Ice cursor theme as the default fallback.
+# Embeds the bundled Aegis cursor theme as the default fallback.
 include_dir = { workspace = true }
 sha2.workspace = true
 serde.workspace = true

@@ -76,7 +76,7 @@ background and how the decisions fit together, see
 | [0067](0067-remote-optics-dependencies-and-local-overrides.md) | Remote Optics dependencies with local development overrides | Superseded by [0071](0071-worktree-isolated-cross-repository-development.md) |
 | [0068](0068-cargo-native-development-and-environment-backend-selection.md) | Cargo-native development and environment-only backend selection | Superseded by [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) |
 | [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) | Documentation-owned installation and throwaway development staging (supersedes [0068](0068-cargo-native-development-and-environment-backend-selection.md)) | Accepted |
-| [0070](0070-svg-cursors-with-bundled-bibata-fallback.md) | SVG cursors with a bundled Bibata fallback | Accepted |
+| [0070](0070-svg-cursors-with-bundled-bibata-fallback.md) | SVG cursors with a bundled Bibata fallback | Superseded by [0122](0122-original-mit-cursor-theme-replaces-bibata.md) |
 | [0071](0071-worktree-isolated-cross-repository-development.md) | Worktree-isolated Aegis and Optics development | Accepted |
 | [0072](0072-desktop-preference-authority-and-toolkit-compatibility.md) | Desktop preference authority and toolkit compatibility | Accepted |
 | [0073](0073-prism-search-and-explicit-application-shortcuts.md) | Prism search and explicit application shortcuts (amends [0022](0022-application-launcher.md), [0044](0044-dock-and-control-center-crates.md)) | Accepted |
@@ -129,3 +129,4 @@ background and how the decisions fit together, see
 | [0119](0119-four-finger-command-panel-default-restored.md) | Four-finger command panel default restored (amends [0116](0116-overview-gesture-top-rail-and-spatial-slots.md)) | Accepted |
 | [0120](0120-glass-material-roles-and-region-level-backdrop-adaptation.md) | Glass material roles and region-level backdrop adaptation (amends [0046](0046-design-system-crate.md), [0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md)) | Accepted |
 | [0121](0121-neutral-mask-feedback-movable-mirrors-and-non-raising-agent-input.md) | Neutral mask feedback, movable mirrors, and non-raising Agent input (amends [0048](0048-compositor-owned-agent-operation-feedback.md), [0091](0091-agent-controlled-window-physical-mirrors-and-guard.md)) | Accepted |
+| [0122](0122-original-mit-cursor-theme-replaces-bibata.md) | Original MIT cursor theme replaces the bundled Bibata fallback (supersedes [0070](0070-svg-cursors-with-bundled-bibata-fallback.md)) | Accepted |

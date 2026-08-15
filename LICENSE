@@ -19,12 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-------------------------------------------------------------------------------
-
-Note on third-party assets: the bundled cursor theme under
-`assets/cursors/Bibata-Modern-Ice/` is derived from Bibata Cursor
-(https://github.com/ful1e5/Bibata_Cursor) and remains licensed under
-GPL-3.0-only. Its `LICENSE` and `NOTICE` files in that directory govern that
-asset and override this MIT license for those files only. The project source
-code is MIT-licensed as stated above.

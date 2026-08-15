@@ -44,15 +44,15 @@ const SCROLL_GLYPH_FOR: Duration = Duration::from_millis(450);
 const LABEL_HEIGHT: f32 = 28.0;
 const BACKGROUND_HEIGHT: f32 = 34.0;
 const CURSOR_SIZE: f32 = 22.0;
-/// Bibata `left_ptr` hotspot (55, 17) in its 256-unit view box.
-const CURSOR_HOTSPOT: (f32, f32) = (55.0 / 256.0, 17.0 / 256.0);
+/// Aegis `left_ptr` hotspot (64, 28) in its 256-unit view box.
+const CURSOR_HOTSPOT: (f32, f32) = (64.0 / 256.0, 28.0 / 256.0);
 const CLICK_SIZE: (f32, f32) = (21.0, 30.0);
 /// The click point lands between the mouse buttons, not the body center.
 const CLICK_ANCHOR: (f32, f32) = (0.5, 0.175);
 
-// Arrow cursor: Bibata Modern Ice `left_ptr` (GPL-3.0), the same theme the
-// compositor's software cursor embeds under `assets/cursors/`. The Agent
-// pointer is an ordinary arrow by design — the mask and text carry the
+// Arrow cursor: the Aegis theme's `left_ptr` (MIT, original art), the same
+// theme the compositor's software cursor embeds under `assets/cursors/`. The
+// Agent pointer is an ordinary arrow by design — the mask and text carry the
 // operation signal, not an exotic marker shape.
 const CURSOR_SVG: &str = include_str!("../../assets/agent/cursor.svg");
 // Simplified mouse glyphs authored for this component: one shared body with

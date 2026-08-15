@@ -85,10 +85,7 @@ lifecycle.
 
 ## License
 
-Project source code is licensed under the [MIT License](LICENSE).
-
-The bundled cursor theme under `assets/cursors/Bibata-Modern-Ice/` is derived
-from [Bibata Cursor](https://github.com/ful1e5/Bibata_Cursor) and is licensed
-under GPL-3.0-only; see its `LICENSE` and `NOTICE` in that directory. The
-shipped binary therefore combines MIT (code) and GPL-3.0-only (bundled
-cursor art).
+Project source code is licensed under the [MIT License](LICENSE). The
+bundled cursor theme under `assets/cursors/Aegis/` is original art generated
+in-tree by `scripts/prepare-aegis-cursors.py` and is MIT-licensed like the
+rest of the project.

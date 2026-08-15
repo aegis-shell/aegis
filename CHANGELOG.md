@@ -7,6 +7,17 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- The bundled cursor theme is now the original **Aegis** theme
+  (`assets/cursors/Aegis`, 34 shapes plus 71 aliases), generated in-tree by
+  `scripts/prepare-aegis-cursors.py` and MIT-licensed like the rest of the
+  project. It replaces the GPL-3.0-only Bibata-Modern-Ice fallback, so the
+  shipped binary is MIT through and through and packaging no longer stages
+  third-party cursor licenses. Theme resolution, shape coverage, and the
+  hotspot convention are unchanged; users with an installed cursor theme
+  see no difference (ADR-0122, supersedes ADR-0070).
+
 ## [0.0.23] - 2026-08-15
 
 ### Added
