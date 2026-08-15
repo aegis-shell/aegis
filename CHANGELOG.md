@@ -7,6 +7,17 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- The realtime liquid-glass backdrop (Dock bar, HUD chips, menus,
+  tooltips) rendered nothing at all: `LauncherBackdrop` captures start
+  life invalid, and the stale-capture guard inside `recompute_effects`
+  also gated the `finish_refresh` path that establishes validity, so no
+  capture could ever become valid and every frame re-captured and
+  discarded the scene. `finish_refresh` now marks its just-sealed
+  capture valid before delegating, restoring the effect (broken in
+  0a7185e).
+
 ## [0.0.24] - 2026-08-15
 
 ### Changed

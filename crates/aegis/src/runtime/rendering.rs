@@ -845,6 +845,16 @@ impl LauncherBackdrop {
             }
             return false;
         }
+        // The capture pass sealed every refreshed region into this slot's
+        // capture image, so the scene it holds is current: a full refresh
+        // re-rendered all regions, and a partial refresh is only ever planned
+        // over an already-valid capture. Mark it valid *before* rebuilding
+        // the effects — `recompute_effects` refuses to run on a stale
+        // capture, so a capture that just succeeded must establish validity
+        // here or no capture ever could.
+        if let Some(capture) = self.captures.get_mut(slot).and_then(Option::as_mut) {
+            capture.valid = true;
+        }
         self.recompute_effects(
             canvas,
             frame,
@@ -878,7 +888,10 @@ impl LauncherBackdrop {
             return false;
         };
         // A recompute only makes sense over a scene-capture that is still
-        // current; the planner guarantees it, so this is just a guard.
+        // current. The planner only emits `BackdropPlan::Recompute` for a
+        // valid capture, and `finish_refresh` marks its just-sealed capture
+        // valid before delegating here, so this guard can never fire on
+        // either entry path; it exists only against future callers.
         if !capture.valid {
             return false;
         }
