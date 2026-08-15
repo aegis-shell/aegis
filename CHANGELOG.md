@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-08-15
+
 ### Changed
 
 - The bundled cursor theme is now the original **Aegis** theme
