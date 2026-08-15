@@ -751,15 +751,15 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let journal_path = data_home.join("aegis/audit/events-v2.jsonl");
     let journal = aegis_ipc::Journal::open_persistent(aegis_ipc::DEFAULT_CAPACITY, &journal_path)
         .map_err(|error| match error {
-            locked @ aegis_security::audit::AuditError::Locked(_) => {
-                std::io::Error::other(format!("{locked}; is another aegis instance running?"))
-            }
-            error => std::io::Error::other(format!(
-                "{} failed verification: {error}; quarantine the file (rename it aside, e.g. \
+        locked @ aegis_security::audit::AuditError::Locked(_) => {
+            std::io::Error::other(format!("{locked}; is another aegis instance running?"))
+        }
+        error => std::io::Error::other(format!(
+            "{} failed verification: {error}; quarantine the file (rename it aside, e.g. \
                  with a .corrupt-<date>.bak suffix) to start a fresh chain",
-                journal_path.display()
-            )),
-        })?;
+            journal_path.display()
+        )),
+    })?;
     let journal = std::sync::Arc::new(std::sync::Mutex::new(journal));
     let mut agent_registry = PrincipalRegistry::load(data_home.join("aegis/principals.json"));
     let grant_store = GrantStore::load(data_home.join("aegis/grants.json"));
