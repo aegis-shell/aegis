@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.25] - 2026-08-15
+
 ### Fixed
 
 - Output streams stalled on a static desktop: stream frames only ever rode
