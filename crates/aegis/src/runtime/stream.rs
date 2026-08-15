@@ -320,6 +320,23 @@ impl OutputStreams {
             .collect()
     }
 
+    /// Time until the soonest stream frame is due at `now` — zero when one
+    /// is already due — across every live stream, or `None` when no streams
+    /// exist. The main loop caps its idle wait with this so a live stream
+    /// keeps presentation turning at the negotiated cadence even when
+    /// nothing else damages the output; a stream only ever fed by damage
+    /// stalls its consumer on a static screen.
+    pub(super) fn next_frame_in(&self, now: Instant) -> Option<Duration> {
+        self.streams
+            .values()
+            .map(|stream| {
+                stream.last_frame.map_or(Duration::ZERO, |last| {
+                    (last + stream.frame_interval).saturating_duration_since(now)
+                })
+            })
+            .min()
+    }
+
     /// Ids of due SHM streams (the shared-readback fan-out).
     pub(super) fn due_shm_ids(&self, now: Instant) -> Vec<u64> {
         self.due_ids_by_transport(now, false)
@@ -1005,6 +1022,45 @@ mod tests {
         assert!(streams.streams.is_empty());
         assert!(!streams.streams.contains_key(&b));
         assert!(!streams.streams.contains_key(&c));
+    }
+
+    #[test]
+    fn next_frame_in_paces_the_loop_at_the_soonest_due_stream() {
+        let mut streams = OutputStreams::new();
+        // No streams: no stream-driven wakeup.
+        assert_eq!(streams.next_frame_in(Instant::now()), None);
+
+        // A stream that never received a frame is due immediately.
+        let fast = streams
+            .start(1, Some(60), (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
+        assert_eq!(streams.next_frame_in(Instant::now()), Some(Duration::ZERO));
+
+        // After a frame, the wait is the remaining interval; a second,
+        // slower stream does not push the boundary out.
+        let t0 = Instant::now();
+        streams.record_frame(fast, t0, true);
+        let slow = streams
+            .start(2, Some(1), (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
+        streams.record_frame(slow, t0, true);
+        let wait = streams
+            .next_frame_in(t0 + Duration::from_millis(6))
+            .expect("streams live");
+        assert!(
+            wait <= Duration::from_millis(11),
+            "60fps stream due in 16.7ms: {wait:?}"
+        );
+        assert_eq!(
+            streams.next_frame_in(t0 + Duration::from_millis(20)),
+            Some(Duration::ZERO),
+            "the fast stream is due again"
+        );
+
+        // Stopping every stream removes the stream-driven wakeup.
+        streams.stop(fast);
+        streams.stop(slow);
+        assert_eq!(streams.next_frame_in(Instant::now()), None);
     }
 }
 

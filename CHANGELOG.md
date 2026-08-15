@@ -9,6 +9,14 @@ project cuts a tagged release.
 
 ### Fixed
 
+- Output streams stalled on a static desktop: stream frames only ever rode
+  presentations, and presentations are damage-driven, so with nothing on
+  screen changing a stream's readback pipeline only turned over on the
+  one-second maintenance tick and delivered roughly one frame every few
+  seconds (screen recording showed a frozen picture). A live stream now
+  paces the main loop itself: the next due stream frame caps the idle wait,
+  and reaching it forces a presentation even without damage, so consumers
+  receive frames at the negotiated `max_fps` cadence regardless of damage.
 - The realtime liquid-glass backdrop (Dock bar, HUD chips, menus,
   tooltips) rendered nothing at all: `LauncherBackdrop` captures start
   life invalid, and the stale-capture guard inside `recompute_effects`

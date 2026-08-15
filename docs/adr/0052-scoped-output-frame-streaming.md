@@ -21,9 +21,16 @@ viable. And it runs concurrently with presentation, so a slow consumer must
 never stall the frame loop.
 
 The compositor's frame loop is event-driven: a frame is rendered only when
-something changed ([ADR-0038](0038-frame-pacing.md)). A presentation
-therefore is the damage signal — no presentation means no new frame, and a
-stream consumer simply receives nothing while the desktop is idle.
+something changed ([ADR-0038](0038-frame-pacing.md)). A live stream
+nevertheless cannot be fed by damage alone — a consumer left without frames
+on a static desktop (screen recording, remote display) observes a frozen
+picture, and the multi-stage readback pipeline once degenerated to one
+frame every few seconds under the idle maintenance tick. A live stream
+therefore becomes a presentation driver in its own right: its next due
+frame caps the main loop's idle wait, and reaching that deadline forces a
+presentation exactly like damage does. Frames still arrive only for
+presented frames, throttled per stream to `max_fps`; the loop simply stops
+idling while a consumer is attached.
 
 ## Decision
 

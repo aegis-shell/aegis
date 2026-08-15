@@ -3,6 +3,11 @@ use super::*;
 const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const FALLBACK_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
 const MODEL_WALLPAPER_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
+/// Poll quantum while a stream frame traverses the readback lane: the
+/// stream is already past due, but its delivery is in flight, so a
+/// zero-timeout wait would only spin the core until the GPU fence or the
+/// worker completion lands.
+const STREAM_IN_FLIGHT_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 
 impl CompositorRuntime {
     fn presentation_availability(&self) -> PresentationAvailability {
@@ -118,17 +123,45 @@ impl CompositorRuntime {
     }
 
     fn idle_wait(&self) -> std::time::Duration {
+        // A live output stream paces the loop like any other visual timer:
+        // its next due frame must wake the loop even on a static screen, or
+        // the stream's consumer starves between maintenance ticks. Streams
+        // are not served while the session is locked or the backend is
+        // inactive, so they must not keep the loop awake then either. While
+        // a frame is already traversing the SHM readback lane (readback
+        // bound, or the worker converting it), delivery is in flight and
+        // its completion wakes the loop; poll again after a short quantum
+        // instead of spinning on a zero timeout until then.
+        let stream_wait = if !self.server.session_locked() && self.host.is_active() {
+            let in_flight = self.pending_capture.is_some() || self.stream_job_in_flight;
+            self.streams
+                .next_frame_in(std::time::Instant::now())
+                .map(|wait| {
+                    if in_flight {
+                        wait.max(STREAM_IN_FLIGHT_WAIT)
+                    } else {
+                        wait
+                    }
+                })
+        } else {
+            None
+        };
         // Media wallpapers expose their next source frame directly. A 3D
         // wallpaper is intentionally capped at 60 Hz independently of shell
         // and client pacing; using the render timestamp retains that cadence
         // across an intervening DRM page flip.
         let Some(wallpaper) = self.wallpaper.as_ref() else {
-            return MAINTENANCE_INTERVAL;
+            return stream_wait
+                .unwrap_or(MAINTENANCE_INTERVAL)
+                .min(MAINTENANCE_INTERVAL);
         };
         let mut wait = wallpaper.next_frame_in().unwrap_or(MAINTENANCE_INTERVAL);
         if wallpaper.has_model() {
             wait = wait
                 .min(MODEL_WALLPAPER_INTERVAL.saturating_sub(self.previous_render_at.elapsed()));
+        }
+        if let Some(stream_wait) = stream_wait {
+            wait = wait.min(stream_wait);
         }
         wait.min(MAINTENANCE_INTERVAL)
     }
