@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.27] - 2026-08-16
+
 ### Added
 
 - Color management (ADR-0129). The compositor now implements
