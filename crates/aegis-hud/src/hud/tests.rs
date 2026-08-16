@@ -277,8 +277,8 @@ fn backdrop_regions_cover_only_the_visible_chips() {
     assert_eq!(glass[0].opacity, 1.0);
     assert_eq!(glass[1].opacity, 0.5);
 
-    // Every chip faded: no blur work at all (an empty region list with a
-    // nonzero sigma would be treated as full-screen).
+    // Every chip faded: no blur work at all (sigma drops to zero, so the
+    // empty region list keeps the HUD out of the backdrop capture entirely).
     bar.chip_fade = [0.0, 0.0];
     let regions = bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces);
     assert!(regions.is_empty());

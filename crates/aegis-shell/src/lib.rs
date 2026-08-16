@@ -874,8 +874,11 @@ pub trait Chrome {
     }
 
     /// Regions covered by this component's glass material, in logical output
-    /// coordinates. A component requesting blur without a region is treated
-    /// as full-screen for compatibility.
+    /// coordinates. An empty list means the component contributes no
+    /// rectangular frost; components that want a full-screen backdrop (the
+    /// launcher, the command panel) must declare the full-screen rect
+    /// explicitly. Analytic glass bodies need no entry here — they carry
+    /// their own capture footprint via `LiquidGlassRegion::capture_bounds`.
     fn backdrop_regions(
         &self,
         _display: (f32, f32),
@@ -1902,17 +1905,11 @@ impl Shell {
                 exclusive_presentation_active,
             ) && component.backdrop_blur_sigma() > 0.0
             {
-                let mut requested =
-                    component.backdrop_regions(display, &self.windows, &self.workspaces);
-                if requested.is_empty() {
-                    requested.push(BackdropRegion {
-                        x: 0.0,
-                        y: 0.0,
-                        w: display.0,
-                        h: display.1,
-                    });
-                }
-                regions.extend(requested);
+                regions.extend(component.backdrop_regions(
+                    display,
+                    &self.windows,
+                    &self.workspaces,
+                ));
             }
         }
         regions
