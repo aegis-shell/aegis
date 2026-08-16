@@ -7,6 +7,15 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- Built-in scope claim refusals now log why a claimant's executable
+  could not be resolved — for example EACCES from a non-dumpable peer,
+  whose `/proc/<pid>/exe` is unreadable — instead of a bare
+  `peer executable None`. The `peer_executable` handler contract now
+  documents that built-in scope claimants are platform components and
+  must stay dumpable.
+
 ## [0.0.28] - 2026-08-16
 
 ### Fixed

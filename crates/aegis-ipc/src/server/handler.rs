@@ -59,7 +59,12 @@ pub trait Handler: Send + Sync {
     /// peer's executable could not be determined; built-in scope claims
     /// must then fail closed. The default reads the host `/proc`; tests
     /// override it to exercise built-in-scope policy without the platform
-    /// binaries.
+    /// binaries. Production compositors should override it to log the
+    /// failure reason: an EACCES marks a non-dumpable claimant, which
+    /// operators must distinguish from an allowlist mismatch. Built-in
+    /// scope claimants are platform components and must stay dumpable —
+    /// clearing the flag (e.g. PR_SET_DUMPABLE=0) severs their own
+    /// binding.
     fn peer_executable(&self, pid: u32) -> Option<std::path::PathBuf> {
         let link = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
         let text = link.to_str()?;

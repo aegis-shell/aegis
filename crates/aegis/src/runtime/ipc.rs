@@ -769,6 +769,26 @@ impl aegis_ipc::Handler for LiveState {
         self.scopes.read().unwrap().get(name).cloned()
     }
 
+    fn peer_executable(&self, pid: u32) -> Option<std::path::PathBuf> {
+        // Same resolution as the trait default, but with the failure reason
+        // kept: an EACCES here means the claimant is non-dumpable (its
+        // /proc/<pid>/exe is unreadable even to us), which is exactly the
+        // case an operator must distinguish from a mismatched allowlist.
+        // The scope claim fails closed either way.
+        match std::fs::read_link(format!("/proc/{pid}/exe")) {
+            Ok(link) => {
+                let text = link.to_str()?;
+                Some(std::path::PathBuf::from(
+                    text.strip_suffix(" (deleted)").unwrap_or(text),
+                ))
+            }
+            Err(error) => {
+                log::warn!("ipc: cannot resolve the peer executable of pid {pid}: {error}");
+                None
+            }
+        }
+    }
+
     fn builtin_scope_permitted(&self, name: &str, peer_exe: Option<&std::path::Path>) -> bool {
         let permitted = peer_exe.is_some_and(|peer_exe| {
             // A configured `[ipc.scope_executables]` entry replaces the
