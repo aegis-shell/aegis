@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.29] - 2026-08-16
+
 ### Added
 
 - Built-in scope claim refusals now log why a claimant's executable
