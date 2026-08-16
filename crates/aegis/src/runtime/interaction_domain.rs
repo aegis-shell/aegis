@@ -60,6 +60,16 @@ pub(super) struct IpcCommandRequest {
     pub(super) command: aegis_ipc::Command,
 }
 
+/// One pre-authorized transaction batch from an IPC connection thread
+/// (ADR-0125), applied in order on the main loop; the reply carries the
+/// authoritative per-op receipt or a journal precondition conflict.
+pub(super) struct TransactRequest {
+    pub(super) origin: aegis_ipc::Origin,
+    pub(super) expected_journal_seq: Option<u64>,
+    pub(super) ops: Vec<aegis_ipc::Command>,
+    pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::TransactResult, String>>,
+}
+
 /// One live-system mutation that must return the main loop's authoritative
 /// apply result rather than only acknowledging IPC queueing.
 pub(super) struct SystemControlRequest {

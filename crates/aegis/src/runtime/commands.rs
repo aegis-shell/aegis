@@ -345,7 +345,7 @@ pub(super) fn journal_effect_and_broadcast(
     origin: aegis_ipc::Origin,
     cmd: aegis_ipc::Command,
     effect: aegis_ipc::Effect,
-) {
+) -> aegis_ipc::JournalEntry {
     journal_mutation_effect_and_broadcast(
         journal,
         ipc,
@@ -355,7 +355,7 @@ pub(super) fn journal_effect_and_broadcast(
             cmd: aegis_ipc::AuditedCommand::from(&cmd),
         },
         effect,
-    );
+    )
 }
 
 pub(super) fn journal_mutation_effect_and_broadcast(
@@ -365,7 +365,7 @@ pub(super) fn journal_mutation_effect_and_broadcast(
     origin: aegis_ipc::Origin,
     mutation: aegis_ipc::JournalMutation,
     effect: aegis_ipc::Effect,
-) {
+) -> aegis_ipc::JournalEntry {
     let effect = mutation.privacy_minimize_effect(effect);
     let mut journal = journal.lock().unwrap();
     let entry = match journal.try_append(ts_mono_ms, origin, mutation, effect) {
@@ -378,6 +378,7 @@ pub(super) fn journal_mutation_effect_and_broadcast(
     if let Some(s) = ipc.as_ref() {
         s.broadcast_journal(entry.clone());
     }
+    entry
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -396,6 +397,27 @@ pub(super) fn apply_command_and_journal(
         Err(reason) => aegis_ipc::Effect::Refused { reason },
     };
     journal_effect_and_broadcast(journal, ipc, ts_mono_ms, origin, command, effect);
+}
+
+/// Apply one command and return its journal sequence number and recorded
+/// effect — the per-op receipt currency of a Transact batch (ADR-0125).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_command_journaled(
+    server: &mut aegis_compositor::Server,
+    notifications: &std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
+    quit: &mut bool,
+    command: aegis_ipc::Command,
+    ipc: &Option<aegis_ipc::Server>,
+    journal: &std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
+    ts_mono_ms: u64,
+    origin: aegis_ipc::Origin,
+) -> (u64, aegis_ipc::Effect) {
+    let effect = match apply_command(server, notifications, quit, &command, ipc, ts_mono_ms) {
+        Ok(()) => aegis_ipc::Effect::Applied,
+        Err(reason) => aegis_ipc::Effect::Refused { reason },
+    };
+    let entry = journal_effect_and_broadcast(journal, ipc, ts_mono_ms, origin, command, effect);
+    (entry.seq, entry.effect)
 }
 
 #[allow(clippy::too_many_arguments)]

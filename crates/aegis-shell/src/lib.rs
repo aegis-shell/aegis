@@ -170,6 +170,16 @@ pub struct LiquidGlassRegion {
     /// Optional optical emphasis inside this body. This is one field in the
     /// parent's material, not a nested glass body.
     pub focus: Option<LiquidGlassFocus>,
+    /// Optional capture footprint declared when the body's `bounds` animate.
+    /// The compositor keys its backdrop capture on exact region geometry, so
+    /// a body whose shape morphs every frame (a revealing panel, a
+    /// spring-driven strip) would otherwise invalidate the capture and
+    /// re-render the whole scene per frame. When set, the footprint — a
+    /// stable envelope containing every animated shape — covers capture and
+    /// blur instead of `bounds`, and the component must not also declare a
+    /// matching `BackdropRegion`. The footprint carries no visible material:
+    /// the glass body drawn is still `bounds`.
+    pub capture_bounds: Option<BackdropRegion>,
 }
 
 /// Smoothed per-region backdrop statistics: `plate_luminance` is the
@@ -215,6 +225,7 @@ impl Default for LiquidGlassRegion {
             id: 0,
             adaptation: None,
             focus: None,
+            capture_bounds: None,
         }
     }
 }
@@ -244,7 +255,16 @@ impl LiquidGlassRegion {
             id: 0,
             adaptation: None,
             focus: None,
+            capture_bounds: None,
         }
+    }
+
+    /// Declare a stable capture footprint containing every shape this body's
+    /// animated `bounds` can take. See the field's documentation.
+    #[must_use]
+    pub fn with_capture_bounds(mut self, bounds: BackdropRegion) -> Self {
+        self.capture_bounds = Some(bounds);
+        self
     }
 
     /// Opt this body into backdrop adaptation under a stable identity.

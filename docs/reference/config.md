@@ -195,7 +195,7 @@ Applied live on reload.
 |-------|------|---------|-------------|
 | `reduced_motion` | boolean | `false` | Accessibility reduced-motion switch. When `true`, every chrome and lens transition (dock magnification, launcher reveal, fades, slides) resolves to its end state in at most one frame. |
 | `icon_theme` | string | `"hicolor"` | Freedesktop application icon theme used by the launcher, Dock, and themed shell symbols. `$AEGIS_ICON_THEME` wins when set. Changes apply live. |
-| `cursor_theme` | string | `"default"` | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. `$XCURSOR_THEME` wins when set. When the selected theme is not installed, the bundled Aegis art is the final fallback. |
+| `cursor_theme` | string | `"default"` | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. The theme must ship `cursors/<name>.svg` files; a conventional Xcursor binary theme resolves but contributes nothing, logs a warning, and every shape falls back to the bundled art. `$XCURSOR_THEME` wins when set. When the selected theme is not installed, the bundled Aegis art is the final fallback. |
 | `cursor_size` | integer | `24` | Cursor size in logical pixels, 8–128. `$XCURSOR_SIZE` wins when set. |
 | `window_decorations` | string | `"borderless"` | Decoration ownership for Wayland toplevels. `"borderless"` makes Aegis own window controls without drawing per-window title bars; `"client-side"` asks applications to draw their own frames. |
 
@@ -203,7 +203,7 @@ Applied live on reload.
 [ui]
 reduced_motion = true
 icon_theme = "Papirus-Dark"
-cursor_theme = "Adwaita"
+cursor_theme = "Bibata-Modern-Ice"
 cursor_size = 24
 window_decorations = "borderless"
 ```

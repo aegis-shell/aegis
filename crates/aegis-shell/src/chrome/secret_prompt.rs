@@ -326,13 +326,12 @@ impl Chrome for SecretPrompt {
                     },
                     radius: design.radii.control,
                     pad: 0.0,
-                    cross: Align::Center,
                     ..materials::surface_layout()
                 },
             ),
             |frame| {
-                frame.column_ex(&stretch(layout.cancel), |frame| {
-                    frame.label_sized("Cancel", design.typography.body);
+                frame.centered(layout.cancel.w, layout.cancel.h, |frame| {
+                    frame.label_compact_sized("Cancel", design.typography.body);
                 });
             },
         );
@@ -344,13 +343,12 @@ impl Chrome for SecretPrompt {
                     bg: design.colors.application_accent,
                     radius: design.radii.control,
                     pad: 0.0,
-                    cross: Align::Center,
                     ..materials::surface_layout()
                 },
             ),
             |frame| {
-                frame.column_ex(&stretch(layout.accept), |frame| {
-                    frame.label_sized("Unlock", design.typography.body);
+                frame.centered(layout.accept.w, layout.accept.h, |frame| {
+                    frame.label_compact_sized("Unlock", design.typography.body);
                 });
             },
         );

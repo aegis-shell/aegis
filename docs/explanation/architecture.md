@@ -61,6 +61,7 @@ backend, renderer, and shell behind clear seams so the
 | **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
 | | `aegis-launcher` | Ordinary app detachment and fail-closed Interaction Domain namespace/cgroup launch |
 | | `aegis-ipc` | Native capability broker contract: versioned identity, scopes, leases, Interaction Domain authority, sealed capture transport, and introspection over a Unix socket |
+| | `aegis-agent` | Shared agent client layer for every out-of-process agent: pairing discipline, credential policies, state recovery, and observation leases (ADR-0125) |
 | | `aegis-commands` | Domain-oriented parser and IPC dispatcher behind native `aegis` management commands |
 | **AI integration** | `aegis-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Interaction Domain per connector instance (ADR-0090) |
 
@@ -404,5 +405,6 @@ The summary table has been retired: it duplicated the
 [Roadmap](roadmap.md), which is the single living status page (per-milestone
 outcomes, shipped state, and verification criteria). M0–M3 are complete; M4
 (DRM/KMS) is code-complete pending hardware verification; M5/M6 are
-complete; M7–M10 are in progress as recorded there, and XWayland is
+complete; M7–M10 are in progress as recorded there, M9 retains only its
+screen-reader accessibility hooks, and XWayland is
 descoped.

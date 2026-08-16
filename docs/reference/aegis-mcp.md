@@ -155,7 +155,7 @@ tool prompts for a runtime grant (once / session / always).
 
 | Connector-local name | Required capability / operation | Contract |
 |----------------------|---------------------------------|----------|
-| `desktop_snapshot` | `query` / `ObserveWindows`, `ObserveWorkspaces`, `ObserveOutputs`, `ObserveInteractionDomains` | Actor-scoped windows, workspaces, outputs, Interaction Domains, and the granted ceiling. |
+| `desktop_snapshot` | `query` / `ObserveWindows`, `ObserveWorkspaces`, `ObserveOutputs`, `ObserveInteractionDomains` | Actor-scoped windows, workspaces, outputs, Interaction Domains, the journal cursor, and the granted ceiling, read in one consistent round trip (protocol 28). |
 | `desktop_journal` | `query` / `ObserveJournal` | Up to 200 principal- and resource-filtered mutations and a pagination cursor. |
 | `apps_list` | `query` | Filtered XDG applications with trusted `desktop_id` values. |
 | `launch_app` ▲ | `control` / `LaunchApp` | Launch a catalogued application on the desktop. `workspace_id` places its first window on an existing workspace, `new_workspace` (with optional `workspace_label`) on a fresh one; placement never switches the user's view. |
@@ -202,8 +202,11 @@ again immediately before toolkit dispatch. State changes abort
 instead of clicking stale coordinates. Success returns `status = "committed"`,
 `verified = true`, and the compositor's action receipt.
 
-Ordinary desktop responses with `status = "queued"` are not proof of applied
-state. Use a fresh snapshot or journal to verify them. Interaction Domain lifecycle,
+Window, workspace, tiling, and notification tools return `status =
+"committed"`, `verified = true`, and the compositor's per-op transaction
+receipt (protocol 28). Only `launch_app` and `toggle_overview` respond with
+`status = "queued"`, which is not proof of applied state; use a fresh
+snapshot or journal to verify them. Interaction Domain lifecycle,
 authority transactions, and `interaction_domain_input` return committed receipts.
 
 ## Capture Compatibility

@@ -58,10 +58,10 @@ background and how the decisions fit together, see
 | [0049](0049-standalone-modular-control-center.md) | Standalone modular Control Center with revisioned settings IPC (amends [0044](0044-dock-and-control-center-crates.md)) | Superseded by [0056](0056-system-settings-identity-and-boundary.md) |
 | [0050](0050-fuji-agent-product-and-bridge-rename.md) | fuji agent product and the aegis-fuji bridge rename (amends [0047](0047-neenee-agent-realm-platform-bridge.md)) | Accepted |
 | [0051](0051-portal-backend-dbus-bridge.md) | xdg-desktop-portal backend as an out-of-process D-Bus bridge | Superseded by [0075](0075-independent-portal-package-and-backend-contract.md) |
-| [0052](0052-scoped-output-frame-streaming.md) | Scoped output frame streaming | Proposed |
+| [0052](0052-scoped-output-frame-streaming.md) | Scoped output frame streaming | Accepted (implemented; dmabuf transport per [0124](0124-window-open-close-fade-transitions.md) audit) |
 | [0053](0053-portal-session-services-and-grants.md) | Portal backend ABI ownership and scoped session services | Superseded by [0075](0075-independent-portal-package-and-backend-contract.md) |
 | [0054](0054-interactive-target-picking.md) | Interactive target picking and window-scoped stream targets | Proposed |
-| [0055](0055-zero-copy-dmabuf-frame-export.md) | Zero-copy dmabuf export for ScreenCast and frame capture | Proposed |
+| [0055](0055-zero-copy-dmabuf-frame-export.md) | Zero-copy dmabuf export for ScreenCast and frame capture | Superseded by the portal slot-ring design (portal ADR-0005/0006); shipped as IPC protocol 25 |
 | [0056](0056-system-settings-identity-and-boundary.md) | System Settings identity and Control Center boundary (supersedes [0049](0049-standalone-modular-control-center.md)) | Superseded by [0057](0057-system-settings-canonical-namespace.md) |
 | [0057](0057-system-settings-canonical-namespace.md) | System Settings canonical namespace (supersedes [0056](0056-system-settings-identity-and-boundary.md)) | Superseded by [0059](0059-first-party-application-installation-and-development-staging.md) |
 | [0058](0058-independent-quick-settings-and-ai-workspaces.md) | Independent Quick Settings and AI Workspaces applications (amends [0044](0044-dock-and-control-center-crates.md)) | Superseded by [0060](0060-statusbar-system-controls-and-live-system-ipc.md) |
@@ -130,3 +130,6 @@ background and how the decisions fit together, see
 | [0120](0120-glass-material-roles-and-region-level-backdrop-adaptation.md) | Glass material roles and region-level backdrop adaptation (amends [0046](0046-design-system-crate.md), [0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md)) | Accepted |
 | [0121](0121-neutral-mask-feedback-movable-mirrors-and-non-raising-agent-input.md) | Neutral mask feedback, movable mirrors, and non-raising Agent input (amends [0048](0048-compositor-owned-agent-operation-feedback.md), [0091](0091-agent-controlled-window-physical-mirrors-and-guard.md)) | Accepted |
 | [0122](0122-original-mit-cursor-theme-replaces-bibata.md) | Original MIT cursor theme replaces the bundled Bibata fallback (supersedes [0070](0070-svg-cursors-with-bundled-bibata-fallback.md)) | Accepted |
+| [0123](0123-chrome-fades-via-lens-opacity.md) | Chrome enter/exit fades go through lens opacity | Accepted |
+| [0124](0124-window-open-close-fade-transitions.md) | Window open/close fade transitions (extends [0029](0029-animation-and-effect-policy.md)) | Accepted |
+| [0125](0125-agent-primitive-families-and-shared-agent-client.md) | Agent primitive families and the shared agent client layer (amends [0027](0027-ipc-and-introspection.md), [0090](0090-native-capability-broker-and-stateless-mcp-edge.md)) | Accepted |

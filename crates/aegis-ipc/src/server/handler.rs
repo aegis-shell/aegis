@@ -368,6 +368,20 @@ pub trait Handler: Send + Sync {
     ) -> Result<InteractionDomainActionResult, String> {
         Err("interaction_domain control unsupported".into())
     }
+    /// Commit one pre-authorized transaction batch on the compositor main
+    /// loop and return its authoritative per-op receipt or a journal
+    /// precondition conflict (version 28, ADR-0125). The IPC layer has
+    /// already authorized and validated every op; the implementation applies
+    /// them in order through the same chokepoint as [`Handler::command`].
+    fn transact(
+        &self,
+        _conn_id: u64,
+        _subject: Option<&str>,
+        _expected_journal_seq: Option<u64>,
+        _ops: Vec<Command>,
+    ) -> Result<crate::schema::TransactResult, String> {
+        Err("transactions unsupported".into())
+    }
     /// Persist and apply one settings transaction on the compositor main
     /// thread, returning only after the authoritative state is updated.
     fn settings_action(

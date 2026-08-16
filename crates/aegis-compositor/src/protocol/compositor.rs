@@ -665,6 +665,11 @@ pub(crate) unsafe extern "C" fn surface_commit(
             || (buffer_set && !buffer.is_null() && pending_damage.is_empty());
         accumulate_committed_damage(&mut *rec, pending_damage, unknown_full);
         if buffer_set && buffer.is_null() {
+            // ADR-0029 close transition: snapshot the last frame before the
+            // shm pixels are cleared so the ghost can keep rendering it.
+            if was_mapped && !(*rec).xdg_toplevel.is_null() && !(*rec).state.is_null() {
+                (*(*rec).state).note_close_transition(rec);
+            }
             retire_surface_buffer(rec);
             (*rec).dmabuf = None;
             (*rec).mapped = false;
@@ -1004,6 +1009,13 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 (*rec).width,
                 (*rec).height
             );
+
+            // ADR-0029 open transition: fade-and-scale in from a slightly
+            // inset rect. Recorded after placement settles so the flight
+            // starts at the final mapped rect.
+            if !(*rec).state.is_null() {
+                (*(*rec).state).note_open_transition(rec);
+            }
 
             if !(*rec).state.is_null() {
                 let id = (*rec).window.id;
@@ -1464,6 +1476,12 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         }
         if !(*rec).xdg_toplevel.is_null() {
             defer_keyboard_focus_after_toplevel_unmap(rec);
+            // ADR-0029 close transition: the wl_surface is being destroyed
+            // while still mapped (no null-buffer unmap happened first).
+            // Snapshot before `retire_surface_buffer` clears the contents.
+            if !(*rec).state.is_null() {
+                (*(*rec).state).note_close_transition(rec);
+            }
         }
         if !(*rec).viewport_resource.is_null() {
             let viewport =

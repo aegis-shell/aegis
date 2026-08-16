@@ -339,13 +339,12 @@ impl Chrome for BatteryAlert {
                     bg: design.colors.application_accent,
                     radius: design.radii.control,
                     pad: 0.0,
-                    cross: Align::Center,
                     ..materials::surface_layout()
                 },
             ),
             |frame| {
-                frame.column_ex(&stretch(layout.ok), |frame| {
-                    frame.label_sized("OK", design.typography.body);
+                frame.centered(layout.ok.w, layout.ok.h, |frame| {
+                    frame.label_compact_sized("OK", design.typography.body);
                 });
             },
         );

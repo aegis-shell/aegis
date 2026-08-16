@@ -30,7 +30,7 @@ use std::os::raw::{c_int, c_ulong};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use aegis_model::interaction_domain::{
     AuthorityTransfer, HUMAN_INTERACTION_DOMAIN, HUMAN_PRINCIPAL, HUMAN_SEAT,
@@ -1147,6 +1147,81 @@ impl WorkspaceSlide {
     }
 }
 
+/// Upper bound on simultaneously retained close-transition ghost frames. A
+/// burst of window destructions must not grow compositor memory; the oldest
+/// entry is dropped first (its animation simply ends early).
+pub(crate) const MAX_CLOSING_FRAMES: usize = 8;
+
+/// One closing window's retained last frame (ADR-0029 close transition).
+///
+/// The window is gone from the model the moment the client unmaps or destroys
+/// it, so the close animation cannot read the (already cleared or freed)
+/// `SurfaceRec`. Instead the unmap path snapshots what it needs — the root
+/// rect, the draw origin, and either the CPU pixel copy or a duplicated
+/// dma-buf — into this record. The scene presents it as a plain fading
+/// rectangle until the transition settles, then `settle_finished_transitions`
+/// drops it.
+pub(crate) struct ClosingFrame {
+    /// Presentation identity for the ghost: a fresh surface id the renderer
+    /// caches the uploaded ghost texture under. Never reused.
+    pub id: usize,
+    /// Root window rect at the moment of the close: the full-size start of
+    /// the fade-out flight.
+    pub rect: aegis_model::Rect,
+    /// Snapshot of the last committed contents: the CPU-copied BGRA8 pixels
+    /// (shm clients), or a compositor-owned duplicate of the dma-buf.
+    pub pixels: Vec<u8>,
+    pub dmabuf: Option<DmabufBuffer>,
+    pub buffer_width: i32,
+    pub buffer_height: i32,
+    /// The in-flight close transition (fade + slight shrink).
+    pub transition: aegis_model::transition::WindowTransition,
+}
+
+impl ClosingFrame {
+    /// The rect the ghost renders at `now_ms`: interpolated between the
+    /// window's final rect and a slightly inset target while the transition
+    /// runs, `None` once settled.
+    pub fn rect_at(&self, now_ms: u64) -> Option<aegis_model::Rect> {
+        let target = inset_rect(self.rect, self.rect.size.w / 16, self.rect.size.h / 16);
+        self.transition.rect_at(target, now_ms)
+    }
+
+    /// The fading opacity at `now_ms`, `None` once settled.
+    pub fn opacity_at(&self, now_ms: u64) -> Option<f32> {
+        self.transition.opacity_at(now_ms)
+    }
+}
+
+/// Shrink `rect` by `dx`/`dy` on every side, keeping a minimum 2×2 extent so
+/// the interpolation always has a visible target.
+pub(crate) fn inset_rect(rect: aegis_model::Rect, dx: i32, dy: i32) -> aegis_model::Rect {
+    let w = (rect.size.w - dx * 2).max(2);
+    let h = (rect.size.h - dy * 2).max(2);
+    let lost_w = rect.size.w.saturating_sub(w);
+    let lost_h = rect.size.h.saturating_sub(h);
+    aegis_model::Rect {
+        origin: aegis_model::Point {
+            x: rect.origin.x + lost_w / 2,
+            y: rect.origin.y + lost_h / 2,
+        },
+        size: aegis_model::Size { w, h },
+    }
+}
+
+static NEXT_CLOSING_FRAME_ID: AtomicUsize = AtomicUsize::new(1);
+
+/// Fresh presentation id for one close-transition ghost frame. Ids are never
+/// reused, so the renderer's per-surface texture cache cannot collide with a
+/// previous ghost.
+pub(crate) fn next_closing_frame_id() -> usize {
+    let mut id = NEXT_CLOSING_FRAME_ID.fetch_add(1, Ordering::Relaxed);
+    if id == 0 {
+        id = NEXT_CLOSING_FRAME_ID.fetch_add(1, Ordering::Relaxed);
+    }
+    id
+}
+
 /// A deferred per-seat keyboard-focus transition requested from inside a
 /// protocol callback. Callbacks cannot construct a second mutable `Server`,
 /// so `Server::dispatch` applies the newest entry for each seat after they
@@ -1232,6 +1307,13 @@ pub(crate) struct State {
     last_background_frame_callback_ms: u32,
     window_switcher: Option<WindowSwitcherSession>,
     workspace_slide: Option<WorkspaceSlide>,
+    /// Closing-window ghost frames (ADR-0029 open/close transitions). When a
+    /// mapped toplevel unmaps or its client destroys it while close
+    /// transitions are enabled, the last committed contents are snapshotted
+    /// here and rendered with a fading close transition until it settles.
+    /// Bounded by [`MAX_CLOSING_FRAMES`]; `settle_finished_transitions`
+    /// reclaims settled entries.
+    pub(crate) closing_frames: Vec<ClosingFrame>,
     /// Every `wl_output` resource clients have bound. Resent in full when the
     /// output geometry (mode/scale/transform) changes so bound clients update.
     pub(crate) output_resources: Vec<*mut ffi::wl_resource>,

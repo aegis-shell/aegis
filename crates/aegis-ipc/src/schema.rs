@@ -37,7 +37,12 @@ pub use aegis_semantic::{
 
 /// The protocol major version this build speaks. A client offering a newer
 /// major version is refused at the [`Request::Hello`] handshake; an older
-/// client is answered at its own version. Version 27 adds workspace-directed
+/// client is answered at its own version. Version 28 adds the agent
+/// primitive families (ADR-0125): `Observe` (one consistent multi-class
+/// snapshot with the journal cursor), `Transact` (an authorized, ordered
+/// op batch with a journal-cursor precondition and an authoritative per-op
+/// receipt), and scope-filtered `Subscribe`/`SubscribeJournal` lanes for
+/// principal-bound agent connections. Version 27 adds workspace-directed
 /// application launching (`LaunchApp` with an optional `LaunchPlacement` that
 /// never switches the user's view) and the additive `reveal` flag on `Focus`
 /// (ADR-0118). Version 26 adds per-window content
@@ -82,7 +87,7 @@ pub use aegis_semantic::{
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 /// Built-in owner-only scope used by native `aegis` commands for Interaction Domain
 /// recovery and administration. The Unix socket remains user-private; naming
 /// this scope opts the connection into the high-risk Interaction Domain operation allowlist
@@ -711,6 +716,213 @@ impl Command {
             Command::Quit => ActorCapability::ToggleTiling, // unreachable: scope skips session cmds
         }
     }
+}
+
+/// The maximum op count of one [`Request::Transact`] batch (version 28).
+pub const MAX_TRANSACT_OPS: usize = 64;
+
+/// One mutation op inside a [`Request::Transact`] batch (version 28,
+/// ADR-0125). Every op mirrors one [`Command`] variant and is authorized,
+/// validated, and journaled exactly like it; the batch adds preflight
+/// atomicity (no op applies unless every op authorizes) and an
+/// authoritative per-op receipt, not rollback — applied ops stay applied
+/// and the receipt reports each op's effect.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum TransactOp {
+    Focus {
+        id: WindowId,
+        #[serde(default = "default_reveal")]
+        reveal: bool,
+    },
+    Minimize {
+        id: WindowId,
+    },
+    SetMaximized {
+        id: WindowId,
+        maximized: bool,
+    },
+    SetAlwaysOnTop {
+        id: WindowId,
+        on_top: bool,
+    },
+    Close {
+        id: WindowId,
+    },
+    SetWindowGeometry {
+        id: WindowId,
+        rect: Rect,
+    },
+    SwitchWorkspace {
+        dir: Switch,
+    },
+    SwitchWorkspaceTo {
+        id: WorkspaceId,
+    },
+    MoveToWorkspace {
+        window: WindowId,
+        workspace: WorkspaceId,
+    },
+    ToggleTiling,
+    Notify {
+        summary: String,
+        body: String,
+        app_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        external_id: Option<String>,
+    },
+    DismissNotification {
+        id: u64,
+    },
+}
+
+impl TransactOp {
+    /// The equivalent command, reused for capability, scope, validation,
+    /// and main-loop application so an op can never drift from the command
+    /// it mirrors.
+    pub fn command(&self) -> Command {
+        match self {
+            Self::Focus { id, reveal } => Command::Focus {
+                id: *id,
+                reveal: *reveal,
+            },
+            Self::Minimize { id } => Command::Minimize { id: *id },
+            Self::SetMaximized { id, maximized } => Command::SetMaximized {
+                id: *id,
+                maximized: *maximized,
+            },
+            Self::SetAlwaysOnTop { id, on_top } => Command::SetAlwaysOnTop {
+                id: *id,
+                on_top: *on_top,
+            },
+            Self::Close { id } => Command::Close { id: *id },
+            Self::SetWindowGeometry { id, rect } => Command::SetWindowGeometry {
+                id: *id,
+                rect: *rect,
+            },
+            Self::SwitchWorkspace { dir } => Command::SwitchWorkspace { dir: *dir },
+            Self::SwitchWorkspaceTo { id } => Command::SwitchWorkspaceTo { id: *id },
+            Self::MoveToWorkspace { window, workspace } => Command::MoveToWorkspace {
+                window: *window,
+                workspace: *workspace,
+            },
+            Self::ToggleTiling => Command::ToggleTiling,
+            Self::Notify {
+                summary,
+                body,
+                app_id,
+                external_id,
+            } => Command::Notify {
+                summary: summary.clone(),
+                body: body.clone(),
+                app_id: app_id.clone(),
+                external_id: external_id.clone(),
+            },
+            Self::DismissNotification { id } => Command::DismissNotification { id: *id },
+        }
+    }
+
+    /// The op mirroring one command, when the command belongs to the
+    /// transaction vocabulary (version 28). Interactive, input, capture,
+    /// launch, session, and shell-owned commands stay outside it.
+    pub fn from_command(cmd: &Command) -> Option<Self> {
+        Some(match cmd {
+            Command::Focus { id, reveal } => Self::Focus {
+                id: *id,
+                reveal: *reveal,
+            },
+            Command::Minimize { id } => Self::Minimize { id: *id },
+            Command::SetMaximized { id, maximized } => Self::SetMaximized {
+                id: *id,
+                maximized: *maximized,
+            },
+            Command::SetAlwaysOnTop { id, on_top } => Self::SetAlwaysOnTop {
+                id: *id,
+                on_top: *on_top,
+            },
+            Command::Close { id } => Self::Close { id: *id },
+            Command::SetWindowGeometry { id, rect } => Self::SetWindowGeometry {
+                id: *id,
+                rect: *rect,
+            },
+            Command::SwitchWorkspace { dir } => Self::SwitchWorkspace { dir: *dir },
+            Command::SwitchWorkspaceTo { id } => Self::SwitchWorkspaceTo { id: *id },
+            Command::MoveToWorkspace { window, workspace } => Self::MoveToWorkspace {
+                window: *window,
+                workspace: *workspace,
+            },
+            Command::ToggleTiling => Self::ToggleTiling,
+            Command::Notify {
+                summary,
+                body,
+                app_id,
+                external_id,
+            } => Self::Notify {
+                summary: summary.clone(),
+                body: body.clone(),
+                app_id: app_id.clone(),
+                external_id: external_id.clone(),
+            },
+            Command::DismissNotification { id } => Self::DismissNotification { id: *id },
+            _ => return None,
+        })
+    }
+}
+
+/// One applied op's journaled outcome inside a [`TransactReceipt`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransactOpResult {
+    /// The journal sequence number of this op's own entry.
+    pub seq: u64,
+    /// The privacy-minimized effect recorded in that entry.
+    pub effect: crate::journal::Effect,
+}
+
+/// Authoritative main-loop receipt for a committed [`Request::Transact`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransactReceipt {
+    /// The journal's `latest_seq` when the batch reached the commit
+    /// boundary.
+    pub before_seq: u64,
+    /// The journal's `latest_seq` after the last op's entry.
+    pub after_seq: u64,
+    /// Per-op outcomes in application order.
+    pub results: Vec<TransactOpResult>,
+}
+
+/// The commit outcome of a [`Request::Transact`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum TransactResult {
+    /// The batch committed; the receipt reports each op's effect.
+    Committed { receipt: TransactReceipt },
+    /// The journal moved between the caller's snapshot and the commit
+    /// boundary; no op was applied and nothing was journaled.
+    PreconditionConflict { expected: u64, actual: u64 },
+}
+
+/// The journal ring's sequence cursor at read time (version 28). Use
+/// `latest_seq` as a [`Request::Transact`] precondition or a
+/// [`Request::GetJournal`] baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JournalCursor {
+    pub oldest_seq: u64,
+    pub latest_seq: u64,
+}
+
+/// A consistent multi-class snapshot read in one round trip (version 28,
+/// ADR-0125). Every class is gated independently by the connection's live
+/// scope: a refused class comes back `None`, exactly as if the matching
+/// `Get*` request had been refused. Class contents are scope-filtered like
+/// the individual queries.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ObserveSnapshot {
+    pub windows: Option<Vec<Window>>,
+    pub workspaces: Option<WorkspaceSnapshot>,
+    pub outputs: Option<Vec<OutputInfo>>,
+    pub notifications: Option<Vec<Notification>>,
+    pub interaction_domains: Option<InteractionDomainSnapshot>,
+    pub journal_cursor: Option<JournalCursor>,
 }
 
 /// A server-pushed event, delivered to connections that sent [`Request::Subscribe`].
@@ -1354,6 +1566,26 @@ pub enum Request {
     /// and an explicit [`ActorCapability::SetWallpaper`] entry in the connection's
     /// named scope — never inherited.
     SetWallpaper { path: PathBuf },
+    /// Read a consistent multi-class snapshot with the journal cursor in one
+    /// round trip (version 28, ADR-0125; the Observe primitive). Requires
+    /// `query`; every class is gated by the live scope exactly like the
+    /// matching `Get*` request.
+    Observe,
+    /// Atomically authorize and apply an ordered batch of mutation ops with
+    /// an optional journal-cursor precondition (version 28, ADR-0125; the
+    /// Transact primitive). Authorization, validation, and resource
+    /// allowlists are preflighted for every op before any is applied, and
+    /// the reply is the main loop's authoritative per-op receipt — unlike
+    /// [`Request::Do`], which acknowledges queueing only. Requires `control`
+    /// and a live lease.
+    Transact {
+        /// Optimistic-concurrency precondition: the batch commits only when
+        /// the journal's `latest_seq` still equals this value at the commit
+        /// boundary. Read it from [`ObserveSnapshot::journal_cursor`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_journal_seq: Option<u64>,
+        ops: Vec<TransactOp>,
+    },
 }
 
 /// A server → client message.
@@ -1446,6 +1678,14 @@ pub enum Response {
     },
     InteractionDomain {
         result: InteractionDomainActionResult,
+    },
+    /// Reply to [`Request::Observe`] (version 28).
+    Observed {
+        snapshot: ObserveSnapshot,
+    },
+    /// Reply to [`Request::Transact`] (version 28).
+    Transact {
+        result: TransactResult,
     },
     /// Reply to [`Request::CaptureOutput`]: the output's physical size and
     /// length of the sealed PNG memfd that immediately follows it.
@@ -1567,6 +1807,8 @@ impl std::fmt::Debug for Response {
             Self::SystemStatus { .. } => "SystemStatus",
             Self::SettingsApplied { .. } => "SettingsApplied",
             Self::InteractionDomain { .. } => "InteractionDomain",
+            Self::Observed { .. } => "Observed",
+            Self::Transact { .. } => "Transact",
             Self::CaptureOutput { .. } => "CaptureOutput",
             Self::CaptureInteractionDomain { .. } => "CaptureInteractionDomain",
             Self::CaptureWindow { .. } => "CaptureWindow",

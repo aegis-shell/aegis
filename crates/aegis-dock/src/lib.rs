@@ -63,6 +63,10 @@ const DOCK_BASELINE_INSET: f32 = 13.0;
 const DOCK_TILE: f32 = 56.0;
 /// Side length of a square dock tile at full magnification (1.5× rest).
 const DOCK_TILE_MAX: f32 = 84.0;
+/// Envelope headroom for the underdamped magnification spring: at ζ≈0.85 a
+/// tile can overshoot its target by a few percent, and the capture footprint
+/// must contain even that peak.
+const SPRING_OVERSHOOT_MARGIN: f32 = 1.05;
 /// How far (in rest-tile widths) the magnification reaches from the cursor.
 const MAGNIFY_RADIUS_TILES: f32 = 2.0;
 /// Spring stiffness (ω₀²) for tile size → target. Drives how strongly the
@@ -1329,6 +1333,35 @@ impl Dock {
             + Self::section_extra(pinned_count, tiles.len());
         let bar_len = widths.sum::<f32>() + gaps + 2.0 * DOCK_PAD;
         Self::panel_rect_for(self.position, bar_len, display)
+    }
+
+    /// Animation-stable capture footprint of the panel's glass body. The
+    /// compositor keys its backdrop capture on exact region geometry, so the
+    /// glass region declares this envelope — containing the reveal morph and
+    /// the fully magnified spring wave — instead of its live shape: a reveal
+    /// or magnification wave then only rebuilds the effect from a still-valid
+    /// capture instead of re-rendering the whole scene into it every frame.
+    /// The hidden-at-rest dock declares only its handle.
+    fn capture_footprint(&self, display: (f32, f32)) -> Rect {
+        if self.effective_autohide() && self.autohide_reveal <= 0.001 && !self.anim_active {
+            return Self::collapsed_indicator_bounds(self.position, display);
+        }
+        let tiles = Self::frame_tiles(
+            &self.tile_cache,
+            &self.apps,
+            &self.all_apps,
+            &self.icons,
+            self.catalog_revision,
+            &self.all_windows,
+            None,
+        );
+        let pinned_count = tiles.iter().filter(|tile| tile.pinned).count();
+        let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP
+            + Self::section_extra(pinned_count, tiles.len());
+        let max_len = tiles.len() as f32 * (DOCK_TILE_MAX * SPRING_OVERSHOOT_MARGIN)
+            + gaps
+            + 2.0 * DOCK_PAD;
+        Self::panel_rect_for(self.position, max_len, display)
     }
 }
 

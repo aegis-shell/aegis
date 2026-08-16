@@ -749,6 +749,10 @@ unsafe extern "C" fn xdg_toplevel_destroy(
             }
             defer_keyboard_focus_after_toplevel_unmap(rec);
             if !(*rec).state.is_null() {
+                // ADR-0029 close transition: a destroyed toplevel that was
+                // still mapped (no null-buffer unmap first) snapshots its
+                // last frame here, before the surface rec is reclaimed.
+                (*(*rec).state).note_close_transition(rec);
                 (*(*rec).state).unregister_window((*rec).window.id);
                 extensions::xdg_foreign_surface_destroyed(rec, (*rec).state);
             }

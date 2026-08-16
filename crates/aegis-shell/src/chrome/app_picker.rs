@@ -381,9 +381,9 @@ impl Chrome for AppPicker {
             // `liquid_glass_regions`); the painted placement is only the
             // shared neutral fallback wash, never a structural accent fill.
             let mut material = if selected {
-                materials::glass_focus(&design, true, 1.0)
+                materials::glass_focus(&design, true)
             } else if hovered {
-                materials::glass_focus(&design, false, 1.0)
+                materials::glass_focus(&design, false)
             } else {
                 LayoutOpts {
                     bg: Color::TRANSPARENT,
@@ -396,22 +396,14 @@ impl Chrome for AppPicker {
             frame.place(&id, &materials::chrome_place(rect, material), |frame| {
                 frame.row_ex(&stretch(rect), |frame| {
                     frame.spacer(10.0);
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: ICON,
-                            height: ROW_H,
-                            cross: Align::Center,
-                            ..Default::default()
+                    frame.centered(ICON, ROW_H, |frame| match icon {
+                        Some(pointer) => unsafe {
+                            frame.image(pointer as *mut lens::sys::flux_image, ICON, ICON);
                         },
-                        |frame| match icon {
-                            Some(pointer) => unsafe {
-                                frame.image(pointer as *mut lens::sys::flux_image, ICON, ICON);
-                            },
-                            None => {
-                                frame.spacer(0.0);
-                            }
-                        },
-                    );
+                        None => {
+                            frame.spacer(0.0);
+                        }
+                    });
                     frame.spacer(8.0);
                     frame.label_compact_sized(&row_name, design.typography.body);
                 });
@@ -423,17 +415,9 @@ impl Chrome for AppPicker {
                 "aegis-app-picker-empty",
                 &materials::chrome_place(layout.list, materials::transparent()),
                 |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: layout.list.w,
-                            height: layout.list.h,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |frame| {
-                            frame.label_sized("No applications", design.typography.body);
-                        },
-                    );
+                    frame.centered(layout.list.w, layout.list.h, |frame| {
+                        frame.label_compact_sized("No applications", design.typography.body);
+                    });
                 },
             );
         }
@@ -454,13 +438,12 @@ impl Chrome for AppPicker {
                     },
                     radius: design.radii.control,
                     pad: 0.0,
-                    cross: Align::Center,
                     ..materials::surface_layout()
                 },
             ),
             |frame| {
-                frame.column_ex(&stretch(layout.cancel), |frame| {
-                    frame.label_sized("Cancel", design.typography.body);
+                frame.centered(layout.cancel.w, layout.cancel.h, |frame| {
+                    frame.label_compact_sized("Cancel", design.typography.body);
                 });
             },
         );
@@ -472,13 +455,12 @@ impl Chrome for AppPicker {
                     bg: design.colors.application_accent,
                     radius: design.radii.control,
                     pad: 0.0,
-                    cross: Align::Center,
                     ..materials::surface_layout()
                 },
             ),
             |frame| {
-                frame.column_ex(&stretch(layout.accept), |frame| {
-                    frame.label_sized("Open", design.typography.body);
+                frame.centered(layout.accept.w, layout.accept.h, |frame| {
+                    frame.label_compact_sized("Open", design.typography.body);
                 });
             },
         );

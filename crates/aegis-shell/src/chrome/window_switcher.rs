@@ -105,10 +105,6 @@ impl WindowSwitcher {
         }
     }
 
-    fn alpha(&self, value: u8) -> u8 {
-        (value as f32 * self.visibility).round() as u8
-    }
-
     fn prepare(
         &mut self,
         input: &Input,
@@ -303,12 +299,12 @@ impl Chrome for WindowSwitcher {
             self.finish_window_switcher();
         }
 
-        let content_alpha = self.alpha(u8::MAX);
-        let original_theme = frame.theme();
-        frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(content_alpha)));
+        // The whole strip fades through the lens opacity switch; per-item
+        // dimming multiplies on top of it below.
+        frame.set_opacity(presentation.visibility);
         let design = self.design;
         let panel = to_lens(presentation.panel);
-        let panel_material = preview::panel_material(&design, presentation.visibility);
+        let panel_material = preview::panel_material(&design);
         frame.place(
             "aegis-window-switcher-panel",
             &chrome_place(panel, panel_material),
@@ -333,7 +329,6 @@ impl Chrome for WindowSwitcher {
                     preview::card_material(
                         &design,
                         preview::PreviewCardState::Selected,
-                        presentation.visibility,
                         design.radii.control,
                     ),
                 ),
@@ -352,6 +347,14 @@ impl Chrome for WindowSwitcher {
             let selected = Some(window.id) == presentation.selected;
             let hovered = Some(window.id) == self.hovered && !window.read_only;
             let outer = to_lens(presented.geometry.outer);
+            // Content brightness dims inactive cards; the hover wash below
+            // belongs to a hovered card, whose item opacity is always 1.0.
+            let item_opacity = if presentation.selected.is_none() || selected || hovered {
+                1.0
+            } else {
+                presentation.inactive_content_brightness
+            };
+            frame.set_opacity(presentation.visibility * item_opacity);
             if hovered && !selected {
                 frame.place(
                     &format!("aegis-window-switcher-card-{index}"),
@@ -360,7 +363,6 @@ impl Chrome for WindowSwitcher {
                         preview::card_material(
                             &design,
                             preview::PreviewCardState::Hovered,
-                            presentation.visibility,
                             presented.corner_radius,
                         ),
                     ),
@@ -381,14 +383,7 @@ impl Chrome for WindowSwitcher {
                 .as_deref()
                 .and_then(|app_id| self.icons.get(&app_id.to_ascii_lowercase()));
             let occupied_width = 16.0 + if icon.is_some() { 20.0 + 7.0 } else { 0.0 };
-            let item_opacity = if presentation.selected.is_none() || selected || hovered {
-                1.0
-            } else {
-                presentation.inactive_content_brightness
-            };
-            let item_alpha = self.alpha((255.0 * item_opacity).round() as u8);
-            let icon_tint = design.colors.application_text.with_alpha(item_alpha);
-            frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(item_alpha)));
+            let icon_tint = design.colors.application_text;
             let label = ellipsize(
                 frame,
                 title,
@@ -432,7 +427,7 @@ impl Chrome for WindowSwitcher {
                 },
             );
         }
-        frame.set_theme(original_theme);
+        frame.set_opacity(1.0);
     }
 
     fn prepare_window_switcher(

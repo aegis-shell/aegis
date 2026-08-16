@@ -11,8 +11,8 @@
 
 use std::ffi::c_void;
 
+use aegis_design::Design;
 use aegis_design::materials::{chrome_place, glass_panel, sized, sized_fill, surface_layout};
-use aegis_design::{Design, themes};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 use crate::{
@@ -340,11 +340,10 @@ impl Chrome for Launcher {
             return;
         }
 
-        // Lens text and built-in glyphs inherit their colour from the active
-        // theme. Fade those tokens with the visibility spring so they do not
-        // remain fully opaque until their layers disappear.
-        let original_theme = frame.theme();
-        frame.set_theme(themes::faded(original_theme, progress));
+        // Fade the whole overlay with the visibility spring: the frame
+        // opacity stamps into every draw command's colours, so painted
+        // layers, text, and icons fade together.
+        frame.set_opacity(progress);
 
         let dt = raw.dt_seconds.clamp(0.0, 1.0 / 15.0);
         if self.reduced_motion {
@@ -442,7 +441,7 @@ impl Chrome for Launcher {
         };
         frame.place(
             "aegis-launcher-backdrop",
-            &chrome_place(full, backdrop_layer(progress, &self.design)),
+            &chrome_place(full, backdrop_layer(&self.design)),
             |_| {},
         );
 
@@ -478,11 +477,8 @@ impl Chrome for Launcher {
         let (_, _, _, surface_alpha) = surface.components();
         let (_, _, _, edge_alpha) = edge.components();
         let search_panel = LayoutOpts {
-            bg: surface.with_alpha(alpha(surface_alpha, progress)),
-            border: edge.with_alpha(alpha(
-                if self.search_focused { 150 } else { edge_alpha },
-                progress,
-            )),
+            bg: surface.with_alpha(surface_alpha),
+            border: edge.with_alpha(if self.search_focused { 150 } else { edge_alpha }),
             border_width: if self.search_focused { 1.5 } else { 1.0 },
             radius: SEARCH_H * 0.5,
             ..glass_panel(&self.design)
@@ -525,7 +521,7 @@ impl Chrome for Launcher {
         if self.search_focused {
             frame.place(
                 "aegis-launcher-search-caret",
-                &chrome_place(caret_rect, search_caret_layer(progress, &self.design)),
+                &chrome_place(caret_rect, search_caret_layer(&self.design)),
                 |_| {},
             );
         }
@@ -541,15 +537,9 @@ impl Chrome for Launcher {
             "aegis-launcher-result-count",
             &chrome_place(result_rect, centered_layer()),
             |frame| {
-                frame.column_ex(
-                    &LayoutOpts {
-                        cross: Align::Center,
-                        ..sized(display.x, 20.0)
-                    },
-                    |frame| {
-                        frame.label_compact_sized(&result_text, typography.footnote);
-                    },
-                );
+                frame.centered(display.x, 20.0, |frame| {
+                    frame.label_compact_sized(&result_text, typography.footnote);
+                });
             },
         );
 
@@ -564,18 +554,12 @@ impl Chrome for Launcher {
                 "aegis-launcher-empty",
                 &chrome_place(empty, centered_layer()),
                 |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            cross: Align::Center,
-                            ..sized(display.x, 32.0)
-                        },
-                        |frame| {
-                            frame.label_sized(
-                                i18n.text(Message::TryAnotherSearch),
-                                typography.headline,
-                            );
-                        },
-                    );
+                    frame.centered(display.x, 32.0, |frame| {
+                        frame.label_compact_sized(
+                            i18n.text(Message::TryAnotherSearch),
+                            typography.headline,
+                        );
+                    });
                 },
             );
         }
@@ -596,9 +580,9 @@ impl Chrome for Launcher {
                 .min(layout.cell_h - 42.0)
                 .clamp(44.0, 82.0);
             let cell_bg = if cell.selected {
-                colors.menu_active.with_alpha(alpha(42, progress))
+                colors.menu_active.with_alpha(42)
             } else if hovered {
-                colors.menu_hover.with_alpha(alpha(26, progress))
+                colors.menu_hover.with_alpha(26)
             } else {
                 Color::TRANSPARENT
             };
@@ -610,7 +594,7 @@ impl Chrome for Launcher {
                     LayoutOpts {
                         bg: cell_bg,
                         border: if cell.selected {
-                            colors.menu_border.with_alpha(alpha(54, progress))
+                            colors.menu_border.with_alpha(54)
                         } else {
                             Color::TRANSPARENT
                         },
@@ -670,10 +654,11 @@ impl Chrome for Launcher {
                             ..sized_fill(
                                 diameter,
                                 diameter,
-                                colors.menu_text.with_alpha(alpha(
-                                    if page == self.page { 220 } else { 84 },
-                                    progress,
-                                )),
+                                colors.menu_text.with_alpha(if page == self.page {
+                                    220
+                                } else {
+                                    84
+                                }),
                                 diameter * 0.5,
                             )
                         },
@@ -702,15 +687,9 @@ impl Chrome for Launcher {
                 "aegis-launcher-page-previous",
                 &chrome_place(previous, centered_layer()),
                 |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            cross: Align::Center,
-                            ..sized(previous.w, previous.h)
-                        },
-                        |frame| {
-                            frame.icon(Icon::ChevronLeft, 16.0);
-                        },
-                    );
+                    frame.centered(previous.w, previous.h, |frame| {
+                        frame.icon(Icon::ChevronLeft, 16.0);
+                    });
                 },
             );
             frame.place(
@@ -725,41 +704,29 @@ impl Chrome for Launcher {
                     centered_layer(),
                 ),
                 |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            cross: Align::Center,
-                            ..sized(108.0, 24.0)
-                        },
-                        |frame| {
-                            frame.label_sized(
-                                &format!("{} / {}", self.page + 1, page_total),
-                                typography.footnote,
-                            );
-                        },
-                    );
+                    frame.centered(108.0, 24.0, |frame| {
+                        frame.label_compact_sized(
+                            &format!("{} / {}", self.page + 1, page_total),
+                            typography.footnote,
+                        );
+                    });
                 },
             );
             frame.place(
                 "aegis-launcher-page-next",
                 &chrome_place(next, centered_layer()),
                 |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            cross: Align::Center,
-                            ..sized(next.w, next.h)
-                        },
-                        |frame| {
-                            frame.icon(Icon::ChevronRight, 16.0);
-                        },
-                    );
+                    frame.centered(next.w, next.h, |frame| {
+                        frame.icon(Icon::ChevronRight, 16.0);
+                    });
                 },
             );
         }
 
         // The shell shares one lens frame across every chrome component.
-        // Restore its theme so the launcher's transient alpha cannot affect a
+        // Restore full opacity so the launcher's fade cannot affect a
         // component rendered after it.
-        frame.set_theme(original_theme);
+        frame.set_opacity(1.0);
 
         if let Some(page) = clicked_page {
             self.change_page(page);
@@ -979,10 +946,6 @@ fn icon_visibility_scale(progress: f32) -> f32 {
     progress.clamp(0.0, 1.0).sqrt()
 }
 
-fn alpha(base: u8, progress: f32) -> u8 {
-    (base as f32 * progress.clamp(0.0, 1.0)).round() as u8
-}
-
 fn centered_layer() -> LayoutOpts {
     LayoutOpts {
         cross: Align::Center,
@@ -993,23 +956,20 @@ fn centered_layer() -> LayoutOpts {
     }
 }
 
-fn backdrop_layer(progress: f32, design: &Design) -> LayoutOpts {
+fn backdrop_layer(design: &Design) -> LayoutOpts {
     LayoutOpts {
         gap: 0.0,
         pad: 0.0,
-        bg: design.colors.scrim.with_alpha(alpha(126, progress)),
+        bg: design.colors.scrim.with_alpha(126),
         ..surface_layout()
     }
 }
 
-fn search_caret_layer(progress: f32, design: &Design) -> LayoutOpts {
+fn search_caret_layer(design: &Design) -> LayoutOpts {
     LayoutOpts {
         gap: 0.0,
         pad: 0.0,
-        bg: design
-            .colors
-            .application_text
-            .with_alpha(alpha(230, progress)),
+        bg: design.colors.application_text.with_alpha(230),
         radius: SEARCH_CARET_W * 0.5,
         ..surface_layout()
     }
@@ -1060,7 +1020,7 @@ fn render_app_icon(frame: &mut Frame, icon: Option<*mut c_void>, icon_size: f32,
                         visible_size,
                         // Intentional content color: the neutral slate of the
                         // generic app-icon chip, shared by both appearances.
-                        Color::rgba(76, 85, 116, alpha(224, progress)),
+                        Color::rgba(76, 85, 116, 224),
                         visible_size * 0.24,
                     )
                 };
@@ -1102,7 +1062,7 @@ mod tests {
 
     #[test]
     fn backdrop_layer_has_no_layout_inset() {
-        let opts = backdrop_layer(1.0, &Design::dark());
+        let opts = backdrop_layer(&Design::dark());
         assert_eq!(opts.pad, 0.0);
         assert_eq!(opts.gap, 0.0);
         assert_ne!(opts.bg, Color::TRANSPARENT);

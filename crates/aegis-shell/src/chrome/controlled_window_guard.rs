@@ -16,7 +16,7 @@ use aegis_model::interaction_domain::{
 };
 use aegis_model::window::{Window, WindowId};
 use aegis_model::workspace::WorkspaceSnapshot;
-use lens::{Align, Frame, Input, LayoutOpts, Rect};
+use lens::{Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     Chrome, ChromeEvents, ChromeUpdate, CursorShape, Localizer, Message, MirrorMove, ellipsize,
@@ -233,16 +233,9 @@ impl Chrome for ControlledWindowGuard {
                     },
                 ),
                 move |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: badge.w,
-                            height: badge.h,
-                            pad: 7.0,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |frame| frame.label_compact_sized(&label, footnote),
-                    );
+                    frame.centered(badge.w, badge.h, |frame| {
+                        frame.label_compact_sized(&label, footnote)
+                    });
                 },
             );
         }

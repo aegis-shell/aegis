@@ -23,10 +23,14 @@ Canonical terms for Aegis authority, automation, and Agent integration.
 | Action intent | Semantic target, bounded actions, and a single-use observation precondition submitted for optimistic validation. | A coordinate click sent directly to a global input device. |
 | Action receipt | Authoritative evidence that the compositor main loop revalidated and committed the complete action batch. | A queued acknowledgement. |
 | Audit event | Privacy-minimized, principal-attributed decision stored in the bounded projection and hash-chained durable log. | Raw input content, Agent memory, or a restorable snapshot of external clients. |
+| Primitive family | One of four canonical classes of the agent-facing protocol — Observe, Transact, Inject, Subscribe — that new agent capabilities extend. | A single request type or a raw verb exposed to model clients. |
 
 See [Architecture](../explanation/architecture.md#actor-boundary) and
 [ADR-0103](../adr/0103-actor-authority-and-interaction-domain-architecture.md)
 and [ADR-0104](../adr/0104-actor-sessions-resource-grants-and-accessibility-adapter.md).
+The agent primitive families and the shared agent client layer are
+recorded in
+[ADR-0125](../adr/0125-agent-primitive-families-and-shared-agent-client.md).
 The presentation/security distinction and module placement are recorded in
 [ADR-0109](../adr/0109-module-first-security-and-presentation-identity-boundaries.md)
 and [ADR-0111](../adr/0111-persona-as-shell-domain-with-feature-gated-portrait-runtime.md).

@@ -1345,3 +1345,121 @@ fn stream_ended_event_round_trips() {
     let json = serde_json::to_string(&event).unwrap();
     assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
 }
+
+#[test]
+fn transact_op_command_round_trip_and_op_class() {
+    let ops = vec![
+        TransactOp::Focus {
+            id: WindowId(3),
+            reveal: false,
+        },
+        TransactOp::Minimize { id: WindowId(3) },
+        TransactOp::SetMaximized {
+            id: WindowId(3),
+            maximized: true,
+        },
+        TransactOp::SetAlwaysOnTop {
+            id: WindowId(3),
+            on_top: true,
+        },
+        TransactOp::Close { id: WindowId(3) },
+        TransactOp::SetWindowGeometry {
+            id: WindowId(3),
+            rect: Rect::new(1, 2, 30, 40),
+        },
+        TransactOp::SwitchWorkspace {
+            dir: aegis_model::workspace::Switch::Next,
+        },
+        TransactOp::SwitchWorkspaceTo {
+            id: WorkspaceId(4),
+        },
+        TransactOp::MoveToWorkspace {
+            window: WindowId(3),
+            workspace: WorkspaceId(4),
+        },
+        TransactOp::ToggleTiling,
+        TransactOp::Notify {
+            summary: "s".into(),
+            body: "b".into(),
+            app_id: Some("a".into()),
+            external_id: Some("e".into()),
+        },
+        TransactOp::DismissNotification { id: 9 },
+    ];
+    for op in ops {
+        let command = op.command();
+        assert_eq!(TransactOp::from_command(&command).as_ref(), Some(&op));
+        // Capability class must stay identical between an op and the
+        // command it mirrors, or the batch preflight could drift.
+        assert_eq!(command.op_class(), op.command().op_class());
+        command.validate().expect("fixture ops are valid");
+    }
+}
+
+#[test]
+fn transact_op_outside_vocabulary_has_no_mapping() {
+    assert!(TransactOp::from_command(&Command::ToggleOverview).is_none());
+    assert!(TransactOp::from_command(&Command::Quit).is_none());
+    assert!(
+        TransactOp::from_command(&Command::LaunchApp {
+            desktop_id: "x".into(),
+            placement: None,
+        })
+        .is_none()
+    );
+    assert!(
+        TransactOp::from_command(&Command::InjectInput {
+            id: WindowId(1),
+            actions: vec![],
+        })
+        .is_none()
+    );
+}
+
+#[test]
+fn transact_focus_defaults_reveal_for_older_peers() {
+    let op: TransactOp = serde_json::from_str(r#"{"type":"Focus","id":7}"#).unwrap();
+    assert_eq!(
+        op,
+        TransactOp::Focus {
+            id: WindowId(7),
+            reveal: true
+        }
+    );
+}
+
+#[test]
+fn transact_request_and_result_round_trip() {
+    let request = Request::Transact {
+        expected_journal_seq: Some(11),
+        ops: vec![TransactOp::ToggleTiling],
+    };
+    let json = serde_json::to_string(&request).unwrap();
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+
+    for result in [
+        TransactResult::PreconditionConflict {
+            expected: 11,
+            actual: 12,
+        },
+        TransactResult::Committed {
+            receipt: TransactReceipt {
+                before_seq: 10,
+                after_seq: 11,
+                results: vec![TransactOpResult {
+                    seq: 11,
+                    effect: crate::journal::Effect::Applied,
+                }],
+            },
+        },
+    ] {
+        let json = serde_json::to_string(&Response::Transact {
+            result: result.clone(),
+        })
+        .unwrap();
+        match serde_json::from_str::<Response>(&json).unwrap() {
+            Response::Transact { result: decoded } => assert_eq!(decoded, result),
+            other => panic!("expected Transact, got {other:?}"),
+        }
+    }
+}

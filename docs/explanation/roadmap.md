@@ -30,7 +30,7 @@ committed; the verification criteria are.
 | [M6](#m6-workspaces-and-layout) | Dynamic per-output workspaces; floating with tiling policy | Complete (single-output) |
 | [M7](#m7-multi-output-and-input-completeness) | Multi-output, mixed DPI, gestures, tablet, color | In progress |
 | [M8](#m8-xwayland-and-application-coverage) | XWayland integration and broad application coverage | Descoped |
-| [M9](#m9-polish-and-completeness) | Animations, overview, notifications, accessibility | In progress |
+| [M9](#m9-polish-and-completeness) | Animations, overview, notifications, accessibility | In progress (screen-reader hooks remain) |
 | [M10](#m10-the-agent-phase) | The agent adaptation layer | In progress (framing) |
 
 ## M0: Nested Bring-up
@@ -292,13 +292,19 @@ remains native compositor chrome; FileChooser runs in a portal-owned,
 one-shot GTK4 process and uses xdg-foreign-v2 only for transient parenting.
 ScreenCast republishes the scoped output-frame stream
 ([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
-producer. The backend does not advertise Background or persistent ScreenCast
+producer; consumers that negotiate it get the zero-copy dmabuf slot-ring
+transport of IPC protocol 25 (ADR-0055's shipped successor), while
+window-target streams and the nested backend keep the sealed-memfd SHM
+transport. The backend does not advertise Background or persistent ScreenCast
 grants until Aegis has the required policy UI, application tracking, and
 PermissionStore integration; the routing default is `aegis;gtk`, so the
 frontend selects Aegis only for advertised interfaces and otherwise uses GTK.
-Still
-planned: window open/close transitions, the workspace-switch slide,
-zero-copy ScreenCast export, and screen-reader accessibility hooks.
+Window open/close fade transitions landed
+([ADR-0124](../adr/0124-window-open-close-fade-transitions.md)): windows fade
+in on map and leave a bounded compositor-owned ghost on close, both
+collapsing to one frame under `[ui] reduced_motion`. The workspace-switch
+slide (220 ms eased strip, per-page clipping, interruptible retargeting) is
+implemented. Still planned: screen-reader accessibility hooks.
 
 **Verification.** Reduced-motion is respected end to end. The overview
 lists every window across workspaces and switches to a chosen one.

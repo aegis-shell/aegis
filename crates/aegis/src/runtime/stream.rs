@@ -131,6 +131,14 @@ impl SlotRing {
         }
     }
 
+    /// True while the ring's next submission slot is consumer-owned: every
+    /// due frame drops until a `StreamBufferRelease` arrives. The two older
+    /// slots are necessarily Rendering or Pinned as well, so the ring is
+    /// genuinely full.
+    fn next_is_pinned(&self) -> bool {
+        self.states[self.next] == SlotState::Pinned
+    }
+
     /// The consumer finished reading a pinned slot (`StreamBufferRelease`).
     fn release(&mut self, slot: u32) {
         if let Some(state) = self.states.get_mut(slot as usize)
@@ -151,6 +159,12 @@ struct PendingSlotFrame {
     sequence: u64,
     dropped: u64,
     submitted_at: Instant,
+    /// Capture security generation snapshot at blit time (the SHM/readback
+    /// path carries the same value through `CaptureCompletion::Stream`).
+    /// A frame whose generation no longer matches at delivery covered a
+    /// lock→unlock (or VT) boundary and is dropped, never handed to the
+    /// consumer, mirroring the SHM worker's completion check.
+    security_generation: u64,
 }
 
 /// GPU state of a zero-copy dmabuf stream (IPC protocol 25): the per-stream
@@ -164,6 +178,10 @@ struct DmabufStream {
     slot_bytes: u64,
     ring: SlotRing,
     pending: Vec<PendingSlotFrame>,
+    /// Set when a ring-full drop has been logged; cleared (with a recovery
+    /// log) on the next successful submission, so a stall logs once per
+    /// episode instead of once per dropped frame.
+    ring_stalled: bool,
 }
 
 /// Everything a new dmabuf stream needs, built at start time: the capture
@@ -272,6 +290,7 @@ impl OutputStreams {
                 slot_bytes,
                 ring: SlotRing::new(slot_count),
                 pending: Vec::new(),
+                ring_stalled: false,
             });
         }
         info.format = aegis_ipc::StreamPixelFormat::Dmabuf {
@@ -632,12 +651,26 @@ impl CompositorRuntime {
                 // The consumer still owns the ring's next slot.
                 stream.dropped += 1;
                 stream.last_frame = Some(now);
+                if dmabuf.ring.next_is_pinned() && !dmabuf.ring_stalled {
+                    dmabuf.ring_stalled = true;
+                    log::warn!(
+                        "stream {stream_id}: every capture slot is consumer-owned; \
+                         dropping frames until the consumer releases one"
+                    );
+                }
                 continue;
             };
             let sequence = stream.sequence + 1;
             let dropped = stream.dropped;
+            // Snapshot the security generation with the blit: delivery below
+            // re-checks it, mirroring the SHM worker's completion check.
+            let security_generation = self.capture_worker.security_generation();
             match blit_presented_frame(&self.device, dmabuf, &presented, acquire_fence) {
                 Ok((slot, fence, source)) => {
+                    if dmabuf.ring_stalled {
+                        dmabuf.ring_stalled = false;
+                        log::info!("stream {stream_id}: capture slots are flowing again");
+                    }
                     dmabuf.ring.submitted(slot);
                     dmabuf.pending.push(PendingSlotFrame {
                         slot,
@@ -646,6 +679,7 @@ impl CompositorRuntime {
                         sequence,
                         dropped,
                         submitted_at: now,
+                        security_generation,
                     });
                     stream.sequence += 1;
                     stream.last_frame = Some(now);
@@ -697,6 +731,18 @@ impl CompositorRuntime {
                 if !signaled {
                     log::warn!(
                         "stream {stream_id}: slot {} acquire fence timed out; frame dropped",
+                        pending.slot
+                    );
+                    dmabuf.ring.recycle(pending.slot);
+                    stream.dropped += 1;
+                    continue;
+                }
+                // Security-generation check (mirrors the SHM worker's
+                // completion gate): a frame blitted before a lock→unlock or
+                // VT boundary must never reach the consumer afterwards.
+                if !self.capture_worker.permits(pending.security_generation) {
+                    log::debug!(
+                        "stream {stream_id}: slot {} crossed a security boundary; frame dropped",
                         pending.slot
                     );
                     dmabuf.ring.recycle(pending.slot);

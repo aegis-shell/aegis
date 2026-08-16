@@ -434,6 +434,12 @@ pub struct SurfaceGeometry {
     /// The renderer draws the root texture scaled to this instead of the
     /// buffer-implied size. `None` outside transitions and for subsurfaces.
     pub transition_size: Option<Size>,
+    /// Opacity multiplier while an open/close transition (ADR-0029) fades
+    /// the window in or out. `None` means fully opaque — the common case,
+    /// including geometry flights. The renderer applies it as a solid-paint
+    /// alpha over the whole root texture; subsurface trees inherit it by
+    /// drawing through the same modulated path.
+    pub transition_opacity: Option<f32>,
     /// Genie minimize/restore warp (ADR-0029 `TransitionEffect::Minimize`).
     /// The renderer draws the root texture as horizontal strips pinched
     /// toward `target` by `progress`. `None` for every other draw.
@@ -466,6 +472,7 @@ impl Default for SurfaceGeometry {
             viewport_src: None,
             viewport_dst: None,
             transition_size: None,
+            transition_opacity: None,
             minimize_warp: None,
         }
     }
@@ -539,6 +546,34 @@ pub struct SurfacePixels<'a> {
     /// framebuffer readback) even for ARGB buffers, matching the occlusion
     /// pass's notion of opaqueness. Empty slice == no opaque region.
     pub opaque_region: Option<&'a [Rect]>,
+}
+
+/// A rendered view of one closing-window ghost frame (ADR-0029 close
+/// transition), borrowed from the scene for the renderer. `rect` and
+/// `opacity` are the interpolated values at the frame's presentation time.
+/// Lives in the model — like [`SurfacePixels`] — so the renderer can consume
+/// it without depending on the compositor crate.
+pub struct ClosingGhostView<'a> {
+    /// Presentation identity; never reused, so renderer texture caches can
+    /// never collide with a previous ghost.
+    pub id: usize,
+    /// Interpolated rect the ghost paints at this frame.
+    pub rect: Rect,
+    /// The buffer's pixel dimensions at close time (pre-scale).
+    pub buffer_width: i32,
+    pub buffer_height: i32,
+    /// Snapshotted BGRA8 pixels (shm clients); empty when `dmabuf_fd >= 0`.
+    pub pixels: &'a [u8],
+    /// Snapshotted compositor-owned dma-buf: raw fd and layout. `-1` for shm
+    /// clients. The fd is borrowed for this frame only; the compositor's
+    /// ghost record keeps ownership until the transition settles.
+    pub dmabuf_fd: i32,
+    pub drm_format: u32,
+    pub modifier: u64,
+    pub stride: u32,
+    pub offset: u32,
+    /// Fade-out opacity at this frame (`1.0 → 0.0`).
+    pub opacity: f32,
 }
 
 /// A single-plane dma-buf-backed surface, handed from the server to the

@@ -33,17 +33,6 @@ pub(super) fn stagger(reveal: f32, delay: f32) -> f32 {
     ((reveal - delay) / (1.0 - delay)).clamp(0.0, 1.0)
 }
 
-pub(super) fn fade_alpha(base: u8, progress: f32) -> u8 {
-    (base as f32 * progress.clamp(0.0, 1.0)).round() as u8
-}
-
-/// Scale one color's alpha by the reveal progress (lens has no opacity
-/// property; fading is per-color).
-pub(super) fn fade_color(color: Color, progress: f32) -> Color {
-    let (_, _, _, opacity) = color.components();
-    color.with_alpha(fade_alpha(opacity, progress))
-}
-
 /// Filled circle used for the header band's avatar backdrop.
 pub(super) fn render_disc(
     frame: &mut Frame,
@@ -106,8 +95,8 @@ pub(super) fn render_ring(
 
 /// The HUD flourish: short L-shaped strokes (12px arms, 1.5px thick) just
 /// inside the four corners of a panel rect, like a VR visor's frame
-/// markers. The color arrives pre-faded — lens has no layer opacity, so
-/// the reveal fades the brackets per-color like everything else.
+/// markers. The color arrives unfaded — the frame's context opacity fades
+/// the brackets like everything else built under it.
 pub(super) fn render_corner_brackets(frame: &mut Frame, id: &str, rect: Rect, color: Color) {
     const ARM: f32 = 12.0;
     const THICK: f32 = 1.5;
@@ -350,15 +339,15 @@ impl History {
 }
 
 /// A thin horizontal gauge: rounded track with an accent fill of
-/// `fraction * width`, both faded with the reveal progress.
-pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32, progress: f32) {
+/// `fraction * width`.
+pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32) {
     let hud = Hud::classic();
     f.place(
         id,
         &materials::chrome_place(
             rect,
             LayoutOpts {
-                bg: fade_color(hud.track, progress),
+                bg: hud.track,
                 border: Color::TRANSPARENT,
                 radius: rect.h * 0.5,
                 pad: 0.0,
@@ -374,7 +363,7 @@ pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32, prog
             &materials::chrome_place(
                 Rect { w: fill_w, ..rect },
                 LayoutOpts {
-                    bg: fade_color(hud.accent, progress),
+                    bg: hud.accent,
                     border: Color::TRANSPARENT,
                     radius: rect.h * 0.5,
                     pad: 0.0,
@@ -388,13 +377,7 @@ pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32, prog
 
 /// A btop-style history strip: thin vertical bars right-aligned in `rect`,
 /// newest sample at the right, height proportional to the 0..=100 sample.
-pub(super) fn render_sparkline(
-    f: &mut Frame,
-    metric: &str,
-    history: &History,
-    rect: Rect,
-    progress: f32,
-) {
+pub(super) fn render_sparkline(f: &mut Frame, metric: &str, history: &History, rect: Rect) {
     const BAR_W: f32 = 2.0;
     const BAR_GAP: f32 = 1.5;
     let hud = Hud::classic();
@@ -416,7 +399,7 @@ pub(super) fn render_sparkline(
                     h,
                 },
                 LayoutOpts {
-                    bg: fade_color(hud.accent, progress),
+                    bg: hud.accent,
                     border: Color::TRANSPARENT,
                     radius: 0.75,
                     pad: 0.0,

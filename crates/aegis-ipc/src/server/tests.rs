@@ -22,6 +22,7 @@ fn bare_server() -> Server {
         socket: PathBuf::new(),
         subs: Arc::new(Mutex::new(HashMap::new())),
         journal_broadcaster: JournalBroadcaster::default(),
+        event_filter: Arc::new(Mutex::new(None)),
         streams: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -94,6 +95,7 @@ fn slow_event_and_journal_subscribers_are_evicted_without_blocking() {
         SubscriptionLane {
             tx: event_tx,
             shutdown: None,
+            filter: None,
         },
     );
     server.broadcast(Event::WorkspaceChanged);
@@ -115,6 +117,7 @@ fn slow_event_and_journal_subscribers_are_evicted_without_blocking() {
             SubscriptionLane {
                 tx: journal_tx,
                 shutdown: None,
+                filter: None,
             },
         );
     server
@@ -164,6 +167,7 @@ fn full_subscription_lane_shuts_down_its_connection() {
     let lane = SubscriptionLane {
         tx,
         shutdown: Some(Arc::new(server)),
+        filter: None,
     };
     assert!(!lane.try_send(Outbound::Event(Event::WorkspaceChanged)));
     let mut byte = [0u8; 1];

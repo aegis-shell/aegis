@@ -1,5 +1,6 @@
-//! The bridge's durable pairing identity (ADR-0088): the compositor-issued
-//! principal and credential this installation presents on every connection.
+//! A paired agent's durable identity (ADR-0088, ADR-0125): the
+//! compositor-issued principal and credential this installation presents on
+//! every connection.
 //!
 //! The identity file lives under a private data directory with owner-only
 //! permissions and is replaced atomically. A missing or invalid file means
@@ -9,9 +10,21 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use crate::interaction_domain::scope_key;
+use crate::state::scope_key;
 
 const IDENTITY_VERSION: u32 = 1;
+
+/// Identity persistence or continuity failure. The message is safe to
+/// surface to the user; it never contains credential material.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct IdentityError(String);
+
+impl From<String> for IdentityError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct StoredIdentity {
@@ -39,15 +52,15 @@ impl Drop for StoredIdentity {
 }
 
 /// A loaded pairing identity plus its persistence location.
-pub(crate) struct IdentityStore {
+pub struct IdentityStore {
     path: Option<PathBuf>,
     identity: std::sync::Mutex<Option<StoredIdentity>>,
 }
 
 impl IdentityStore {
-    /// Load the identity for a connector-instance `key` from `dir`. `dir` of
+    /// Load the identity for an agent-instance `key` from `dir`. `dir` of
     /// `None` keeps the identity session-only.
-    pub(crate) fn load(dir: Option<PathBuf>, key: &str) -> Self {
+    pub fn load(dir: Option<PathBuf>, key: &str) -> Self {
         let Some(dir) = dir else {
             return Self {
                 path: None,
@@ -63,7 +76,7 @@ impl IdentityStore {
     }
 
     /// The credential to present at the handshake, if paired.
-    pub(crate) fn credential(&self) -> Option<String> {
+    pub fn credential(&self) -> Option<String> {
         self.identity
             .lock()
             .expect("identity lock")
@@ -72,7 +85,7 @@ impl IdentityStore {
     }
 
     /// The authenticated principal bound by the compositor handshake.
-    pub(crate) fn principal(&self) -> Option<String> {
+    pub fn principal(&self) -> Option<String> {
         self.identity
             .lock()
             .expect("identity lock")
@@ -84,7 +97,7 @@ impl IdentityStore {
     /// persistence is part of establishing the identity: failing it aborts
     /// startup rather than creating authority that the next process cannot
     /// safely recover.
-    pub(crate) fn store(&self, principal: &str, credential: &str) -> Result<(), String> {
+    pub fn store(&self, principal: &str, credential: &str) -> Result<(), IdentityError> {
         let identity = StoredIdentity {
             version: IDENTITY_VERSION,
             principal: principal.to_owned(),
@@ -94,7 +107,7 @@ impl IdentityStore {
             *self.identity.lock().expect("identity lock") = Some(identity);
             return Ok(());
         };
-        persist(path, &identity)?;
+        persist(path, &identity).map_err(IdentityError)?;
         *self.identity.lock().expect("identity lock") = Some(identity);
         Ok(())
     }
@@ -102,16 +115,18 @@ impl IdentityStore {
     /// Confirm that an existing credential was recognized as the same
     /// principal. A mismatch fails closed; it indicates corrupted local
     /// state or a credential/registry continuity violation.
-    pub(crate) fn confirm_principal(&self, principal: &str) -> Result<(), String> {
+    pub fn confirm_principal(&self, principal: &str) -> Result<(), IdentityError> {
         let identity = self.identity.lock().expect("identity lock");
         let Some(identity) = identity.as_ref() else {
-            return Err("compositor recognized an identity that is absent locally".into());
+            return Err(IdentityError(
+                "compositor recognized an identity that is absent locally".into(),
+            ));
         };
         if identity.principal != principal {
-            return Err(format!(
+            return Err(IdentityError(format!(
                 "credential principal changed from {} to {principal}",
                 identity.principal
-            ));
+            )));
         }
         Ok(())
     }
@@ -212,7 +227,7 @@ mod tests {
     fn scratch() -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!("aegis-mcp-identity-{}-{n}", std::process::id()))
+        std::env::temp_dir().join(format!("aegis-agent-identity-{}-{n}", std::process::id()))
     }
 
     #[test]
@@ -226,12 +241,9 @@ mod tests {
         let reloaded = IdentityStore::load(Some(dir.clone()), "Codex");
         assert_eq!(reloaded.credential().as_deref(), Some("cred_1"));
         let mode = std::os::unix::fs::PermissionsExt::mode(
-            &std::fs::metadata(dir.join(format!(
-                "identity-{}.json",
-                crate::interaction_domain::scope_key("Codex")
-            )))
-            .unwrap()
-            .permissions(),
+            &std::fs::metadata(dir.join(format!("identity-{}.json", scope_key("Codex"))))
+                .unwrap()
+                .permissions(),
         );
         assert_eq!(mode & 0o777, 0o600);
         let _ = std::fs::remove_dir_all(&dir);

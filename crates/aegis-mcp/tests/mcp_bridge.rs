@@ -132,6 +132,67 @@ impl Handler for TestHandler {
         );
     }
 
+    fn transact(
+        &self,
+        conn_id: u64,
+        subject: Option<&str>,
+        expected_journal_seq: Option<u64>,
+        ops: Vec<aegis_ipc::Command>,
+    ) -> Result<aegis_ipc::TransactResult, String> {
+        let mut journal = self.journal.lock().expect("journal lock");
+        let before_seq = journal.latest_seq();
+        if let Some(expected) = expected_journal_seq
+            && expected != before_seq
+        {
+            return Ok(aegis_ipc::TransactResult::PreconditionConflict {
+                expected,
+                actual: before_seq,
+            });
+        }
+        let mut after_seq = before_seq;
+        let mut results = Vec::with_capacity(ops.len());
+        for cmd in ops {
+            if let aegis_ipc::Command::Notify {
+                summary,
+                body,
+                app_id,
+                external_id: _,
+            } = &cmd
+            {
+                let mut notifications = self.notifications.lock().expect("notification lock");
+                let id = notifications.len() as u64;
+                notifications.push(aegis_model::notify::Notification {
+                    id,
+                    summary: summary.clone(),
+                    body: body.clone(),
+                    app_id: app_id.clone(),
+                    external_id: None,
+                    at_ms: id,
+                });
+            }
+            let entry = journal.append(
+                0,
+                Origin::ipc(conn_id, subject),
+                JournalMutation::Command {
+                    cmd: aegis_ipc::AuditedCommand::from(&cmd),
+                },
+                Effect::Applied,
+            );
+            after_seq = entry.seq;
+            results.push(aegis_ipc::TransactOpResult {
+                seq: entry.seq,
+                effect: entry.effect,
+            });
+        }
+        Ok(aegis_ipc::TransactResult::Committed {
+            receipt: aegis_ipc::TransactReceipt {
+                before_seq,
+                after_seq,
+                results,
+            },
+        })
+    }
+
     fn interaction_domains(&self) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
         self.interaction_domains
             .lock()

@@ -75,6 +75,7 @@ impl SemanticDispatchBroker {
 /// state is not `Send`, so connection threads must not touch it directly.
 pub(super) struct LiveChannels {
     pub(super) commands: std::sync::mpsc::Sender<IpcCommandRequest>,
+    pub(super) transacts: std::sync::mpsc::Sender<TransactRequest>,
     pub(super) system_controls: std::sync::mpsc::Sender<SystemControlRequest>,
     pub(super) capture: std::sync::mpsc::Sender<CaptureRequest>,
     pub(super) interaction_domain_controls:
@@ -117,6 +118,7 @@ pub(super) struct LiveState {
     notifications: std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<IpcCommandRequest>>,
+    transacts: std::sync::Mutex<std::sync::mpsc::Sender<TransactRequest>>,
     system_controls: std::sync::Mutex<std::sync::mpsc::Sender<SystemControlRequest>>,
     capture: std::sync::Mutex<std::sync::mpsc::Sender<CaptureRequest>>,
     interaction_domain_controls:
@@ -257,6 +259,7 @@ impl LiveState {
             notifications,
             journal,
             commands: std::sync::Mutex::new(channels.commands),
+            transacts: std::sync::Mutex::new(channels.transacts),
             system_controls: std::sync::Mutex::new(channels.system_controls),
             capture: std::sync::Mutex::new(channels.capture),
             interaction_domain_controls: std::sync::Mutex::new(
@@ -698,6 +701,29 @@ impl aegis_ipc::Handler for LiveState {
             origin: aegis_ipc::Origin::ipc(conn_id, subject),
             command: cmd,
         });
+    }
+
+    fn transact(
+        &self,
+        conn_id: u64,
+        subject: Option<&str>,
+        expected_journal_seq: Option<u64>,
+        ops: Vec<aegis_ipc::Command>,
+    ) -> Result<aegis_ipc::TransactResult, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.transacts
+            .lock()
+            .unwrap()
+            .send(TransactRequest {
+                origin: aegis_ipc::Origin::ipc(conn_id, subject),
+                expected_journal_seq,
+                ops,
+                reply: reply_tx,
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "transaction timed out".to_owned())?
     }
 
     fn system_action(

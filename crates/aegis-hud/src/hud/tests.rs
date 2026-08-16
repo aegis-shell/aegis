@@ -353,15 +353,11 @@ fn workspace_indicator_emits_visible_pixels_above_its_glass_body() {
 #[test]
 fn floating_foregrounds_share_one_contour_with_geometry_specific_widths() {
     let design = Design::dark();
-    let text = hud_text_outline_params(&design, 1.0);
-    let glyph = hud_glyph_outline_params(&design, 1.0);
+    let text = hud_text_outline_params(&design);
+    let glyph = hud_glyph_outline_params(&design);
     assert_eq!(text.0, glyph.0);
     assert!(text.1 < glyph.1);
     assert_eq!(text.0, hud_contour_color(&design));
-
-    let faded = hud_text_outline_params(&design, 0.5);
-    assert!(faded.0.components().3 < text.0.components().3);
-    assert_eq!(faded.1, text.1);
 }
 
 #[test]

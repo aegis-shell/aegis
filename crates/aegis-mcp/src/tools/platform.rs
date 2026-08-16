@@ -5,7 +5,7 @@ impl AegisPlatform {
     pub fn connect(config: BridgeConfig) -> Result<Self, PlatformError> {
         config.validate()?;
         let identity =
-            crate::identity::IdentityStore::load(config.data_dir.clone(), &config.instance_id);
+            aegis_agent::IdentityStore::load(config.data_dir.clone(), &config.instance_id);
         let client = connect_with(&config, &identity, config.io_timeout)?;
         let principal = identity
             .principal()
@@ -15,11 +15,16 @@ impl AegisPlatform {
             scope: client.scope().clone(),
         };
         Ok(Self {
-            interaction_domain: InteractionDomainSession::acquire(&config, &principal)?,
+            interaction_domain: InteractionDomainSession::acquire(
+                &config.interaction_domain_label,
+                &config.instance_id,
+                &principal,
+                &config.state_dir(),
+            )?,
             config,
             grant,
             identity,
-            pending_observations: std::collections::BTreeMap::new(),
+            pending_observations: aegis_agent::ObservationLeases::new(MAX_PENDING_OBSERVATIONS),
         })
     }
 
@@ -462,12 +467,14 @@ impl AegisPlatform {
             ToolKind::DesktopSnapshot => {
                 parse::<NoArgs>(arguments)?;
                 let mut client = self.connect_ipc()?;
+                let snapshot = client.observe()?;
                 Ok(ToolCallResult::json(json!({
                     "grant": self.grant,
-                    "windows": client.windows()?,
-                    "workspaces": client.workspaces()?,
-                    "outputs": client.outputs()?,
-                    "interaction_domains": client.interaction_domains()?
+                    "windows": snapshot.windows.unwrap_or_default(),
+                    "workspaces": snapshot.workspaces,
+                    "outputs": snapshot.outputs.unwrap_or_default(),
+                    "interaction_domains": snapshot.interaction_domains,
+                    "journal_cursor": snapshot.journal_cursor
                 })))
             }
             ToolKind::DesktopJournal => {
@@ -596,35 +603,9 @@ impl AegisPlatform {
         connect_with(&self.config, &self.identity, GRANT_TIMEOUT)
     }
 
-    fn retain_observation(&mut self, token: &ObservationToken, ttl_ms: u64, client: Client) {
-        let now = Instant::now();
-        self.pending_observations
-            .retain(|_, pending| pending.expires_at > now);
-        while self.pending_observations.len() >= MAX_PENDING_OBSERVATIONS {
-            let Some(oldest) = self
-                .pending_observations
-                .iter()
-                .min_by_key(|(_, pending)| pending.expires_at)
-                .map(|(token, _)| token.clone())
-            else {
-                break;
-            };
-            self.pending_observations.remove(&oldest);
-        }
-        let expires_at = now
-            .checked_add(Duration::from_millis(ttl_ms))
-            .unwrap_or(now);
-        self.pending_observations
-            .insert(token.0.clone(), PendingObservation { expires_at, client });
-    }
-
     fn take_observation_client(&mut self, token: &str) -> Result<Client, PlatformError> {
-        let now = Instant::now();
         self.pending_observations
-            .retain(|_, pending| pending.expires_at > now);
-        self.pending_observations
-            .remove(token)
-            .map(|pending| pending.client)
+            .take(token)
             .ok_or(PlatformError::UnknownObservation)
     }
 
@@ -704,6 +685,18 @@ impl AegisPlatform {
         operation: &'static str,
     ) -> Result<ToolCallResult, PlatformError> {
         let mut client = self.connect_ipc_grant()?;
+        // Commands in the transaction vocabulary commit synchronously and
+        // return the main loop's receipt; the rest keep the queued `Do`
+        // contract (ADR-0125).
+        if let Some(op) = aegis_ipc::TransactOp::from_command(&command) {
+            let result = client.transact(None, vec![op])?;
+            return Ok(ToolCallResult::json(json!({
+                "status": "committed",
+                "operation": operation,
+                "verified": true,
+                "receipt": result
+            })));
+        }
         client.command(command)?;
         Ok(ToolCallResult::json(json!({
             "status": "queued",
@@ -914,7 +907,8 @@ impl AegisPlatform {
         let observation_token = capture.observation.token.clone();
         let observation_ttl_ms = capture.observation.ttl_ms;
         let semantic = capture.observation.snapshot;
-        self.retain_observation(&observation_token, observation_ttl_ms, client);
+        self.pending_observations
+            .retain(&observation_token, observation_ttl_ms, client);
         Ok(ToolCallResult {
             value: json!({
                 "interaction_domain_id": capture.interaction_domain.0,
@@ -969,7 +963,7 @@ impl AegisPlatform {
         let token = observation.token.clone();
         let ttl_ms = observation.ttl_ms;
         let snapshot = observation.snapshot;
-        self.retain_observation(&token, ttl_ms, client);
+        self.pending_observations.retain(&token, ttl_ms, client);
         Ok(ToolCallResult::json(json!({
             "interaction_domain_id": managed.id.0,
             "observation_token": token.0,
@@ -1062,52 +1056,44 @@ impl AegisPlatform {
 
 fn connect_with(
     config: &BridgeConfig,
-    identity: &crate::identity::IdentityStore,
+    identity: &aegis_agent::IdentityStore,
     post_timeout: Duration,
 ) -> Result<Client, PlatformError> {
     // The first connection may block on the interactive pairing prompt, so
     // the handshake gets a generous bound; per-request I/O falls back to the
     // configured timeout right after.
     let handshake_timeout = config.io_timeout.max(GRANT_TIMEOUT);
-    let client = Client::connect_agent_with_timeout(
-        &config.socket_path,
-        ConnectionCapabilities {
+    let connected = aegis_agent::connect(&aegis_agent::ConnectParams {
+        socket: config.socket_path.clone(),
+        capabilities: ConnectionCapabilities {
             query: true,
             control: true,
             input: true,
             session: false,
             interaction_domain: true,
         },
-        None,
-        aegis_ipc::AgentHello {
-            label: Some(config.label.clone()),
-            requested: catalog_ops(),
-            credential: identity.credential(),
-        },
-        handshake_timeout,
-    )
-    .map_err(|source| PlatformError::Connect {
-        socket: config.socket_path.clone(),
         label: config.label.clone(),
-        source,
-    })?;
-    client
-        .set_io_timeout(Some(post_timeout))
-        .map_err(|source| PlatformError::Connect {
-            socket: config.socket_path.clone(),
-            label: config.label.clone(),
+        requested: catalog_ops(),
+        credential: aegis_agent::CredentialSource::Paired(identity),
+        handshake_timeout,
+        post_timeout,
+    })
+    .map_err(connect_error)?;
+    Ok(connected.client)
+}
+
+fn connect_error(error: aegis_agent::ConnectError) -> PlatformError {
+    match error {
+        aegis_agent::ConnectError::Ipc {
+            socket,
+            label,
             source,
-        })?;
-    if let Some(issued) = client.agent_issued() {
-        if let Some(credential) = &issued.credential {
-            identity
-                .store(&issued.principal, credential)
-                .map_err(PlatformError::Identity)?;
-        } else {
-            identity
-                .confirm_principal(&issued.principal)
-                .map_err(PlatformError::Identity)?;
-        }
+        } => PlatformError::Connect {
+            socket,
+            label,
+            source,
+        },
+        aegis_agent::ConnectError::MissingIdentity => PlatformError::MissingAuthenticatedIdentity,
+        aegis_agent::ConnectError::Identity(error) => PlatformError::Identity(error.to_string()),
     }
-    Ok(client)
 }

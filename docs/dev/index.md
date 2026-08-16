@@ -17,4 +17,5 @@ the other `docs/` sections; see the [documentation index](../index.md).
 | [Project Layout](project-layout.md) | Source tree map and ownership boundaries |
 | [Design Language](design/index.md) | Normative visual rules for chrome: principles, Liquid Glass, surface materials, and the command-panel cluster |
 | [Observability](observability.md) | The tracing-based logging seam, log levels, and `RUST_LOG` workflow |
+| [Issue Triage](triage/index.md) | Case-based bug-attribution know-how: invariants, diagnostic recipes, and fix ownership |
 | [Documentation Governance](documentation/index.md) | Rules for writing and routing docs |

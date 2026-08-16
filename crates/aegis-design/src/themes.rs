@@ -119,28 +119,6 @@ pub fn hud_muted(hud_theme: Theme, hud: &crate::tokens::Hud) -> Theme {
     hud_theme.with_fg(hud.text_muted)
 }
 
-/// Fade every painted theme color's alpha by `factor` (clamped to 0..=1).
-///
-/// lens themes have no opacity property, so entry/exit motion fades each
-/// semantic color individually. Foreground and background-adjacent roles
-/// (fg, accent, border, hover, active, disabled, error) participate; `bg` is
-/// left to the caller because surfaces fade through their material layer
-/// instead of their widget theme.
-#[must_use]
-pub fn faded(base: Theme, factor: f32) -> Theme {
-    let fade = |color: Color| {
-        let (_, _, _, alpha) = color.components();
-        color.with_alpha((f32::from(alpha) * factor.clamp(0.0, 1.0)).round() as u8)
-    };
-    base.with_fg(fade(base.fg()))
-        .with_accent(fade(base.accent()))
-        .with_border(fade(base.border()))
-        .with_hover(fade(base.hover()))
-        .with_active(fade(base.active()))
-        .with_disabled(fade(base.disabled()))
-        .with_error(fade(base.error()))
-}
-
 #[cfg(test)]
 mod tests {
     use lens::Color;
@@ -191,36 +169,5 @@ mod tests {
         assert_eq!(theme.accent(), tokens.accent);
         assert_eq!(theme.hover(), tokens.accent_soft);
         assert_eq!(hud_muted(theme, &tokens).fg(), tokens.text_muted);
-    }
-
-    #[test]
-    fn faded_scales_every_painted_theme_color() {
-        let theme = Theme::dark();
-        let halfway = faded(theme, 0.5);
-        let faded_alpha = |color: Color| {
-            let (_, _, _, alpha) = color.components();
-            alpha
-        };
-        for (base, faded_color) in [
-            (theme.fg(), halfway.fg()),
-            (theme.accent(), halfway.accent()),
-            (theme.border(), halfway.border()),
-            (theme.hover(), halfway.hover()),
-            (theme.active(), halfway.active()),
-            (theme.disabled(), halfway.disabled()),
-            (theme.error(), halfway.error()),
-        ] {
-            let (_, _, _, alpha) = base.components();
-            assert_eq!(
-                faded_alpha(faded_color),
-                (f32::from(alpha) * 0.5).round() as u8
-            );
-        }
-        // The widget background is untouched; surfaces fade through their
-        // material layer.
-        assert_eq!(halfway.bg(), theme.bg());
-        // Factor clamps: full opacity at 1 and above, gone at 0.
-        assert_eq!(faded(theme, 1.5).fg(), theme.fg());
-        assert_eq!(faded_alpha(faded(theme, 0.0).fg()), 0);
     }
 }

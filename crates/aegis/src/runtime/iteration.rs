@@ -1576,6 +1576,52 @@ impl CompositorRuntime {
                 origin,
             );
         }
+        // Pre-authorized transaction batches (ADR-0125): the journal-cursor
+        // precondition is checked at this commit boundary, then ops apply in
+        // order through the same chokepoint as `Do` and each returns its own
+        // journal sequence number and effect as the receipt.
+        while let Ok(request) = self.transact_rx.try_recv() {
+            let ts = self.start.elapsed().as_millis() as u64;
+            let result = if self.server.session_locked() {
+                Err("session is locked".into())
+            } else {
+                let before_seq = self.journal.lock().unwrap().latest_seq();
+                match request.expected_journal_seq {
+                    Some(expected) if expected != before_seq => {
+                        Ok(aegis_ipc::TransactResult::PreconditionConflict {
+                            expected,
+                            actual: before_seq,
+                        })
+                    }
+                    _ => {
+                        let mut after_seq = before_seq;
+                        let mut results = Vec::with_capacity(request.ops.len());
+                        for cmd in request.ops {
+                            let (seq, effect) = apply_command_journaled(
+                                &mut self.server,
+                                &self.notif_queue,
+                                &mut self.quit_requested,
+                                cmd,
+                                &self.ipc,
+                                &self.journal,
+                                ts,
+                                request.origin.clone(),
+                            );
+                            after_seq = seq;
+                            results.push(aegis_ipc::TransactOpResult { seq, effect });
+                        }
+                        Ok(aegis_ipc::TransactResult::Committed {
+                            receipt: aegis_ipc::TransactReceipt {
+                                before_seq,
+                                after_seq,
+                                results,
+                            },
+                        })
+                    }
+                }
+            };
+            let _ = request.reply.send(result);
+        }
         // Age out expired notifications once per frame.
         self.notif_queue
             .lock()

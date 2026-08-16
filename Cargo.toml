@@ -126,6 +126,9 @@ aegis-settings = { path = "crates/aegis-settings" }
 aegis-config = { path = "crates/aegis-config" }
 # IPC: versioned schema over a unix socket (ADR-0027).
 aegis-ipc = { path = "crates/aegis-ipc" }
+# Shared agent client layer: pairing, credentials, state recovery, and
+# observation leases for every out-of-process agent (ADR-0125).
+aegis-agent = { path = "crates/aegis-agent" }
 # Domain-oriented native command implementation used by the `aegis` binary.
 aegis-commands = { path = "crates/aegis-commands" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.

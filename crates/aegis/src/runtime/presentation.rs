@@ -425,11 +425,23 @@ impl CompositorRuntime {
                 // blur can sample avoids a second full-screen scene render.
                 // A live 3D wallpaper still draws its model into the whole
                 // capture image, so it keeps the full-frame extent.
+                //
+                // Capture coverage comes from the declared backdrop regions
+                // plus each glass body's optional `capture_bounds` footprint:
+                // a body whose shape animates every frame declares the stable
+                // envelope its shapes stay inside, so the animation alone can
+                // never invalidate the capture (only the effect is rebuilt).
+                let mut capture_inputs = backdrop_regions.clone();
+                capture_inputs.extend(
+                    liquid_glass_regions
+                        .iter()
+                        .filter_map(|region| region.capture_bounds),
+                );
                 let capture_bounds =
-                    (blur_sigma > 0.0 && !backdrop_regions.is_empty() && !backdrop_model_active)
+                    (blur_sigma > 0.0 && !capture_inputs.is_empty() && !backdrop_model_active)
                         .then(|| {
                             blur_capture_bounds(
-                                &backdrop_regions,
+                                &capture_inputs,
                                 logical_size,
                                 physical_size,
                                 scale,
@@ -444,7 +456,7 @@ impl CompositorRuntime {
                 // composition), but the compute passes no longer dispatch
                 // the otherwise-empty bounding box between a top HUD and a
                 // bottom Dock.
-                let capture_regions = if blur_sigma > 0.0 && !backdrop_regions.is_empty() {
+                let capture_regions = if blur_sigma > 0.0 && !capture_inputs.is_empty() {
                     if backdrop_model_active {
                         vec![BackdropCaptureRegion {
                             origin: (0, 0),
@@ -452,7 +464,7 @@ impl CompositorRuntime {
                         }]
                     } else {
                         blur_capture_regions(
-                            &backdrop_regions,
+                            &capture_inputs,
                             logical_size,
                             physical_size,
                             scale,
@@ -498,7 +510,7 @@ impl CompositorRuntime {
                     BackdropPlan::Direct
                 } else {
                     self.launcher_backdrop.prepare(
-                        blur_sigma > 0.0 && !backdrop_regions.is_empty(),
+                        blur_sigma > 0.0 && !capture_inputs.is_empty(),
                         &self.device,
                         &self.surface,
                         &frame,
@@ -728,8 +740,16 @@ impl CompositorRuntime {
                             capture_size,
                             scale,
                         );
+                        // The liquid-failure fallback frosts every visible
+                        // effect body: the rectangular frost regions plus
+                        // each glass body's live bounds. Capture-only
+                        // footprints carry no material and stay out.
                         let all_backdrop_capture_regions = backdrop_regions_in_capture(
-                            &backdrop_regions,
+                            &frost_backdrop_regions
+                                .iter()
+                                .copied()
+                                .chain(liquid_glass_regions.iter().map(|region| region.bounds))
+                                .collect::<Vec<_>>(),
                             capture_origin,
                             capture_extent,
                             capture_size,

@@ -7,6 +7,84 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- Agent primitive families and the shared agent client layer (ADR-0125,
+  IPC protocol 28). The agent-facing protocol now classifies into four
+  primitive families. `Observe` reads windows, workspaces, outputs,
+  notifications, Interaction Domains, and the journal cursor in one
+  consistent, scope-gated round trip. `Transact` atomically preflights an
+  ordered batch of window/workspace/tiling/notification ops with an
+  optional journal-cursor precondition and returns the main loop's
+  authoritative per-op receipt — agents no longer poll the journal to
+  verify queued commands. Principal-bound agent connections may now
+  `Subscribe` and `SubscribeJournal`; delivery is filtered per event by
+  the lane's live scope and fails closed on scope narrowing. The new
+  `aegis-agent` crate owns the shared client discipline (pairing,
+  credentials, state recovery, observation leases) for every
+  out-of-process agent; `aegis-mcp` and `aegis-atspi` build on it, and
+  the MCP bridge's window, workspace, tiling, and notification tools now
+  return committed, verified receipts.
+- Window open/close transitions (ADR-0124). Windows fade in over 200 ms on
+  first map (growing from a one-sixteenth inset rect) and, when closed,
+  leave a 180 ms compositor-owned ghost of their last frame that shrinks
+  slightly and fades out — for shm and dma-buf clients alike. Ghosts are
+  bounded (at most eight; a burst drops the oldest fade early), never
+  occlude interactive content, and collapse to one frame under
+  `[ui] reduced_motion`, as do opens. The fade rides the existing ADR-0029
+  transition channel through a new optional `transition_opacity` the
+  renderer applies as a paint alpha on both backing paths.
+- The workspace-switch slide is now recorded as shipped: a 220 ms eased
+  horizontal strip with per-page clipping and interruptible retargeting had
+  landed without a CHANGELOG or roadmap entry; the roadmap and this record
+  now match the code.
+- dmabuf-transport stream frames (IPC protocol 25) now snapshot the capture
+  security generation at blit time and drop any frame whose generation no
+  longer matches at delivery, closing the gap with the SHM transport: pixels
+  copied before a lock→unlock or VT boundary can no longer reach a consumer
+  afterwards.
+
+- A zero-copy output stream whose capture slots are all consumer-owned now
+  logs a warning when the stall begins and an info message when frames
+  flow again; previously every ring-full drop was silent, and the drop
+  counter only reached the consumer attached to a delivered frame, so a
+  wedged consumer was invisible in the journal from both sides.
+
+### Fixed
+
+- Pointer movement stuttered badly while the dock popped up or its
+  magnification wave ran. The panel's live-animated glass bounds fed the
+  backdrop capture cache key, so every animation frame invalidated the
+  desktop capture and forced a full offscreen scene re-render plus blur and
+  liquid-glass recompute on top of the ordinary composite; the heavy frames
+  missed vblank, and the cursor — which rides composite commits while
+  chrome owns the pointer — visibly stepped at the collapsed frame rate.
+  A glass body can now declare an animation-stable capture footprint
+  (`LiquidGlassRegion::capture_bounds`), and the dock declares the envelope
+  containing its reveal morph and fully magnified spring wave. Animations
+  now rebuild only the effect composite from the still-valid capture; the
+  scene capture is re-rendered solely when the desktop content under the
+  footprint actually changes.
+- Chrome surfaces no longer leave stray bright controls behind while
+  fading out. The command panel's sliders, scrollbar thumbs, and themed
+  status and tray icons, and every overview label, used to stay fully
+  opaque through the close animation and pop out at teardown, because
+  the fade was hand-baked per color and those elements drew through
+  paths the baking never reached. Fades now run through a single
+  frame-scoped opacity switch in lens (optics ADR-0068) that every draw
+  command honors — text, icons, raster images, sliders, and scrollbars
+  included — applied per surface or per staggered section (ADR-0123);
+  the per-color fade helpers (`themes::faded` and friends) are removed.
+
+- A cursor theme that resolved on the filesystem but contained no SVG
+  cursors — the common case for conventional Xcursor binary themes such as
+  Adwaita or Bibata, since only `cursors/<name>.svg` is read — was announced
+  in the log as `using SVG theme ...` while every shape silently fell back
+  to the bundled Aegis art. The loader now checks whether any filesystem
+  source actually provides an SVG cursor and, when none does, logs an
+  explicit warning that the binary theme format is unsupported and that all
+  shapes use the bundled fallback.
+
 ## [0.0.26] - 2026-08-15
 
 ### Fixed

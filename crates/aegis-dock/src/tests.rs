@@ -743,9 +743,16 @@ fn dock_backdrop_is_one_analytic_rounded_body() {
     let backdrop = dock.backdrop_regions(display, &[], &workspaces);
     let glass = dock.liquid_glass_regions(display, &[], &workspaces);
 
-    assert_eq!(backdrop.len(), 1);
+    // The panel declares no backdrop region of its own: its glass body
+    // carries an animation-stable capture footprint, so reveal and
+    // magnification morphs cannot invalidate the compositor's capture.
+    assert!(backdrop.is_empty());
     assert_eq!(glass.len(), 1);
-    assert_eq!(glass[0].bounds, backdrop[0]);
+    let footprint = glass[0].capture_bounds.expect("panel declares a footprint");
+    let bounds = glass[0].bounds;
+    assert!(footprint.x <= bounds.x && footprint.y <= bounds.y);
+    assert!(footprint.x + footprint.w >= bounds.x + bounds.w);
+    assert!(footprint.y + footprint.h >= bounds.y + bounds.h);
     assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
     assert_eq!(glass[0].opacity, 1.0);
 }
@@ -762,9 +769,11 @@ fn collapsed_autohide_handle_stays_an_analytic_glass_body() {
     assert_eq!(dock.backdrop_blur_sigma(), 12.0);
     let backdrop = dock.backdrop_regions(display, &[], &workspaces);
     let glass = dock.liquid_glass_regions(display, &[], &workspaces);
-    assert_eq!(backdrop.len(), 1);
+    assert!(backdrop.is_empty());
     assert_eq!(glass.len(), 1);
-    assert_eq!(glass[0].bounds, backdrop[0]);
+    // At rest the footprint shrinks to the handle itself: nothing animates,
+    // so there is no envelope to cover.
+    assert_eq!(glass[0].capture_bounds, Some(glass[0].bounds));
     assert_eq!(glass[0].bounds.w, AUTOHIDE_HANDLE_WIDTH);
     assert_eq!(glass[0].bounds.h, AUTOHIDE_HANDLE_HEIGHT);
     assert_eq!(glass[0].corner_radius, AUTOHIDE_HANDLE_HEIGHT * 0.5);
@@ -795,11 +804,13 @@ fn settled_maximized_collapse_keeps_the_capsule_composited() {
     dock.autohide_reveal = 0.25;
     assert!(dock.requires_composition());
     assert_eq!(dock.backdrop_blur_sigma(), 12.0);
-    assert_eq!(
-        dock.backdrop_regions((1920.0, 1080.0), &[maximized], &workspace_snapshot())
-            .len(),
-        1
-    );
+    // Mid-reveal the glass body morphs, but its capture footprint is the
+    // stable full-panel envelope.
+    let glass = dock.liquid_glass_regions((1920.0, 1080.0), &[maximized], &workspace_snapshot());
+    assert_eq!(glass.len(), 1);
+    let footprint = glass[0].capture_bounds.expect("panel declares a footprint");
+    assert!(footprint.w >= AUTOHIDE_HANDLE_WIDTH);
+    assert_eq!(footprint.h, DOCK_PANEL_HEIGHT);
 }
 
 #[test]

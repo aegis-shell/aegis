@@ -1,6 +1,10 @@
 # ADR-0055: Zero-copy dmabuf export for ScreenCast and frame capture
 
-- Status: Proposed
+- Status: Superseded — the shipped design is the dmabuf slot-ring of
+  protocol 25 (compositor side, IPC `StreamOutputStart` negotiation) plus the
+  portal-side pool-buffer binding recorded in the xdg-desktop-portal-aegis
+  repository's ADR-0005/0006. This record's per-frame `DmabufBufferSpec`
+  wire format was not implemented.
 - Date: 2026-07-25
 
 ## Context

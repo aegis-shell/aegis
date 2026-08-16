@@ -619,6 +619,9 @@ impl Chrome for Dock {
         // reached the sink, no tile placements remain behind the stadium.
         let dock_colors = self.design.dock;
         if content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
+            // The drained content fades through the lens opacity switch;
+            // restored after the section divider below.
+            f.set_opacity(content_progress);
             for (i, t) in tiles.iter().enumerate() {
                 let s = icon_rects[i].w;
                 let cx = icon_rects[i].x + s * 0.5;
@@ -630,8 +633,8 @@ impl Chrome for Dock {
                     // Launchpad button. The grid (real content) sizes the surface;
                     // the surface paints the rounded background behind it.
                     let bg = LayoutOpts {
-                        bg: content_faded(dock_colors.launchpad_tile_bg, content_progress),
-                        border: content_faded(dock_colors.launchpad_tile_border, content_progress),
+                        bg: dock_colors.launchpad_tile_bg,
+                        border: dock_colors.launchpad_tile_border,
                         border_width: 1.0,
                         radius: s * 0.22,
                         pad: s * 0.2,
@@ -646,15 +649,7 @@ impl Chrome for Dock {
                                 f.row_ex(&grid(gap), |f| {
                                     for _ in 0..3 {
                                         f.column_ex(
-                                            &sized_fill(
-                                                d,
-                                                d,
-                                                content_faded(
-                                                    dock_colors.launchpad_grid,
-                                                    content_progress,
-                                                ),
-                                                d * 0.3,
-                                            ),
+                                            &sized_fill(d, d, dock_colors.launchpad_grid, d * 0.3),
                                             |_| {},
                                         );
                                     }
@@ -708,12 +703,11 @@ impl Chrome for Dock {
                             h: dot_long,
                         },
                     };
-                    let base = if t.activated {
+                    let color = if t.activated {
                         dock_colors.running_dot_active
                     } else {
                         dock_colors.running_dot_inactive
                     };
-                    let color = content_faded(base, content_progress);
                     let dot_id = format!("aegis-dock-dot-{}", t.key);
                     f.place(&dot_id, &chrome_place(dot_rect, tile_opts()), |f| {
                         f.column_ex(
@@ -766,7 +760,7 @@ impl Chrome for Dock {
                         &sized_fill(
                             divider_rect.w,
                             divider_rect.h,
-                            content_faded(dock_colors.section_divider, content_progress),
+                            dock_colors.section_divider,
                             // Deliberately sharp: the divider is a hairline,
                             // and any radius at or below 0.5 falls back to the
                             // same sharp rect path in lens anyway.
@@ -777,6 +771,7 @@ impl Chrome for Dock {
                 },
             );
         }
+        f.set_opacity(1.0);
 
         // Preview cards keep press-edge activation (no drag gesture starts
         // on them); the per-frame pressed flag is not cleared by the host,
@@ -1099,10 +1094,10 @@ impl Chrome for Dock {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        let mut regions = Vec::with_capacity(3);
-        if let Some(region) = self.liquid_glass_region(display) {
-            regions.push(region.bounds);
-        }
+        // The panel itself declares no backdrop region: its glass body
+        // carries an animation-stable `capture_bounds` footprint instead, so
+        // reveal and magnification morphs never invalidate the capture.
+        let mut regions = Vec::with_capacity(2);
         if let Some(region) = self.hover_liquid_glass_region() {
             regions.push(region.bounds);
         }
@@ -1389,7 +1384,9 @@ impl Dock {
         );
         region.shadow_blur *= shadow_factor;
         region.shadow_offset_y *= shadow_factor;
-        Some(region)
+        Some(region.with_capture_bounds(BackdropRegion::from(
+            self.capture_footprint(display),
+        )))
     }
 
     fn hover_liquid_glass_region(&self) -> Option<LiquidGlassRegion> {
@@ -1553,17 +1550,6 @@ fn sized_fill(w: f32, h: f32, bg: Color, radius: f32) -> LayoutOpts {
     }
 }
 
-fn scaled_alpha(alpha: u8, progress: f32) -> u8 {
-    (f32::from(alpha) * progress.clamp(0.0, 1.0)).round() as u8
-}
-
-/// A dock palette color with its base alpha scaled by an animation progress
-/// (the autohide content drain), preserving the palette's RGB and base alpha.
-fn content_faded(color: Color, progress: f32) -> Color {
-    let (_, _, _, alpha) = color.components();
-    color.with_alpha(scaled_alpha(alpha, progress))
-}
-
 fn mix_channel(collapsed: u8, expanded: u8, progress: f32) -> u8 {
     let progress = progress.clamp(0.0, 1.0);
     (f32::from(collapsed) + (f32::from(expanded) - f32::from(collapsed)) * progress)
@@ -1672,17 +1658,12 @@ fn render_tooltip(frame: &mut Frame, design: &Design, label: &str, rect: Rect, a
         design.typography.label,
         (rect.w - 22.0).max(0.0),
     );
-    let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
     let original = frame.theme();
-    frame.set_theme(original.with_fg(design.colors.menu_text.with_alpha(opacity(255))));
+    frame.set_theme(original.with_fg(design.colors.menu_text));
+    frame.set_opacity(alpha);
     let mut material = materials::glass_panel(design);
-    // The painted layer stays the design's glass whisper, faded by the
-    // tooltip's own alpha; the physical body comes from the analytic pass.
-    let (_, _, _, surface_alpha) = design.colors.glass_surface.components();
-    material.bg = design
-        .colors
-        .glass_surface
-        .with_alpha(scaled_alpha(surface_alpha, alpha));
+    // The painted layer stays the design's glass whisper; the physical body
+    // comes from the analytic pass, and the fade rides the opacity switch.
     material.radius = TOOLTIP_HEIGHT * 0.5;
     frame.place(
         "aegis-dock-app-name",
@@ -1699,6 +1680,7 @@ fn render_tooltip(frame: &mut Frame, design: &Design, label: &str, rect: Rect, a
         },
     );
     frame.set_theme(original);
+    frame.set_opacity(1.0);
 }
 
 /// Lay out every running window for one Dock application. Typical groups stay
@@ -1838,9 +1820,11 @@ fn render_live_preview_chrome(
     windows: &[Window],
     hovered: Option<aegis_model::window::WindowId>,
 ) {
-    let opacity = |base: u8| (base as f32 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
     let panel = to_lens_rect(presentation.panel);
-    let material = preview::panel_material(design, presentation.visibility);
+    let material = preview::panel_material(design);
+    // The whole popover fades through the lens opacity switch; per-card
+    // content dimming multiplies on top of it below.
+    frame.set_opacity(presentation.visibility);
     frame.place(
         "aegis-dock-live-previews",
         &chrome_place(panel, material),
@@ -1850,7 +1834,7 @@ fn render_live_preview_chrome(
     );
 
     let original = frame.theme();
-    frame.set_theme(original.with_fg(design.colors.menu_text.with_alpha(opacity(255))));
+    frame.set_theme(original.with_fg(design.colors.menu_text));
     for (index, card) in presentation.cards.iter().enumerate() {
         let Some(window) = windows.iter().find(|window| window.id == card.window) else {
             continue;
@@ -1862,14 +1846,7 @@ fn render_live_preview_chrome(
             window.id,
             presentation.inactive_content_brightness,
         );
-        frame.set_theme(
-            original.with_fg(
-                design
-                    .colors
-                    .menu_text
-                    .with_alpha(opacity((255.0 * content_brightness).round() as u8)),
-            ),
-        );
+        frame.set_opacity(presentation.visibility * content_brightness);
         frame.place(
             &format!("aegis-dock-live-preview-card-{index}"),
             &chrome_place(
@@ -1881,7 +1858,6 @@ fn render_live_preview_chrome(
                     } else {
                         preview::PreviewCardState::Rest
                     },
-                    presentation.visibility,
                     card.corner_radius,
                 ),
             ),
@@ -1927,6 +1903,7 @@ fn render_live_preview_chrome(
         );
     }
     frame.set_theme(original);
+    frame.set_opacity(1.0);
 }
 
 pub(super) fn live_preview_hit(

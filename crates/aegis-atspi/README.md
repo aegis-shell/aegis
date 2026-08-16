@@ -2,9 +2,9 @@
 
 Out-of-process bridge between the Linux AT-SPI accessibility bus and Aegis's
 validated semantic tree/action protocol. D-Bus and toolkit objects never enter
-the compositor process. The bridge authenticates as a dedicated Actor,
-publishes complete bounded tree revisions, and verifies revisions again before
-executing an accessibility action.
+the compositor process. The bridge authenticates as a dedicated Actor through the shared
+`aegis-agent` client layer, publishes complete bounded tree revisions, and
+verifies revisions again before executing an accessibility action.
 
 Before publication, the bridge requires the AT-SPI application's D-Bus Unix
 process id to equal the kernel credential captured from the still-live

@@ -78,12 +78,22 @@ survive; its execution session cannot.
 | `ConsumeResourceGrant { id, resource }` | `ResourceGrantConsumed` | owning live Actor session and exact resource |
 | `RevokeResourceGrant { id }` | `ResourceGrantRevoked` | owning live Actor session |
 | `GetAccessibilityWindows` | `AccessibilityWindows` | authenticated system provider + `ObserveWindows` + `PublishAccessibilityTree`; never ordinary observation |
+| `Observe` | `Observed` with a consistent multi-class snapshot and journal cursor | `query`; every class gated by the live scope like the matching `Get*` (protocol 28) |
+| `Transact { expected_journal_seq?, ops }` | `Transact` with a commit receipt or a precondition conflict | `control`; every op authorized like its `Command` (protocol 28) |
 | `PublishAccessibilityTree { update }` | `AccessibilityTreePublished` | authenticated provider + `PublishAccessibilityTree` |
 | `NextAccessibilityAction { timeout_ms }` | `AccessibilityAction` | authenticated provider + `DispatchAccessibilityAction` |
 | `CompleteAccessibilityAction { request_id, success, message }` | `AccessibilityActionCompleted` | owning provider session and pending request |
 | `StreamOutputStart { max_fps }` | `StreamOutputStarted` | `control` + `StreamOutput` scope op |
 | `StreamOutputStop { stream_id }` | `StreamOutputStopped` | `control` + `StreamOutput` scope op |
 | `SetIdleInhibit { inhibit }` | `IdleInhibitSet { inhibited }` | `control` + `IdleInhibit` scope op |
+
+`Observe` (protocol 28, ADR-0125; the Observe primitive) reads windows,
+workspaces, outputs, notifications, Interaction Domains, and the journal
+cursor in one consistent round trip. Each class is independently gated by
+the connection's live scope: a refused class is `null` in the snapshot,
+exactly as if the matching `Get*` request had been refused; permitted
+classes are scope-filtered like the individual queries. The journal cursor
+is the baseline for `GetJournal` and the precondition for `Transact`.
 
 `Subscribe` enables coarse events:
 
@@ -100,10 +110,14 @@ survive; its execution session cannot.
   transfer, observer, and output-layout changes may invalidate the complete
   output. Pixels remain pull-based through `CaptureInteractionDomain`.
 
-These broadcast lanes are unfiltered. Authenticated Actors are refused by
-`Subscribe` and `SubscribeJournal` and use filtered snapshot and journal
-queries instead. Trusted local components retain subscriptions. A future
-filtered push lane must apply the same principal and resource projection.
+Anonymous broadcast lanes are unfiltered. Principal-bound agent lanes are
+filtered per event at broadcast time (protocol 28, ADR-0125): a coarse
+event is delivered only when the lane's live scope pregrants the matching
+observation capability, and a `Journal` event passes through the same
+subject and resource projection as `GetJournal`. The scope is re-resolved
+at every broadcast, so a revoked named scope or a forgotten principal
+silently stops delivery. Lanes remain bounded and fail-closed: a full lane
+shuts the connection down rather than dropping an invalidation.
 
 `SubscribeJournal` additionally enables one ordered `Journal` event per
 mutation decision. Each `JournalEntry` contains an `effect` and one tagged
@@ -211,7 +225,8 @@ or signed checkpoints to a separately administered system.
 `Do` returns `Ok` after most commands are queued, not after they are applied.
 `System { action }` is the exception: its reply is an authoritative main-loop
 receipt, and an apply refusal returns `Error`. Read the next snapshot or
-journal entry to observe other commands.
+journal entry to observe other commands, or use `Transact` (below) when the
+caller needs a commit receipt.
 Protocol 21 removes the unguarded `Command::InjectInteractionDomainInput` shape entirely;
 Interaction Domain input exists only as the observation-bound `ActInInteractionDomain` request.
 Window-targeted physical commands are reauthorized on the compositor thread.
@@ -219,6 +234,30 @@ If the human Interaction Domain is only an observer, focus, minimize, close, mov
 geometry, and workspace mutations produce `Effect::Refused` and do not reach
 the client. Its mirror also blocks physical hit-testing, so a refused click
 cannot fall through to an unrelated window underneath.
+
+## Transactions
+
+`Transact { expected_journal_seq?, ops }` (protocol 28, ADR-0125) is the
+Transact primitive: an ordered batch of `TransactOp`s drawn from the
+`Command` vocabulary — window focus/minimize/maximize/always-on-top/close/
+geometry, workspace switch and move, tiling, and notification post/dismiss.
+Interactive, input, capture, launch, session, and shell-owned commands stay
+outside the transaction vocabulary and keep their own request paths.
+
+Every op is authorized and validated exactly like the `Command` it mirrors
+(op allowlists, ask-grant prompts, and resource axes apply per op), and the
+batch preflights as a unit: when any op refuses, no op applies and only the
+first refusing op is journaled. A committed batch applies in order on the
+compositor main loop through the same chokepoint as `Do`, journaling each
+op individually. The reply is the authoritative receipt: `before_seq` and
+`after_seq` journal cursors plus each op's sequence number and effect. The
+batch is not rolled back; a refused op is reported in its receipt entry.
+
+With `expected_journal_seq`, the batch commits only when the journal's
+`latest_seq` still equals it at the commit boundary; otherwise the reply is
+`PreconditionConflict { expected, actual }`, nothing applies, and nothing is
+journaled. Read the cursor from `Observe`'s `journal_cursor` and retry at
+the fresh cursor after a conflict.
 
 `LaunchApp` launches an enumerated desktop entry directly on the desktop —
 no Interaction Domain sandbox — and optionally directs its first root
@@ -668,9 +707,17 @@ lease-renewal replies, and end events interleave on the streaming
 connection, so streaming clients read one continuous message stream instead
 of one reply per request.
 
-Frame readback currently goes through the same CPU path as one-shot
-captures; a zero-copy dmabuf path (`flux_surface_export_dmabuf`) is future
-work tracked in ADR-0052.
+Frame readback uses the shared CPU path for SHM-transport consumers.
+Connections that negotiate the dmabuf transport (protocol 25 and later, and
+`dmabuf: true` in the hello handshake) receive frames as GPU-copied slot
+references instead: the compositor blits each presented frame into a fixed
+per-stream slot ring, delivers the slot once with JSON metadata only, and
+recycles it on `StreamBufferRelease`. Both transports apply the same
+per-frame authorization and lock/VT delivery gates, and dmabuf frames that
+crossed a security boundary between blit and delivery are dropped rather
+than delivered. See [ADR-0055](../adr/0055-zero-copy-dmabuf-frame-export.md)
+for the superseded design and the portal repository's ADR-0005 for the
+shipped slot-ring contract.
 
 ## Idle Inhibition
 

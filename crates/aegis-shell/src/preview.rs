@@ -7,7 +7,7 @@
 
 use aegis_design::{Design, PreviewSelectionStyle, materials};
 use aegis_model::window::WindowId;
-use lens::{Color, LayoutOpts};
+use lens::LayoutOpts;
 
 use crate::{BackdropRegion, LiquidGlassFocus};
 
@@ -68,35 +68,27 @@ pub enum PreviewCardState {
 }
 
 /// Minimal painted foreground for the parent preview panel.
+///
+/// Enter/exit fades belong to the lens opacity switch (`Frame::set_opacity`),
+/// so the material stays at full alpha.
 #[must_use]
-pub fn panel_material(design: &Design, visibility: f32) -> LayoutOpts {
+pub fn panel_material(design: &Design) -> LayoutOpts {
     let mut material = materials::glass_panel(design);
-    material.bg = scale_alpha(material.bg, visibility);
     material.radius = design.radii.glass_panel;
     material
 }
 
 /// Shared foreground treatment for one preview card.
 #[must_use]
-pub fn card_material(
-    design: &Design,
-    state: PreviewCardState,
-    visibility: f32,
-    corner_radius: f32,
-) -> LayoutOpts {
+pub fn card_material(design: &Design, state: PreviewCardState, corner_radius: f32) -> LayoutOpts {
     let mut material = match state {
         PreviewCardState::Rest => materials::surface_layout(),
-        PreviewCardState::Hovered => materials::glass_focus(design, false, visibility),
-        PreviewCardState::Selected => materials::glass_focus(design, true, visibility),
+        PreviewCardState::Hovered => materials::glass_focus(design, false),
+        PreviewCardState::Selected => materials::glass_focus(design, true),
     };
     material.radius = corner_radius;
     material.pad = 0.0;
     material
-}
-
-fn scale_alpha(color: Color, opacity: f32) -> Color {
-    let (_, _, _, alpha) = color.components();
-    color.with_alpha((alpha as f32 * opacity.clamp(0.0, 1.0)).round() as u8)
 }
 
 /// Resolve the topmost card under a point, optionally preferring a staged
@@ -187,6 +179,8 @@ pub fn selected_geometry(
 
 #[cfg(test)]
 mod tests {
+    use lens::Color;
+
     use super::*;
 
     fn card(window: u64, x: i32) -> PreviewCard {
@@ -238,12 +232,12 @@ mod tests {
     #[test]
     fn card_states_stay_inside_the_parent_material() {
         let design = Design::dark();
-        let rest = card_material(&design, PreviewCardState::Rest, 1.0, 9.0);
-        let hovered = card_material(&design, PreviewCardState::Hovered, 1.0, 9.0);
-        let selected = card_material(&design, PreviewCardState::Selected, 0.5, 9.0);
+        let rest = card_material(&design, PreviewCardState::Rest, 9.0);
+        let hovered = card_material(&design, PreviewCardState::Hovered, 9.0);
+        let selected = card_material(&design, PreviewCardState::Selected, 9.0);
         assert_eq!(rest.bg, Color::TRANSPARENT);
         assert_eq!(hovered.bg, design.glass_focus.hover_tint);
-        assert_eq!(selected.bg, Color::rgba(255, 255, 255, 2));
+        assert_eq!(selected.bg, design.glass_focus.selected_tint);
         assert_eq!(hovered.border_width, 0.0);
         assert_eq!(selected.border_width, 0.0);
         assert_eq!(selected.radius, 9.0);

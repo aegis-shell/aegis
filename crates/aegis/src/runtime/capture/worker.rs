@@ -649,14 +649,16 @@ pub(in crate::runtime) fn refuse_capture_target(
             ts_mono_ms,
             origin,
             ..
-        } => journal_effect_and_broadcast(
-            journal,
-            ipc,
-            ts_mono_ms,
-            origin,
-            command,
-            aegis_ipc::Effect::Refused { reason },
-        ),
+        } => {
+            journal_effect_and_broadcast(
+                journal,
+                ipc,
+                ts_mono_ms,
+                origin,
+                command,
+                aegis_ipc::Effect::Refused { reason },
+            );
+        }
         CaptureTarget::Reply { reply } => {
             let _ = reply.send(Err(reason));
         }

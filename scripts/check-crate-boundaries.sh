@@ -44,6 +44,7 @@ assert_internal_dependencies aegis-security aegis-model
 assert_internal_dependencies aegis-semantic aegis-model
 assert_internal_dependencies aegis-config aegis-model
 assert_internal_dependencies aegis-ipc aegis-model aegis-security aegis-semantic
+assert_internal_dependencies aegis-agent aegis-model aegis-ipc
 
 # Native management commands remain independently buildable and testable.
 assert_internal_dependencies aegis-commands aegis-model aegis-config aegis-ipc

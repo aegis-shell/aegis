@@ -323,7 +323,7 @@ impl ScreenshotSelector {
             metrics.height + STATUS_PAD * 2.0,
         );
         let rect = status_rect(anchor, size, display);
-        let mut material = materials::glass_focus(design, selected, 1.0);
+        let mut material = materials::glass_focus(design, selected);
         material.radius = rect.h * 0.5;
 
         let original_theme = frame.theme();

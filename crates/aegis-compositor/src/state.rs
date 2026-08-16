@@ -1,6 +1,98 @@
 use super::*;
 
 impl State {
+    /// Record the window-open transition when a toplevel first maps
+    /// (ADR-0029): the window fades in while growing from a slightly inset
+    /// rect to its full mapped rect. No-op under reduced motion, for
+    /// non-toplevel roles, or when the window is already mid-transition.
+    pub(super) fn note_open_transition(&mut self, rec: *mut SurfaceRec) {
+        if self.reduced_motion || rec.is_null() {
+            return;
+        }
+        unsafe {
+            if (*rec).xdg_toplevel.is_null() || (*rec).window.transition.is_some() {
+                return;
+            }
+            let now = self.now_ms();
+            let full = aegis_model::Rect {
+                origin: (*rec).position,
+                size: (*rec).window.size,
+            };
+            let from = inset_rect(full, full.size.w / 16, full.size.h / 16);
+            if from.size.w < 2 || from.size.h < 2 || from == full {
+                return;
+            }
+            (*rec).window.transition =
+                Some(aegis_model::transition::WindowTransition::open(from, now));
+        }
+    }
+
+    /// Snapshot a mapped toplevel's last frame into a ghost record and start
+    /// its close transition (ADR-0029). Called from the unmap and
+    /// toplevel-destroy paths *before* the buffer contents are cleared or the
+    /// record reclaimed. No-op under reduced motion, for windows that were
+    /// never mapped, or when the frame table is already at capacity — in the
+    /// last case the oldest ghost is dropped, ending its fade early rather
+    /// than growing compositor memory.
+    ///
+    /// # Safety
+    /// `rec` must be a live, non-null surface record.
+    pub(super) unsafe fn note_close_transition(&mut self, rec: *mut SurfaceRec) {
+        if self.reduced_motion || rec.is_null() {
+            return;
+        }
+        unsafe {
+            let window = &(*rec).window;
+            if (*rec).xdg_toplevel.is_null() || !(*rec).mapped {
+                return;
+            }
+            // A close flight while the window is minimized is already
+            // invisible; a ghost would paint it back onto the desktop.
+            if window.minimized {
+                return;
+            }
+            let rect = aegis_model::Rect {
+                origin: window.position,
+                size: window.size,
+            };
+            if rect.size.w < 2 || rect.size.h < 2 {
+                return;
+            }
+            let (pixels, dmabuf) = if (*rec).content_is_dmabuf {
+                (
+                    Vec::new(),
+                    (*rec).dmabuf.as_ref().and_then(|db| db.duplicate()),
+                )
+            } else {
+                ((*rec).pixels.clone(), None)
+            };
+            if pixels.is_empty() && dmabuf.is_none() {
+                // Nothing presentable to retain (a window that mapped without
+                // ever committing a buffer): close is an instant removal.
+                return;
+            }
+            let now = self.now_ms();
+            let transition = aegis_model::transition::WindowTransition::close(rect, now);
+            let frame = ClosingFrame {
+                id: next_closing_frame_id(),
+                rect,
+                pixels,
+                dmabuf,
+                buffer_width: (*rec).width,
+                buffer_height: (*rec).height,
+                transition,
+            };
+            if self.closing_frames.len() >= MAX_CLOSING_FRAMES {
+                let dropped = self.closing_frames.remove(0);
+                log::debug!(
+                    "[server] close-transition table full; dropping ghost frame {} early",
+                    dropped.id
+                );
+            }
+            self.closing_frames.push(frame);
+        }
+    }
+
     pub(crate) fn now_ms(&self) -> u64 {
         self.epoch.elapsed().as_millis() as u64
     }
@@ -92,6 +184,7 @@ impl State {
             last_background_frame_callback_ms: 0,
             window_switcher: None,
             workspace_slide: None,
+            closing_frames: Vec::new(),
             output_resources: Vec::new(),
             output_globals: Vec::new(),
             xdg_output_resources: Vec::new(),

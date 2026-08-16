@@ -4,7 +4,8 @@
 for any agent operating the desktop. It exposes scoped desktop and Agent
 Interaction Domain tools over stateless stdio MCP `2026-07-28` for aegis-agent and any
 other current MCP client, owns one subject-bound Agent Interaction Domain per connector
-instance, and depends only on the public Aegis model, catalog, and IPC crates.
+instance, and depends only on the public Aegis model, catalog, IPC, and
+shared agent client (`aegis-agent`) crates.
 The compositor never links it and remains model-free.
 
 ```bash

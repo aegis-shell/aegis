@@ -701,6 +701,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // IPC rather than crashing. `ipc` is held to the end of `run()` so its
     // `Drop` removes the socket.
     let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<IpcCommandRequest>();
+    let (transact_tx, transact_rx) = std::sync::mpsc::channel::<TransactRequest>();
     let (system_control_tx, system_control_rx) = std::sync::mpsc::channel::<SystemControlRequest>();
     let (capture_tx, capture_rx) = std::sync::mpsc::channel::<CaptureRequest>();
     let (interaction_domain_control_tx, interaction_domain_control_rx) =
@@ -778,6 +779,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let live = std::sync::Arc::new(LiveState::new(
         LiveChannels {
             commands: ipc_cmd_tx,
+            transacts: transact_tx,
             system_controls: system_control_tx,
             capture: capture_tx,
             interaction_domain_controls: interaction_domain_control_tx,
@@ -980,6 +982,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         semantic_adapter_process,
         quit_requested,
         ipc_cmd_rx,
+        transact_rx,
         system_control_rx,
         capture_rx,
         interaction_domain_control_rx,

@@ -171,6 +171,7 @@ pub(super) struct CompositorRuntime {
     pub(super) semantic_adapter_process: session::SemanticAdapterProcess,
     pub(super) quit_requested: bool,
     pub(super) ipc_cmd_rx: std::sync::mpsc::Receiver<IpcCommandRequest>,
+    pub(super) transact_rx: std::sync::mpsc::Receiver<TransactRequest>,
     pub(super) system_control_rx: std::sync::mpsc::Receiver<SystemControlRequest>,
     pub(super) capture_rx: std::sync::mpsc::Receiver<CaptureRequest>,
     pub(super) interaction_domain_control_rx:

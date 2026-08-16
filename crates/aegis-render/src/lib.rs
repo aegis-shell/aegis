@@ -984,6 +984,109 @@ impl Renderer {
         }
     }
 
+    /// Draw one frame of every closing-window ghost (ADR-0029 close
+    /// transition). Ghosts have no protocol identity left — the model window
+    /// is gone — so each view carries its own never-reused id, its
+    /// interpolated rect, and its fading opacity. The texture is cached under
+    /// that id and dies with the ghost's cache retirement below.
+    pub fn draw_closing_frames(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        ghosts: &[aegis_model::ClosingGhostView],
+    ) {
+        for ghost in ghosts {
+            let alpha = (ghost.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+            if alpha == 0 {
+                continue;
+            }
+            let paint = flux::Paint::solid(flux::rgba(255, 255, 255, alpha));
+            if ghost.dmabuf_fd >= 0
+                && let Some(fmt) = drm_format_to_flux(ghost.drm_format)
+            {
+                let key = (ghost.id, ghost.dmabuf_fd as u64);
+                if !self.dmabuf_cache.contains_key(&key) {
+                    // SAFETY: the ghost's fd and layout describe the
+                    // snapshotted dma-buf exactly as the live path did.
+                    let imported = unsafe {
+                        flux::Image::import_dmabuf(
+                            device,
+                            ghost.buffer_width as u32,
+                            ghost.buffer_height as u32,
+                            fmt,
+                            ghost.modifier,
+                            ghost.dmabuf_fd,
+                            ghost.offset,
+                            ghost.stride,
+                        )
+                    };
+                    match imported {
+                        Ok(img) => {
+                            self.cache_dmabuf_image(
+                                key,
+                                CachedImage {
+                                    image: img,
+                                    generation: 0,
+                                    modifier: ghost.modifier,
+                                    width: ghost.buffer_width as u32,
+                                    height: ghost.buffer_height as u32,
+                                    last_used_epoch: self.frame_epoch,
+                                },
+                            );
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                if let Some(entry) = self.dmabuf_cache.get(&key) {
+                    let img = &entry.image;
+                    // Scale the whole buffer into the interpolated ghost
+                    // rect: the logical draw origin plus the scale factor
+                    // from logical size to rect keeps CSD insets intact.
+                    canvas.draw_image_with_paint(
+                        img,
+                        ghost.rect.origin.x as f32,
+                        ghost.rect.origin.y as f32,
+                        ghost.rect.size.w as f32,
+                        ghost.rect.size.h as f32,
+                        &paint,
+                    );
+                }
+            } else if !ghost.pixels.is_empty()
+                && !self.cache.contains_key(&ghost.id)
+                && let Ok(img) = flux::Image::from_bytes(
+                    device,
+                    ghost.buffer_width as u32,
+                    ghost.buffer_height as u32,
+                    flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                    ghost.pixels,
+                )
+            {
+                self.cache_image(
+                    ghost.id,
+                    CachedImage {
+                        image: img,
+                        generation: 0,
+                        modifier: 0,
+                        width: ghost.buffer_width as u32,
+                        height: ghost.buffer_height as u32,
+                        last_used_epoch: self.frame_epoch,
+                    },
+                );
+            }
+            if let Some(entry) = self.cache.get(&ghost.id) {
+                let img = &entry.image;
+                canvas.draw_image_with_paint(
+                    img,
+                    ghost.rect.origin.x as f32,
+                    ghost.rect.origin.y as f32,
+                    ghost.rect.size.w as f32,
+                    ghost.rect.size.h as f32,
+                    &paint,
+                );
+            }
+        }
+    }
+
     fn draw_toplevels_impl(
         &mut self,
         device: &flux::Device,
@@ -1184,6 +1287,18 @@ impl Renderer {
                     dst_w = size.w as f32;
                     dst_h = size.h as f32;
                 }
+                // ADR-0029 open/close fade: modulate the whole blit through a
+                // translucent solid paint. The opaque-region split is skipped
+                // while fading — SRC-replace ignores paint alpha and would
+                // punch opaque holes in the fade.
+                let fade_paint = if map.is_none() {
+                    f.geometry.transition_opacity.map(|opacity| {
+                        let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                        flux::Paint::solid(flux::rgba(255, 255, 255, alpha))
+                    })
+                } else {
+                    None
+                };
                 if let Some(map) = map {
                     let natural = aegis_model::Rect::new(
                         x as i32,
@@ -1220,6 +1335,14 @@ impl Renderer {
                             mapped.size.h as f32,
                         );
                     }
+                    continue;
+                }
+                if let Some(paint) = &fade_paint {
+                    // Fading (open/close): one translucent blit of the whole
+                    // surface. draw_image_with_paint source-overs the tinted
+                    // texture, so a white tint with the fade alpha both fades
+                    // the window and keeps per-pixel alpha intact.
+                    canvas.draw_image_with_paint(img, x, y, dst_w, dst_h, paint);
                     continue;
                 }
                 match f.geometry.viewport_src {
@@ -1517,6 +1640,15 @@ impl Renderer {
                     dst_w = size.w as f32;
                     dst_h = size.h as f32;
                 }
+                // ADR-0029 open/close fade (see the shm path).
+                let fade_paint = if map.is_none() {
+                    f.geometry.transition_opacity.map(|opacity| {
+                        let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                        flux::Paint::solid(flux::rgba(255, 255, 255, alpha))
+                    })
+                } else {
+                    None
+                };
                 if let Some(map) = map {
                     let natural = aegis_model::Rect::new(
                         x as i32,
@@ -1563,6 +1695,11 @@ impl Renderer {
                             mapped.size.h as f32,
                         );
                     }
+                    continue;
+                }
+                if let Some(paint) = &fade_paint {
+                    // Fading (open/close), mirroring the shm path.
+                    canvas.draw_image_with_paint(img, x, y, dst_w, dst_h, paint);
                     continue;
                 }
                 match f.geometry.viewport_src {

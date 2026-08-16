@@ -462,6 +462,11 @@ impl Server {
             self.state.workspace_slide = None;
             settled += 1;
         }
+        let before = self.state.closing_frames.len();
+        self.state
+            .closing_frames
+            .retain(|frame| frame.transition.is_active_at(now));
+        settled += before - self.state.closing_frames.len();
         for pointer in self.state.live_surfaces() {
             // SAFETY: `live_surfaces` yields non-null records owned by this
             // single-threaded server for the duration of the iteration.
@@ -507,6 +512,35 @@ impl Server {
         }
     }
 
+    /// Ghost frames for windows that are closing (fading out) right now,
+    /// snapshotted for the renderer. Each entry carries its interpolated rect
+    /// and fading opacity at the current frame time.
+    pub fn closing_frame_views(&self) -> Vec<aegis_model::ClosingGhostView<'_>> {
+        let now = self.now_ms();
+        self.state
+            .closing_frames
+            .iter()
+            .filter_map(|frame| {
+                let rect = frame.rect_at(now)?;
+                let opacity = frame.opacity_at(now).unwrap_or(0.0);
+                let dmabuf = frame.dmabuf.as_ref();
+                Some(aegis_model::ClosingGhostView {
+                    id: frame.id,
+                    rect,
+                    buffer_width: frame.buffer_width,
+                    buffer_height: frame.buffer_height,
+                    pixels: &frame.pixels,
+                    dmabuf_fd: dmabuf.map_or(-1, |db| db.fd),
+                    drm_format: dmabuf.map_or(0, |db| db.drm_format),
+                    modifier: dmabuf.map_or(0, |db| db.modifier),
+                    stride: dmabuf.map_or(0, |db| db.stride),
+                    offset: dmabuf.map_or(0, |db| db.offset),
+                    opacity,
+                })
+            })
+            .collect()
+    }
+
     /// The rect a surface renders at this frame: `Some(interpolated)` while
     /// its transition is in flight, `None` at the model target (ADR-0029).
     pub(crate) fn transition_render_rect(&self, s: &SurfaceRec) -> Option<aegis_model::Rect> {
@@ -523,6 +557,11 @@ impl Server {
     /// — the main loop keeps ticking frames instead of blocking on the host.
     pub fn transitions_pending(&self) -> bool {
         self.workspace_slide_pending()
+            || self
+                .state
+                .closing_frames
+                .iter()
+                .any(|frame| frame.transition.is_active_at(self.now_ms()))
             || self.state.live_surfaces().any(|p| unsafe {
                 !(*p).xdg_toplevel.is_null() && self.transition_render_rect(&*p).is_some()
             })

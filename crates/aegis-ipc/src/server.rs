@@ -30,8 +30,9 @@ use crate::schema::{
     AgentPrincipalInfo, AuthorizationDecision, Command, CommandScopePolicy, ConnectionCapabilities,
     Event, InteractionDomainAction, InteractionDomainActionResult, InteractionDomainCapture,
     LOCAL_AGENT_ADMIN_SCOPE, LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE, LOCAL_OWNER_ADMIN_SCOPE,
-    LOCAL_PORTAL_SCOPE, LeaseGrant, PROTOCOL_VERSION, Request, Response, Scope,
+    LOCAL_PORTAL_SCOPE, LeaseGrant, MAX_TRANSACT_OPS, PROTOCOL_VERSION, Request, Response, Scope,
     SemanticObservation, SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat,
+    TransactOp,
 };
 pub use aegis_security::authority::{AgentIdentity, PairedAgent};
 
@@ -218,11 +219,14 @@ struct StreamLane {
 /// One event subscription plus a connection shutdown handle. If its bounded
 /// writer queue fills, the broadcaster closes the socket: silently dropping
 /// a journal or invalidation event would leave the client with an
-/// unknowingly stale projection.
+/// unknowingly stale projection. `filter` is set for principal-bound agent
+/// lanes (ADR-0125): delivery is gated per event by the lane's live scope,
+/// re-resolved at broadcast time so ceiling changes take effect mid-stream.
 #[derive(Clone)]
 struct SubscriptionLane {
     tx: SyncSender<Outbound>,
     shutdown: Option<Arc<UnixStream>>,
+    filter: Option<LiveScopeBinding>,
 }
 
 impl SubscriptionLane {
@@ -235,6 +239,60 @@ impl SubscriptionLane {
         }
         false
     }
+}
+
+/// Delivery-time lane predicates installed with the concrete handler when
+/// the server starts. Anonymous lanes carry no binding and bypass them.
+type EventFilter = Arc<dyn Fn(&Event, &LiveScopeBinding) -> bool + Send + Sync>;
+type JournalFilter = Arc<dyn Fn(&JournalEntry, &LiveScopeBinding) -> bool + Send + Sync>;
+
+/// The coarse event's matching observation capability, or `None` for events
+/// that never travel on a coarse lane (journal entries and stream frames).
+fn event_observe_capability(ev: &Event) -> Option<ActorCapability> {
+    Some(match ev {
+        Event::WindowsChanged | Event::SpaceUseChanged { .. } => ActorCapability::ObserveWindows,
+        Event::WorkspaceChanged => ActorCapability::ObserveWorkspaces,
+        Event::Notified { .. } => ActorCapability::ObserveNotifications,
+        Event::InteractionDomainsChanged { .. } | Event::InteractionDomainDamaged { .. } => {
+            ActorCapability::ObserveInteractionDomains
+        }
+        Event::SettingsChanged { .. } => ActorCapability::ObserveSettings,
+        Event::SystemStatusChanged => ActorCapability::ObserveSystem,
+        Event::Journal { .. } | Event::StreamFrame { .. } | Event::StreamEnded { .. } => {
+            return None;
+        }
+    })
+}
+
+/// Install the handler-bound lane predicates on the broadcaster pair. Agent
+/// lanes re-resolve their scope at every broadcast, so a revoked named
+/// scope or a forgotten principal silently stops delivery.
+fn install_lane_filters<H: Handler + 'static>(
+    handler: &Arc<H>,
+    event_filter: &Mutex<Option<EventFilter>>,
+    journal_filter: &Mutex<Option<JournalFilter>>,
+) {
+    let events = Arc::clone(handler);
+    *event_filter.lock().unwrap() = Some(Arc::new(move |ev, binding| {
+        let Some(op) = event_observe_capability(ev) else {
+            return true;
+        };
+        let Some(scope) = binding.resolve(&*events) else {
+            return false;
+        };
+        scope.permits_actor_observation(binding.principal.is_some(), op)
+    }));
+    let journal = Arc::clone(handler);
+    *journal_filter.lock().unwrap() = Some(Arc::new(move |entry, binding| {
+        let Some(scope) = binding.resolve(&*journal) else {
+            return false;
+        };
+        journal_entry_permitted(
+            entry,
+            &scope,
+            binding.principal.as_ref().map(AsRef::as_ref),
+        )
+    }));
 }
 
 /// Subscriber ids are globally unique across connections and subscription
@@ -291,12 +349,20 @@ pub use handler::Handler;
 #[derive(Clone, Default)]
 pub struct JournalBroadcaster {
     subscribers: Arc<Mutex<HashMap<SubId, SubscriptionLane>>>,
+    filter: Arc<Mutex<Option<JournalFilter>>>,
 }
 
 impl JournalBroadcaster {
-    /// Push one already-durable entry to every journal subscriber.
+    /// Push one already-durable entry to every journal subscriber whose lane
+    /// filter permits it.
     pub fn broadcast(&self, entry: JournalEntry) {
+        let filter = self.filter.lock().unwrap().clone();
         self.subscribers.lock().unwrap().retain(|_, sender| {
+            if let (Some(filter), Some(binding)) = (&filter, &sender.filter)
+                && !filter(&entry, binding)
+            {
+                return true;
+            }
             sender.try_send(Outbound::Event(Event::Journal {
                 entry: entry.clone(),
             }))
@@ -312,6 +378,7 @@ pub struct Server {
     socket: PathBuf,
     subs: Arc<Mutex<HashMap<SubId, SubscriptionLane>>>,
     journal_broadcaster: JournalBroadcaster,
+    event_filter: Arc<Mutex<Option<EventFilter>>>,
     streams: Arc<Mutex<HashMap<u64, StreamLane>>>,
 }
 
@@ -363,6 +430,8 @@ impl Server {
         let subs = Arc::new(Mutex::new(HashMap::new()));
         let journal_subs = Arc::clone(&journal_broadcaster.subscribers);
         let streams = Arc::new(Mutex::new(HashMap::new()));
+        let event_filter: Arc<Mutex<Option<EventFilter>>> = Arc::new(Mutex::new(None));
+        install_lane_filters(&handler, &event_filter, &journal_broadcaster.filter);
         let next_sub = Arc::new(AtomicU64::new(0));
         let next_lease = Arc::new(AtomicU64::new(1));
         let next_conn = Arc::new(AtomicU64::new(1));
@@ -400,6 +469,7 @@ impl Server {
             socket,
             subs,
             journal_broadcaster,
+            event_filter,
             streams,
         })
     }
@@ -409,12 +479,18 @@ impl Server {
     /// Delivery is bounded and fail-closed: a full or disconnected lane is
     /// removed and its socket is shut down, forcing the client to reconnect
     /// and obtain a fresh authoritative snapshot instead of continuing after
-    /// a silently missed invalidation.
+    /// a silently missed invalidation. Principal-bound agent lanes receive
+    /// the event only when their live scope permits observing it (ADR-0125).
     pub fn broadcast(&self, ev: Event) {
-        self.subs
-            .lock()
-            .unwrap()
-            .retain(|_, lane| lane.try_send(Outbound::Event(ev.clone())));
+        let filter = self.event_filter.lock().unwrap().clone();
+        self.subs.lock().unwrap().retain(|_, lane| {
+            if let (Some(filter), Some(binding)) = (&filter, &lane.filter)
+                && !filter(&ev, binding)
+            {
+                return true;
+            }
+            lane.try_send(Outbound::Event(ev.clone()))
+        });
     }
 
     /// Push a journal entry to every journal-subscribed connection

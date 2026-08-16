@@ -444,16 +444,9 @@ fn render_pointer_feedback(
             },
         ),
         |f| {
-            f.column_ex(
-                &LayoutOpts {
-                    width: label_rect.w,
-                    height: label_rect.h,
-                    pad: 7.0,
-                    cross: Align::Center,
-                    ..Default::default()
-                },
-                |f| f.label_compact_sized(&label, design.typography.footnote),
-            );
+            f.centered(label_rect.w, label_rect.h, |f| {
+                f.label_compact_sized(&label, design.typography.footnote)
+            });
         },
     );
 }

@@ -73,26 +73,22 @@ pub fn glass_panel(design: &Design) -> LayoutOpts {
 /// This is a foreground wash, not another material body. The compositor's
 /// single-body focus field supplies optical lift for selected content; this
 /// layer provides a restrained fallback and immediate pointer feedback.
+/// Enter/exit fades belong to the lens opacity switch (`Frame::set_opacity`),
+/// so the tint is always returned at full strength.
 #[must_use]
-pub fn glass_focus(design: &Design, selected: bool, visibility: f32) -> LayoutOpts {
-    let color = if selected {
-        design.glass_focus.selected_tint
-    } else {
-        design.glass_focus.hover_tint
-    };
+pub fn glass_focus(design: &Design, selected: bool) -> LayoutOpts {
     LayoutOpts {
-        bg: scale_alpha(color, visibility),
+        bg: if selected {
+            design.glass_focus.selected_tint
+        } else {
+            design.glass_focus.hover_tint
+        },
         border: Color::TRANSPARENT,
         border_width: 0.0,
         radius: design.radii.control,
         pad: 0.0,
         ..surface_layout()
     }
-}
-
-fn scale_alpha(color: Color, opacity: f32) -> Color {
-    let (_, _, _, alpha) = color.components();
-    color.with_alpha((alpha as f32 * opacity.clamp(0.0, 1.0)).round() as u8)
 }
 
 /// Base material for settings and system-management cards.
@@ -210,10 +206,10 @@ mod tests {
     #[test]
     fn glass_focus_is_neutral_and_never_draws_an_outline() {
         let design = Design::dark();
-        let hover = glass_focus(&design, false, 1.0);
-        let selected = glass_focus(&design, true, 0.5);
+        let hover = glass_focus(&design, false);
+        let selected = glass_focus(&design, true);
         assert_eq!(hover.bg, design.glass_focus.hover_tint);
-        assert_eq!(selected.bg, Color::rgba(255, 255, 255, 2));
+        assert_eq!(selected.bg, design.glass_focus.selected_tint);
         assert_eq!(hover.border, Color::TRANSPARENT);
         assert_eq!(hover.border_width, 0.0);
         assert_eq!(hover.radius, design.radii.control);

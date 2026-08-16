@@ -98,10 +98,6 @@ impl Overview {
         }
     }
 
-    fn alpha(&self, base: u8) -> u8 {
-        (base as f32 * self.visibility).round() as u8
-    }
-
     fn live_interaction_domains(&self) -> Vec<InteractionDomain> {
         self.interaction_domains
             .interaction_domains
@@ -310,6 +306,12 @@ impl Chrome for Overview {
             return;
         }
 
+        // One frame-scoped switch fades the whole overview uniformly —
+        // frames, labels, and any future imagery — stamped per node at
+        // build time. Restored at the end of render; lens also resets it
+        // every frame begin.
+        frame.set_opacity(self.visibility);
+
         // Workspace rail: one tile per workspace along the top edge, current
         // highlighted. The compositor draws each workspace's live miniature
         // inside the tile; chrome adds only a translucent tint, the frame,
@@ -323,18 +325,18 @@ impl Chrome for Overview {
                 let (_, current) = rail_tiles[i];
                 let hovered = self.rail_hovered == Some(i);
                 let bg = if current {
-                    colors.application_accent.with_alpha(self.alpha(70))
+                    colors.application_accent.with_alpha(70)
                 } else if hovered {
-                    colors.application_surface.with_alpha(self.alpha(110))
+                    colors.application_surface.with_alpha(110)
                 } else {
-                    colors.application_surface.with_alpha(self.alpha(60))
+                    colors.application_surface.with_alpha(60)
                 };
                 let border = if current {
-                    colors.application_accent.with_alpha(self.alpha(255))
+                    colors.application_accent.with_alpha(255)
                 } else if hovered {
-                    colors.application_accent.with_alpha(self.alpha(190))
+                    colors.application_accent.with_alpha(190)
                 } else {
-                    colors.application_border.with_alpha(self.alpha(160))
+                    colors.application_border.with_alpha(160)
                 };
                 frame.place(
                     &format!("aegis-overview-ws-{i}"),
@@ -360,17 +362,9 @@ impl Chrome for Overview {
                     &format!("aegis-overview-ws-label-{i}"),
                     &chrome_place(caption, surface_layout()),
                     move |frame| {
-                        frame.column_ex(
-                            &LayoutOpts {
-                                width: caption.w,
-                                height: caption.h,
-                                cross: Align::Center,
-                                ..Default::default()
-                            },
-                            move |frame| {
-                                frame.label_compact_sized(&format!("{}", i + 1), typography.label);
-                            },
-                        );
+                        frame.centered(caption.w, caption.h, move |frame| {
+                            frame.label_compact_sized(&format!("{}", i + 1), typography.label);
+                        });
                     },
                 );
             }
@@ -388,11 +382,11 @@ impl Chrome for Overview {
                 let hovered = self.interaction_domain_hovered == Some(interaction_domain.id);
                 let active = interaction_domain.state == InteractionDomainState::Active;
                 let bg = if hovered {
-                    colors.application_accent.with_alpha(self.alpha(235))
+                    colors.application_accent.with_alpha(235)
                 } else if active {
-                    colors.application_surface.with_alpha(self.alpha(225))
+                    colors.application_surface.with_alpha(225)
                 } else {
-                    colors.application_surface.with_alpha(self.alpha(190))
+                    colors.application_surface.with_alpha(190)
                 };
                 let label = interaction_domain.label.clone();
                 let status = match interaction_domain.state {
@@ -414,9 +408,9 @@ impl Chrome for Overview {
                         LayoutOpts {
                             bg,
                             border: if hovered {
-                                colors.application_accent.with_alpha(self.alpha(255))
+                                colors.application_accent.with_alpha(255)
                             } else {
-                                colors.application_border.with_alpha(self.alpha(150))
+                                colors.application_border.with_alpha(150)
                             },
                             border_width: if hovered { 2.0 } else { 1.0 },
                             radius: radii.control,
@@ -454,11 +448,11 @@ impl Chrome for Overview {
             let border = if window.read_only {
                 // Intentional content color: the amber read-only warning is
                 // content styling, not a scheme-token role.
-                Color::rgba(192, 157, 86, self.alpha(if hovered { 255 } else { 190 }))
+                Color::rgba(192, 157, 86, if hovered { 255 } else { 190 })
             } else if hovered {
-                colors.application_accent.with_alpha(self.alpha(255))
+                colors.application_accent.with_alpha(255)
             } else {
-                colors.application_border.with_alpha(self.alpha(160))
+                colors.application_border.with_alpha(160)
             };
             frame.place(
                 &format!("aegis-overview-cell-{i}"),
@@ -495,17 +489,9 @@ impl Chrome for Overview {
                     &format!("aegis-overview-label-{i}"),
                     &chrome_place(label_rect, surface_layout()),
                     move |frame| {
-                        frame.column_ex(
-                            &LayoutOpts {
-                                width: label_rect.w,
-                                height: label_rect.h,
-                                cross: Align::Center,
-                                ..Default::default()
-                            },
-                            move |frame| {
-                                frame.label_compact_sized(&label, typography.label);
-                            },
-                        );
+                        frame.centered(label_rect.w, label_rect.h, move |frame| {
+                            frame.label_compact_sized(&label, typography.label);
+                        });
                     },
                 );
             }
@@ -523,31 +509,25 @@ impl Chrome for Overview {
                 &chrome_place(
                     ghost,
                     LayoutOpts {
-                        bg: colors.application_accent.with_alpha(self.alpha(230)),
-                        border: colors.application_accent.with_alpha(self.alpha(255)),
+                        bg: colors.application_accent.with_alpha(230),
+                        border: colors.application_accent.with_alpha(255),
                         border_width: 1.0,
                         radius: radii.control,
                         ..surface_layout()
                     },
                 ),
                 |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: ghost.w,
-                            height: ghost.h,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |frame| {
-                            frame.label_sized(
-                                i18n.text(Message::MoveToInteractionDomain),
-                                typography.footnote,
-                            )
-                        },
-                    );
+                    frame.centered(ghost.w, ghost.h, |frame| {
+                        frame.label_compact_sized(
+                            i18n.text(Message::MoveToInteractionDomain),
+                            typography.footnote,
+                        )
+                    });
                 },
             );
         }
+
+        frame.set_opacity(1.0);
     }
 
     fn captures_keyboard(&self) -> bool {

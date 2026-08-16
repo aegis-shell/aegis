@@ -1,6 +1,6 @@
 # ADR-0052: Scoped output frame streaming
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-24
 
 ## Context

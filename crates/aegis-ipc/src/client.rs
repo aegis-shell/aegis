@@ -15,10 +15,10 @@ use crate::schema::{
     ActorActionIntent, ActorActionReceipt, ActorCapability, ActorResource, AgentGrantInfo,
     AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult, Command, ConfirmPickResult,
     ConnectionCapabilities, Event, InteractionDomainAction, InteractionDomainActionResult,
-    LeaseGrant, LeaseRequest, ObservationToken, PROTOCOL_VERSION, PickKind, PickResult, Request,
-    ResourceGrant, ResourceGrantId, Response, Scope, SecretPromptResult, SemanticObservation,
-    SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat, StreamTarget,
-    SystemAction, SystemStatus,
+    LeaseGrant, LeaseRequest, ObservationToken, ObserveSnapshot, PROTOCOL_VERSION, PickKind,
+    PickResult, Request, ResourceGrant, ResourceGrantId, Response, Scope, SecretPromptResult,
+    SemanticObservation, SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat,
+    StreamTarget, SystemAction, SystemStatus, TransactOp, TransactResult,
 };
 
 /// Decoded Interaction Domain observation returned by [`Client::capture_interaction_domain`].
@@ -711,6 +711,45 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected InteractionDomain, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Read a consistent multi-class snapshot with the journal cursor in one
+    /// round trip (protocol 28, ADR-0125; the Observe primitive).
+    pub fn observe(&mut self) -> io::Result<ObserveSnapshot> {
+        write_msg(&mut self.stream, &Request::Observe)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Observed { snapshot } => Ok(snapshot),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Observed, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Atomically authorize and apply an ordered op batch, returning the
+    /// main loop's authoritative per-op receipt or a precondition conflict
+    /// (protocol 28, ADR-0125; the Transact primitive).
+    pub fn transact(
+        &mut self,
+        expected_journal_seq: Option<u64>,
+        ops: Vec<TransactOp>,
+    ) -> io::Result<TransactResult> {
+        write_msg(
+            &mut self.stream,
+            &Request::Transact {
+                expected_journal_seq,
+                ops,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Transact { result } => Ok(result),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Transact, got {other:?}"),
             )),
         }
     }

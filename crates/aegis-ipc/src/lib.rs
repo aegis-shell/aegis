@@ -14,7 +14,9 @@
 //!
 //! # Status
 //!
-//! Protocol version 24 adds kernel-process-bound accessibility window
+//! Protocol version 28 adds the agent primitive families (ADR-0125):
+//! `Observe`, `Transact`, and scope-filtered agent subscriptions. Version 24
+//! added kernel-process-bound accessibility window
 //! correlation. Version 23 introduced explicit Actor sessions, exact
 //! resource handles, and the bounded accessibility adapter transport. It retains the
 //! Interaction Domain vocabulary and transport-neutral authority contracts
@@ -48,12 +50,13 @@ pub use schema::{
     ActorCapability, AgentGrantDecision, AgentGrantInfo, AgentHello, AgentIssued,
     AgentPrincipalInfo, AppPickResult, AuthorizationDecision, Command, CommandScopePolicy,
     ConfirmPickResult, ConnectionCapabilities, Event, InteractionDomainAction,
-    InteractionDomainActionResult, InteractionDomainCapture, LOCAL_AGENT_ADMIN_SCOPE,
+    InteractionDomainActionResult, InteractionDomainCapture, JournalCursor, LOCAL_AGENT_ADMIN_SCOPE,
     LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE, LOCAL_OWNER_ADMIN_SCOPE, LOCAL_PORTAL_SCOPE, LeaseGrant,
-    LeaseRequest, ObservationToken, PROTOCOL_VERSION, PickKind, PickResult, Request, Response,
-    Scope, SecretPromptResult, SemanticActionRequest, SemanticObservation, SettingsAction,
-    SettingsReceipt, SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
-    WindowCapture,
+    LeaseRequest, MAX_TRANSACT_OPS, ObservationToken, ObserveSnapshot, PROTOCOL_VERSION, PickKind,
+    PickResult, Request, Response, Scope, SecretPromptResult, SemanticActionRequest,
+    SemanticObservation, SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat,
+    StreamTarget, SystemAction, SystemStatus, TransactOp, TransactOpResult, TransactReceipt,
+    TransactResult, WindowCapture,
 };
 pub use server::{
     AgentIdentity, CaptureInteractionDomainPayload, CaptureOutputPayload, CaptureWindowPayload,

@@ -1381,6 +1381,14 @@ pub(super) fn draw_client_scene(
             &windows,
         );
     }
+    // ADR-0029 close transitions: fading ghosts of just-closed windows paint
+    // above the live desktop (they always unmap topmost relative to their
+    // own tree; ghosts cannot occlude anything that is still interactive
+    // because nothing below them changes while they fade).
+    let ghosts = server.closing_frame_views();
+    if !ghosts.is_empty() {
+        renderer.draw_closing_frames(device, canvas, &ghosts);
+    }
     canvas.restore();
 }
 

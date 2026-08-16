@@ -725,6 +725,71 @@ pub(super) fn drive_read_loop<H: Handler>(
                     }
                 }
             }
+            Request::Observe => {
+                let scope = effective_scope(
+                    handler,
+                    scope_name.as_deref(),
+                    &granted_scope,
+                    principal.as_deref(),
+                );
+                if !granted.query {
+                    Response::Error {
+                        message: "Observe requires the query capability".into(),
+                    }
+                } else if let Some(scope) = scope.as_ref() {
+                    let actor = principal.is_some();
+                    let observe = |op| scope.permits_actor_observation(actor, op);
+                    let windows = observe(ActorCapability::ObserveWindows)
+                        .then(|| filter_windows(handler.windows(), scope));
+                    let workspaces = observe(ActorCapability::ObserveWorkspaces)
+                        .then(|| filter_workspaces(handler.workspaces(), scope));
+                    let outputs = observe(ActorCapability::ObserveOutputs).then(|| {
+                        let mut outputs = handler.outputs();
+                        if scope.outputs.is_some() {
+                            let allowed_connectors = handler
+                                .workspaces()
+                                .outputs
+                                .into_iter()
+                                .filter(|output| scope.permits_output(output.id))
+                                .map(|output| output.connector)
+                                .collect::<std::collections::HashSet<_>>();
+                            outputs.retain(|output| allowed_connectors.contains(&output.connector));
+                        }
+                        outputs
+                    });
+                    let notifications = observe(ActorCapability::ObserveNotifications)
+                        .then(|| handler.notifications());
+                    let interaction_domains = observe(ActorCapability::ObserveInteractionDomains)
+                        .then(|| {
+                            filter_interaction_domains(
+                                handler.interaction_domains(),
+                                scope,
+                                principal.as_deref(),
+                            )
+                        });
+                    let journal_cursor = observe(ActorCapability::ObserveJournal).then(|| {
+                        let snapshot = handler.journal_since(u64::MAX);
+                        crate::schema::JournalCursor {
+                            oldest_seq: snapshot.oldest_seq,
+                            latest_seq: snapshot.latest_seq,
+                        }
+                    });
+                    Response::Observed {
+                        snapshot: crate::schema::ObserveSnapshot {
+                            windows,
+                            workspaces,
+                            outputs,
+                            notifications,
+                            interaction_domains,
+                            journal_cursor,
+                        },
+                    }
+                } else {
+                    Response::Error {
+                        message: "Observe requires query and a live scope".into(),
+                    }
+                }
+            }
             Request::GetAgentGrants { principal: filter } => {
                 if filter
                     .as_deref()
@@ -1106,48 +1171,136 @@ pub(super) fn drive_read_loop<H: Handler>(
                     Response::Ok
                 }
             }
-            Request::Subscribe => {
-                if principal.is_some() {
-                    Response::Error {
-                        message: "Actor subscriptions require filtered lanes; use scoped snapshots"
-                            .into(),
-                    }
+            Request::Transact {
+                expected_journal_seq,
+                ops,
+            } => {
+                let commands: Vec<Command> = ops.iter().map(TransactOp::command).collect();
+                let current_scope = effective_scope(
+                    handler,
+                    scope_name.as_deref(),
+                    &granted_scope,
+                    principal.as_deref(),
+                );
+                let mut rejection = if !granted.control {
+                    Some("Transact requires the control capability".to_owned())
+                } else if !lease_alive {
+                    Some("privileged capability lease expired".to_owned())
+                } else if ops.is_empty() || ops.len() > MAX_TRANSACT_OPS {
+                    Some(format!(
+                        "Transact ops must contain from 1 through {MAX_TRANSACT_OPS} entries"
+                    ))
                 } else {
-                    if sub_id.is_none() {
-                        let id = next_sub.fetch_add(1, Ordering::Relaxed);
-                        subs.lock().unwrap().insert(
-                            id,
-                            SubscriptionLane {
-                                tx: tx.clone(),
-                                shutdown: Some(Arc::clone(shutdown)),
-                            },
-                        );
-                        sub_id = Some(id);
+                    None
+                };
+                // Preflight every op before any is applied: capability,
+                // scope decision (with the interactive grant path), transport
+                // validation, and credential-bound ownership — the batch
+                // refuses as a unit and only the first failing op is audited.
+                if rejection.is_none() {
+                    match current_scope.as_ref() {
+                        None => rejection = Some("out of scope: named scope was revoked".into()),
+                        Some(scope) => {
+                            for cmd in &commands {
+                                let mut op_rejection = match scope.decide_command(cmd) {
+                                    AuthorizationDecision::Permit => {
+                                        cmd.validate().err().map(str::to_owned)
+                                    }
+                                    AuthorizationDecision::Deny => Some("out of scope".to_owned()),
+                                    AuthorizationDecision::Ask(op) => {
+                                        match grant_authorize(
+                                            handler,
+                                            conn_id,
+                                            principal.as_deref(),
+                                            op,
+                                        ) {
+                                            Ok(true) => {
+                                                if scope.permits_resources(cmd) {
+                                                    cmd.validate().err().map(str::to_owned)
+                                                } else {
+                                                    Some("out of scope".to_owned())
+                                                }
+                                            }
+                                            Ok(false) => Some(
+                                                "out of scope: the user denied this operation"
+                                                    .to_owned(),
+                                            ),
+                                            Err(message) => Some(message),
+                                        }
+                                    }
+                                };
+                                if op_rejection.is_none() {
+                                    op_rejection = handler
+                                        .authorize_agent_interaction_domain_command(
+                                            principal.as_deref(),
+                                            cmd,
+                                        )
+                                        .err();
+                                }
+                                if let Some(message) = op_rejection {
+                                    handler.audit_refusal(
+                                        conn_id,
+                                        principal.as_deref(),
+                                        JournalMutation::Command {
+                                            cmd: crate::journal::AuditedCommand::from(cmd),
+                                        },
+                                        message.clone(),
+                                    );
+                                    rejection = Some(message);
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    Response::Subscribed
+                }
+                if let Some(message) = rejection {
+                    Response::Error { message }
+                } else {
+                    match handler.transact(
+                        conn_id,
+                        principal.as_deref(),
+                        expected_journal_seq,
+                        commands,
+                    ) {
+                        Ok(result) => Response::Transact { result },
+                        Err(message) => Response::Error { message },
+                    }
                 }
             }
-            Request::SubscribeJournal => {
-                if principal.is_some() {
-                    Response::Error {
-                        message:
-                            "Actor journal subscriptions require filtered lanes; use GetJournal"
-                                .into(),
-                    }
-                } else {
-                    if journal_sub_id.is_none() {
-                        let id = next_sub.fetch_add(1, Ordering::Relaxed);
-                        journal_subs.lock().unwrap().insert(
-                            id,
-                            SubscriptionLane {
-                                tx: tx.clone(),
-                                shutdown: Some(Arc::clone(shutdown)),
-                            },
-                        );
-                        journal_sub_id = Some(id);
-                    }
-                    Response::Subscribed
+            Request::Subscribe => {
+                if sub_id.is_none() {
+                    let id = next_sub.fetch_add(1, Ordering::Relaxed);
+                    subs.lock().unwrap().insert(
+                        id,
+                        SubscriptionLane {
+                            tx: tx.clone(),
+                            shutdown: Some(Arc::clone(shutdown)),
+                            // Principal-bound lanes receive only events their
+                            // live scope may observe; anonymous lanes keep
+                            // their handshake-time ceiling (ADR-0125).
+                            filter: principal.is_some().then(|| live_scope.clone()),
+                        },
+                    );
+                    sub_id = Some(id);
                 }
+                Response::Subscribed
+            }
+            Request::SubscribeJournal => {
+                if journal_sub_id.is_none() {
+                    let id = next_sub.fetch_add(1, Ordering::Relaxed);
+                    journal_subs.lock().unwrap().insert(
+                        id,
+                        SubscriptionLane {
+                            tx: tx.clone(),
+                            shutdown: Some(Arc::clone(shutdown)),
+                            // Journal entries pass through the same subject
+                            // and scope filter as `GetJournal` (ADR-0125).
+                            filter: principal.is_some().then(|| live_scope.clone()),
+                        },
+                    );
+                    journal_sub_id = Some(id);
+                }
+                Response::Subscribed
             }
             Request::RenewLease { ttl_ms } => {
                 if !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(&ttl_ms) {

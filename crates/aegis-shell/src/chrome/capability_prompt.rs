@@ -553,7 +553,7 @@ impl Chrome for CapabilityPrompt {
                 &materials::chrome_place(
                     rect,
                     if hovered {
-                        materials::glass_focus(&design, false, 1.0)
+                        materials::glass_focus(&design, false)
                     } else {
                         LayoutOpts {
                             bg: Color::TRANSPARENT,
@@ -577,12 +577,12 @@ impl Chrome for CapabilityPrompt {
                         chevron_rect(rect),
                         LayoutOpts {
                             pad: 0.0,
-                            cross: Align::Center,
                             ..materials::transparent()
                         },
                     ),
                     |frame| {
-                        frame.column_ex(&stretch(chevron_rect(rect)), |frame| {
+                        let rect = chevron_rect(rect);
+                        frame.centered(rect.w, rect.h, |frame| {
                             frame.label_compact_sized(chevron, design.typography.footnote);
                         });
                     },
@@ -604,14 +604,13 @@ impl Chrome for CapabilityPrompt {
                         border_width: design.strokes.hairline,
                         radius: design.radii.control,
                         pad: 0.0,
-                        cross: Align::Center,
                         ..materials::surface_layout()
                     },
                 ),
                 |frame| {
                     if let Some(glyph) = check {
-                        frame.column_ex(&stretch(check_rect), |frame| {
-                            frame.label_sized(glyph, design.typography.label);
+                        frame.centered(check_rect.w, check_rect.h, |frame| {
+                            frame.label_compact_sized(glyph, design.typography.label);
                         });
                     }
                 },
@@ -670,13 +669,12 @@ impl Chrome for CapabilityPrompt {
                     },
                     radius: design.radii.control,
                     pad: 0.0,
-                    cross: Align::Center,
                     ..materials::surface_layout()
                 },
             ),
             |frame| {
-                frame.column_ex(&stretch(layout.deny), |frame| {
-                    frame.label_sized("Deny", design.typography.body);
+                frame.centered(layout.deny.w, layout.deny.h, |frame| {
+                    frame.label_compact_sized("Deny", design.typography.body);
                 });
             },
         );
@@ -688,13 +686,12 @@ impl Chrome for CapabilityPrompt {
                     bg: design.colors.application_accent,
                     radius: design.radii.control,
                     pad: 0.0,
-                    cross: Align::Center,
                     ..materials::surface_layout()
                 },
             ),
             |frame| {
-                frame.column_ex(&stretch(layout.allow), |frame| {
-                    frame.label_sized("Allow", design.typography.body);
+                frame.centered(layout.allow.w, layout.allow.h, |frame| {
+                    frame.label_compact_sized("Allow", design.typography.body);
                 });
             },
         );

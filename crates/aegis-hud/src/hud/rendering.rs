@@ -75,7 +75,6 @@ pub(super) fn render_text(
     rect: Rect,
     text: &str,
     size: f32,
-    fade: f32,
 ) {
     f.place(id, &chrome_place(rect, centered_layer()), |f| {
         f.row_ex(
@@ -86,7 +85,7 @@ pub(super) fn render_text(
                 ..Default::default()
             },
             |f| {
-                f.push_style(hud_text_outline(design, fade));
+                f.push_style(hud_text_outline(design));
                 f.label_compact_sized(text, size);
                 f.pop_style();
             },
@@ -95,15 +94,13 @@ pub(super) fn render_text(
 }
 
 /// One display-only status cell: a themed raster icon (or vector fallback)
-/// plus an optional compact label. The raster tint follows the exact same
-/// fade as the chip theme and compositor glass body.
-#[allow(clippy::too_many_arguments)]
+/// plus an optional compact label. The frame opacity fades the raster tint
+/// with the chip theme and the compositor glass body.
 pub(super) fn render_status_cell(
     f: &mut Frame,
     design: &Design,
     id: &str,
     rect: Rect,
-    fade: f32,
     themed_icon: Option<*mut c_void>,
     fallback: Icon,
     label: &str,
@@ -120,23 +117,23 @@ pub(super) fn render_status_cell(
             |f| {
                 match themed_icon {
                     Some(icon) => unsafe {
-                        f.push_style(hud_glyph_outline(design, fade));
+                        f.push_style(hud_glyph_outline(design));
                         f.image_tinted(
                             icon as *mut lens::sys::flux_image,
                             16.0,
                             16.0,
-                            hud_foreground_color(design, fade),
+                            design.hud_foreground.primary,
                         );
                         f.pop_style();
                     },
                     None => {
-                        f.push_style(hud_glyph_outline(design, fade));
+                        f.push_style(hud_glyph_outline(design));
                         f.icon(fallback, 15.0);
                         f.pop_style();
                     }
                 }
                 if !label.is_empty() {
-                    f.push_style(hud_text_outline(design, fade));
+                    f.push_style(hud_text_outline(design));
                     f.label_compact_sized(label, design.typography.footnote);
                     f.pop_style();
                 }
@@ -145,28 +142,19 @@ pub(super) fn render_status_cell(
     });
 }
 
-/// Stable foreground core for HUD content, following the appearance's HUD
-/// policy (a light core over a dark contour in the dark appearance,
-/// inverted in the light one). The contour carries background separation,
-/// so the core can stay constant instead of flipping every symbol
-/// independently and causing visual chatter.
-pub(super) fn hud_foreground_color(design: &Design, fade: f32) -> Color {
-    fade_color(design.hud_foreground.primary, fade)
-}
-
 pub(super) fn hud_contour_color(design: &Design) -> Color {
     design.hud_foreground.contour
 }
 
 /// The `(color, width)` pair behind [`hud_text_outline`], factored out so the
 /// contour policy stays testable now that `lens::Style` is opaque.
-pub(super) fn hud_text_outline_params(design: &Design, fade: f32) -> (Color, f32) {
+pub(super) fn hud_text_outline_params(design: &Design) -> (Color, f32) {
     let hud = design.hud_foreground;
-    (fade_color(hud.contour, fade), hud.text_contour_width)
+    (hud.contour, hud.text_contour_width)
 }
 
-pub(super) fn hud_text_outline(design: &Design, fade: f32) -> Style {
-    let (color, width) = hud_text_outline_params(design, fade);
+pub(super) fn hud_text_outline(design: &Design) -> Style {
+    let (color, width) = hud_text_outline_params(design);
     Style::new()
         .with_outline_color(color)
         .with_outline_width(width)
@@ -174,13 +162,13 @@ pub(super) fn hud_text_outline(design: &Design, fade: f32) -> Style {
 
 /// The `(color, width)` pair behind [`hud_glyph_outline`]; see
 /// [`hud_text_outline_params`].
-pub(super) fn hud_glyph_outline_params(design: &Design, fade: f32) -> (Color, f32) {
+pub(super) fn hud_glyph_outline_params(design: &Design) -> (Color, f32) {
     let hud = design.hud_foreground;
-    (fade_color(hud.contour, fade), hud.glyph_contour_width)
+    (hud.contour, hud.glyph_contour_width)
 }
 
-pub(super) fn hud_glyph_outline(design: &Design, fade: f32) -> Style {
-    let (color, width) = hud_glyph_outline_params(design, fade);
+pub(super) fn hud_glyph_outline(design: &Design) -> Style {
+    let (color, width) = hud_glyph_outline_params(design);
     Style::new()
         .with_outline_color(color)
         .with_outline_width(width)
@@ -191,10 +179,10 @@ pub(super) fn hud_glyph_outline(design: &Design, fade: f32) -> Style {
 /// it does not turn the physical glass back into an opaque dark pill. The
 /// whisper is scheme-invariant: the scheme-aware pieces are the glass body
 /// and the HUD foreground/contour pair, not this tint.
-pub(super) fn chip_opts(design: &Design, fade: f32) -> LayoutOpts {
+pub(super) fn chip_opts(design: &Design) -> LayoutOpts {
     LayoutOpts {
-        bg: fade_color(Color::rgba(24, 26, 36, 42), fade),
-        border: fade_color(Color::rgba(255, 255, 255, 18), fade),
+        bg: Color::rgba(24, 26, 36, 42),
+        border: Color::rgba(255, 255, 255, 18),
         border_width: 0.75,
         radius: design.radii.chip,
         pad: 0.0,
@@ -231,15 +219,4 @@ pub(super) fn centered_layer() -> LayoutOpts {
 
 pub(super) fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-pub(super) fn fade_alpha(base: u8, progress: f32) -> u8 {
-    (base as f32 * progress.clamp(0.0, 1.0)).round() as u8
-}
-
-/// Scale one color's alpha by the chip fade (lens has no opacity property;
-/// fading is per-color).
-pub(super) fn fade_color(color: Color, progress: f32) -> Color {
-    let (_, _, _, opacity) = color.components();
-    color.with_alpha(fade_alpha(opacity, progress))
 }

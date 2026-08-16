@@ -19,20 +19,13 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::BridgeConfig;
-use crate::interaction_domain::{
-    InteractionDomainSession, InteractionDomainSessionError, ManagedInteractionDomain,
-};
+use aegis_agent::{InteractionDomainSession, ManagedInteractionDomain};
 
 const MAX_JOURNAL_ENTRIES: usize = 200;
 const MAX_APP_RESULTS: usize = 200;
 const MAX_INPUT_ACTIONS: usize = 64;
 const MAX_INLINE_MCP_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PENDING_OBSERVATIONS: usize = 64;
-
-struct PendingObservation {
-    expires_at: Instant,
-    client: Client,
-}
 
 /// ConnectionCapabilities and resource/operation allowlists observed at startup.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -139,12 +132,12 @@ pub struct AegisPlatform {
     config: BridgeConfig,
     grant: ToolGrant,
     interaction_domain: InteractionDomainSession,
-    identity: crate::identity::IdentityStore,
+    identity: aegis_agent::IdentityStore,
     /// Keep the exact authenticated IPC connection that received each
     /// observation alive until `interaction_domain_input` consumes it. Observation leases
     /// are connection-bound by the compositor; opening a fresh connection for
     /// the next MCP tool call would correctly invalidate the token.
-    pending_observations: std::collections::BTreeMap<String, PendingObservation>,
+    pending_observations: aegis_agent::ObservationLeases,
 }
 
 mod platform;
@@ -391,14 +384,14 @@ impl ToolKind {
             ),
             Self::FocusWindow => definition(
                 "focus_window",
-                "Queue focus for a live window id. By default the view switches to the window's workspace; pass switch_workspace=false to avoid moving the user's view.",
+                "Focus a live window id and return the commit receipt. By default the view switches to the window's workspace; pass switch_workspace=false to avoid moving the user's view.",
                 json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"switch_workspace":{"type":"boolean","description":"Bring the window's workspace into view before focusing; default true. Set false to activate the window without leaving the current workspace (a hidden window is only raised within its own workspace, never focused)."}},"required":["window_id"],"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::MinimizeWindow => definition(
                 "minimize_window",
-                "Queue minimization for a live window id.",
+                "Minimize a live window id and return the commit receipt.",
                 id_schema("window_id"),
                 false,
                 false,
@@ -412,28 +405,28 @@ impl ToolKind {
             ),
             Self::MoveWindowToWorkspace => definition(
                 "move_window_to_workspace",
-                "Queue moving a window to a workspace by durable ids.",
+                "Move a window to a workspace by durable ids and return the commit receipt.",
                 json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"workspace_id":{"type":"integer","minimum":1}},"required":["window_id","workspace_id"],"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::SwitchWorkspace => definition(
                 "switch_workspace",
-                "Queue switching to the next or previous workspace.",
+                "Switch to the next or previous workspace and return the commit receipt.",
                 json!({"type":"object","properties":{"direction":{"type":"string","enum":["next","previous"]}},"required":["direction"],"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::SwitchWorkspaceTo => definition(
                 "switch_workspace_to",
-                "Queue switching to a workspace by durable id.",
+                "Switch to a workspace by durable id and return the commit receipt.",
                 id_schema("workspace_id"),
                 false,
                 false,
             ),
             Self::SetWindowGeometry => definition(
                 "set_window_geometry",
-                "Queue floating-window geometry in compositor logical coordinates.",
+                "Set floating-window geometry in compositor logical coordinates and return the commit receipt.",
                 json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"x":{"type":"integer"},"y":{"type":"integer"},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["window_id","x","y","width","height"],"additionalProperties":false}),
                 false,
                 false,
@@ -964,8 +957,8 @@ pub enum PlatformError {
     InteractionDomain(String),
 }
 
-impl From<InteractionDomainSessionError> for PlatformError {
-    fn from(error: InteractionDomainSessionError) -> Self {
+impl From<aegis_agent::SessionError> for PlatformError {
+    fn from(error: aegis_agent::SessionError) -> Self {
         Self::InteractionDomain(error.to_string())
     }
 }

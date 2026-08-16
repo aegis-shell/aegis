@@ -750,8 +750,9 @@ impl Chrome for CommandPanel {
         let (header_rect, main_rect, notifications_rect, tray_rect) = Self::cluster_bounds(display);
 
         // Dark scrim over the blurred desktop — the shared scrim token's rgb
-        // at the panel's deeper alpha, scaled in with the reveal.
+        // at the panel's deeper alpha, faded in with the reveal.
         let scrim = self.design.colors.scrim;
+        f.set_opacity(reveal);
         f.place(
             "aegis-hud-scrim",
             &materials::chrome_place(
@@ -762,7 +763,7 @@ impl Chrome for CommandPanel {
                     h: display.1,
                 },
                 LayoutOpts {
-                    bg: scrim.with_alpha(fade_alpha(SCRIM_ALPHA, reveal)),
+                    bg: scrim.with_alpha(SCRIM_ALPHA),
                     border: Color::TRANSPARENT,
                     radius: 0.0,
                     pad: 0.0,
@@ -771,6 +772,7 @@ impl Chrome for CommandPanel {
             ),
             |_| {},
         );
+        f.set_opacity(1.0);
 
         // Click-away: a press landing on none of the cluster's surfaces nor
         // an open tray popover dismisses the panel.
@@ -794,8 +796,15 @@ impl Chrome for CommandPanel {
         let header_progress = stagger(reveal, 0.0);
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
         let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
+        // lens stamps each built node with the context opacity, so one
+        // switch fades every element of a section — text, icons, images,
+        // sliders, scrollbars; the switch is restored after the cluster
+        // (lens also resets it at every frame begin).
+        f.set_opacity(header_progress);
         self.render_header_band(f, header_rect, header_progress, i18n);
+        f.set_opacity(content_progress);
         self.render_main_panel(f, main_rect, content_progress, i18n, out);
+        f.set_opacity(side_progress);
         self.render_side_column(
             f,
             notifications_rect,
@@ -806,13 +815,15 @@ impl Chrome for CommandPanel {
             out,
         );
 
-        // The dbusmenu popover floats above the panels.
+        // The dbusmenu popover floats above the panels; it belongs to the
+        // tray, so it fades with the side column.
         if self.menu_open_for.is_some()
             && let Some(menu) = self.menu_snapshot()
             && Some(&menu.key) == self.menu_open_for.as_ref()
         {
             self.render_tray_menu(f, &menu, display, cursor, pressed);
         }
+        f.set_opacity(1.0);
 
         self.prev_down = down;
     }

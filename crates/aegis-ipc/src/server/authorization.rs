@@ -243,41 +243,52 @@ pub(super) fn filter_journal(
     scope: &Scope,
     subject: Option<&str>,
 ) -> crate::journal::JournalSnapshot {
-    snapshot.entries.retain(|entry| {
-        if let Some(subject) = subject
-            && let crate::journal::Origin::Actor { principal, .. } = &entry.origin
-            && principal != subject
-        {
-            return false;
-        }
-        match &entry.mutation {
-            JournalMutation::Command { cmd } => cmd.permitted_by(scope),
-            JournalMutation::InteractionDomain { action, .. } => {
-                scope.permits_interaction_domain_action_resources(action)
-            }
-            JournalMutation::ActorAction {
-                interaction_domain,
-                window,
-                ..
-            } => {
-                scope.permits_interaction_domain(*interaction_domain)
-                    && window.is_none_or(|window| scope.permits_window(window))
-            }
-            JournalMutation::Settings { .. } => true,
-            JournalMutation::AgentAuth { principal, .. } => {
-                subject.is_none_or(|subject| principal == subject)
-            }
-            JournalMutation::ActorSession { principal, .. }
-            | JournalMutation::ResourceGrant { principal, .. }
-            | JournalMutation::ResourceGrantAttempt { principal, .. }
-            | JournalMutation::CapabilityUse { principal, .. } => subject.is_none_or(|subject| {
-                principal
-                    .as_ref()
-                    .is_some_and(|principal| principal.as_ref() == subject)
-            }),
-        }
-    });
     snapshot
+        .entries
+        .retain(|entry| journal_entry_permitted(entry, scope, subject));
+    snapshot
+}
+
+/// Whether one journal entry may be delivered to a connection with this
+/// scope and subject — the per-entry half of [`filter_journal`], shared with
+/// the journal subscription lanes (ADR-0125).
+pub(super) fn journal_entry_permitted(
+    entry: &crate::journal::JournalEntry,
+    scope: &Scope,
+    subject: Option<&str>,
+) -> bool {
+    if let Some(subject) = subject
+        && let crate::journal::Origin::Actor { principal, .. } = &entry.origin
+        && principal != subject
+    {
+        return false;
+    }
+    match &entry.mutation {
+        JournalMutation::Command { cmd } => cmd.permitted_by(scope),
+        JournalMutation::InteractionDomain { action, .. } => {
+            scope.permits_interaction_domain_action_resources(action)
+        }
+        JournalMutation::ActorAction {
+            interaction_domain,
+            window,
+            ..
+        } => {
+            scope.permits_interaction_domain(*interaction_domain)
+                && window.is_none_or(|window| scope.permits_window(window))
+        }
+        JournalMutation::Settings { .. } => true,
+        JournalMutation::AgentAuth { principal, .. } => {
+            subject.is_none_or(|subject| principal == subject)
+        }
+        JournalMutation::ActorSession { principal, .. }
+        | JournalMutation::ResourceGrant { principal, .. }
+        | JournalMutation::ResourceGrantAttempt { principal, .. }
+        | JournalMutation::CapabilityUse { principal, .. } => subject.is_none_or(|subject| {
+            principal
+                .as_ref()
+                .is_some_and(|principal| principal.as_ref() == subject)
+        }),
+    }
 }
 
 pub(super) fn audit_resource_grant_refusal<H: Handler>(

@@ -74,6 +74,7 @@ struct TestHandler {
     management_log: Mutex<Vec<String>>,
     register_result: Mutex<Result<(String, String), String>>,
     resource_grants: Mutex<aegis_security::authority::ResourceGrantRegistry>,
+    transact_seq: AtomicU64,
 }
 
 impl TestHandler {
@@ -128,6 +129,7 @@ impl TestHandler {
             management_log: Mutex::new(Vec::new()),
             register_result: Mutex::new(Err("no register".into())),
             resource_grants: Mutex::new(aegis_security::authority::ResourceGrantRegistry::default()),
+            transact_seq: AtomicU64::new(0),
         }
     }
     /// Grants control and session, so command tests can exercise them.
@@ -187,6 +189,7 @@ impl TestHandler {
             management_log: Mutex::new(Vec::new()),
             register_result: Mutex::new(Err("no register".into())),
             resource_grants: Mutex::new(aegis_security::authority::ResourceGrantRegistry::default()),
+            transact_seq: AtomicU64::new(0),
         }
     }
 }
@@ -270,6 +273,41 @@ impl Handler for TestHandler {
     fn command(&self, conn_id: u64, _subject: Option<&str>, cmd: Command) {
         self.command_connections.lock().unwrap().push(conn_id);
         self.commands.lock().unwrap().push(cmd);
+    }
+    fn transact(
+        &self,
+        conn_id: u64,
+        subject: Option<&str>,
+        expected_journal_seq: Option<u64>,
+        ops: Vec<Command>,
+    ) -> Result<aegis_ipc::TransactResult, String> {
+        let before_seq = self.transact_seq.load(Ordering::SeqCst);
+        if let Some(expected) = expected_journal_seq
+            && expected != before_seq
+        {
+            return Ok(aegis_ipc::TransactResult::PreconditionConflict {
+                expected,
+                actual: before_seq,
+            });
+        }
+        let mut after_seq = before_seq;
+        let mut results = Vec::with_capacity(ops.len());
+        for cmd in ops {
+            self.command(conn_id, subject, cmd);
+            after_seq += 1;
+            results.push(aegis_ipc::TransactOpResult {
+                seq: after_seq,
+                effect: aegis_ipc::Effect::Applied,
+            });
+        }
+        self.transact_seq.store(after_seq, Ordering::SeqCst);
+        Ok(aegis_ipc::TransactResult::Committed {
+            receipt: aegis_ipc::TransactReceipt {
+                before_seq,
+                after_seq,
+                results,
+            },
+        })
     }
     fn interaction_domains(&self) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
         let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
@@ -877,5 +915,7 @@ mod authority;
 mod basics;
 #[path = "ipc/portal.rs"]
 mod portal;
+#[path = "ipc/primitives.rs"]
+mod primitives;
 #[path = "ipc/protocol.rs"]
 mod protocol;

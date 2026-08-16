@@ -30,8 +30,7 @@ use include_dir::{Dir, include_dir};
 /// The cursor art shipped with the binary, used as the universal fallback
 /// when no filesystem theme resolves a shape. Original MIT-licensed art;
 /// see `scripts/prepare-aegis-cursors.py`.
-static BUNDLED_THEME: Dir<'static> =
-    include_dir!("$CARGO_MANIFEST_DIR/../../assets/cursors/Aegis");
+static BUNDLED_THEME: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../assets/cursors/Aegis");
 
 /// `wp_cursor_shape_device_v1.shape` value with its XDG candidate names,
 /// protocol/CSS name first and legacy cursor aliases afterwards. The first
@@ -332,6 +331,21 @@ impl CursorTheme {
         self.chain.iter().any(|s| matches!(s, Source::Dir(_)))
     }
 
+    /// Whether any filesystem source contains at least one SVG cursor. A
+    /// theme directory can resolve yet contribute nothing — conventional
+    /// themes ship Xcursor binaries, but only `cursors/<name>.svg` is read.
+    fn has_any_svg(&self) -> bool {
+        self.chain.iter().any(|s| match s {
+            Source::Dir(dir) => std::fs::read_dir(dir).is_ok_and(|mut entries| {
+                entries.any(|e| {
+                    e.ok()
+                        .is_some_and(|e| e.path().extension().is_some_and(|ext| ext == "svg"))
+                })
+            }),
+            Source::Bundled => false,
+        })
+    }
+
     /// Rasterize the best SVG for a `wp_cursor_shape` value at `scale`,
     /// trying each candidate name down the inheritance chain.
     fn load_shape(&self, shape: u32, scale: f32) -> Option<RasterCursor> {
@@ -410,9 +424,17 @@ impl CursorCache {
         if !matches!(&self.theme, Some((n, s, _)) if *n == name && *s == size) {
             let theme = CursorTheme::resolve(&name, size);
             if theme.has_filesystem() {
-                log::info!(
-                    "cursor: using SVG theme {name:?} at {size} logical px; missing shapes fall back to bundled Aegis theme"
-                );
+                if theme.has_any_svg() {
+                    log::info!(
+                        "cursor: using SVG theme {name:?} at {size} logical px; missing shapes fall back to bundled Aegis theme"
+                    );
+                } else {
+                    log::warn!(
+                        "cursor: theme {name:?} is installed but contains no SVG cursors \
+                         (only cursors/<name>.svg is read; Xcursor binary themes are unsupported); \
+                         all shapes fall back to bundled Aegis theme"
+                    );
+                }
             } else {
                 log::info!(
                     "cursor: theme {name:?} not installed; using bundled Aegis theme at {size} logical px"
@@ -493,6 +515,27 @@ mod tests {
             theme.chain.iter().any(|s| matches!(s, Source::Bundled)),
             "bundled fallback is always present"
         );
+    }
+
+    #[test]
+    fn filesystem_theme_without_svgs_is_detected() {
+        let tmp = std::env::temp_dir().join(format!("aegis-cursor-test-{}", std::process::id()));
+        let cursors = tmp.join("cursors");
+        std::fs::create_dir_all(&cursors).unwrap();
+        // A conventional Xcursor theme: cursor files with no .svg extension.
+        std::fs::write(cursors.join("left_ptr"), b"Xcur binary data").unwrap();
+        let theme = CursorTheme {
+            chain: vec![Source::Dir(cursors.clone()), Source::Bundled],
+            size: 24,
+        };
+        assert!(theme.has_filesystem());
+        assert!(
+            !theme.has_any_svg(),
+            "binary-only theme contributes no SVG shapes"
+        );
+        std::fs::write(cursors.join("left_ptr.svg"), b"<svg/>").unwrap();
+        assert!(theme.has_any_svg());
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

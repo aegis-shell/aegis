@@ -37,8 +37,8 @@ impl CommandPanel {
             &chrome_place(
                 rect,
                 LayoutOpts {
-                    bg: fade_color(hud.surface, progress),
-                    border: fade_color(hud.border, progress),
+                    bg: hud.surface,
+                    border: hud.border,
                     border_width: 1.0,
                     radius: 16.0,
                     pad: 0.0,
@@ -73,14 +73,14 @@ impl CommandPanel {
             "aegis-hud-avatar-backdrop",
             avatar_center,
             72.0,
-            fade_color(avatar_style.fallback_surface, progress),
+            avatar_style.fallback_surface,
         );
         render_ring(
             f,
             "aegis-hud-avatar-ring",
             avatar_center,
             80.0,
-            fade_color(avatar_style.ring, progress),
+            avatar_style.ring,
             avatar_style.ring_width,
         );
         let avatar_rect = Rect {
@@ -97,22 +97,13 @@ impl CommandPanel {
                     &chrome_place(avatar_rect, transparent()),
                     |f| {
                         f.row_ex(&sized(72.0, 72.0), |f| {
-                            unsafe {
-                                f.image_tinted(
-                                    texture as *mut lens::sys::flux_image,
-                                    72.0,
-                                    72.0,
-                                    Color::rgba(255, 255, 255, fade_alpha(255, progress)),
-                                )
-                            };
+                            unsafe { f.image(texture as *mut lens::sys::flux_image, 72.0, 72.0) };
                         });
                     },
                 );
             }
             None => {
-                f.set_theme(
-                    base_theme.with_fg(fade_color(avatar_style.fallback_foreground, progress)),
-                );
+                f.set_theme(base_theme.with_fg(avatar_style.fallback_foreground));
                 f.place(
                     "aegis-hud-avatar-initials",
                     &chrome_place(avatar_rect, transparent()),
@@ -143,7 +134,7 @@ impl CommandPanel {
         let text_x = rect.x + pad + 84.0 + 14.0;
         let text_w = (rect.x + pad + 270.0 - text_x).max(40.0);
         let display_name = truncate(&self.profile.display_name, (text_w / 9.0).max(4.0) as usize);
-        f.set_theme(themes::faded(base_theme, progress));
+        f.set_theme(base_theme);
         f.place(
             "aegis-hud-profile-name",
             &chrome_place(
@@ -173,7 +164,7 @@ impl CommandPanel {
             sub_line.push_str(&self.profile.groups.join(", "));
         }
         let sub_line = truncate(&sub_line, (text_w / 5.8).max(8.0) as usize);
-        f.set_theme(themes::faded(muted_theme, progress));
+        f.set_theme(muted_theme);
         f.place(
             "aegis-hud-profile-sub",
             &chrome_place(
@@ -210,7 +201,7 @@ impl CommandPanel {
                     h: (rect.h - 44.0).max(1.0),
                 },
                 LayoutOpts {
-                    bg: fade_color(hud.border, progress),
+                    bg: hud.border,
                     border: Color::TRANSPARENT,
                     radius: 0.0,
                     pad: 0.0,
@@ -239,7 +230,7 @@ impl CommandPanel {
             ChassisKind::Desktop => 22.0 + 7.0 + 2.0,
         };
         let glyph_top = inner_y + (inner_h - 17.0 - glyph_h).max(0.0) * 0.5;
-        let muted_line = fade_color(hud.text_muted, progress);
+        let muted_line = hud.text_muted;
         let outline = |radius: f32| LayoutOpts {
             bg: Color::TRANSPARENT,
             border: muted_line,
@@ -316,7 +307,7 @@ impl CommandPanel {
                 );
             }
         }
-        f.set_theme(themes::faded(muted_theme, progress));
+        f.set_theme(muted_theme);
         f.place(
             "aegis-hud-chassis-label",
             &chrome_place(
@@ -408,7 +399,6 @@ impl CommandPanel {
                     w: gauge_w,
                     h: ROW_H,
                 },
-                progress,
                 i18n,
             );
             row_y += ROW_H + ROW_GAP;
@@ -424,7 +414,6 @@ impl CommandPanel {
         gauge: &Gauge,
         index: usize,
         row: Rect,
-        progress: f32,
         i18n: &Localizer,
     ) {
         let hud = Hud::classic();
@@ -463,9 +452,9 @@ impl CommandPanel {
             _ => None,
         };
         if text_label.is_some() {
-            f.set_theme(themes::faded(muted_theme, progress));
+            f.set_theme(muted_theme);
         } else if let Some((_, color)) = icon_label {
-            f.set_theme(themes::faded(base_theme.with_fg(color), progress));
+            f.set_theme(base_theme.with_fg(color));
         }
         f.place(
             &format!("aegis-hud-gauge-label-{index}"),
@@ -502,7 +491,6 @@ impl CommandPanel {
                         w: bar_w,
                         h: row.h,
                     },
-                    progress,
                 );
                 (format!("{:.0}%", self.stats.cpu_percent), false)
             }
@@ -517,7 +505,6 @@ impl CommandPanel {
                         h: 4.0,
                     },
                     gpu / 100.0,
-                    progress,
                 );
                 (format!("{gpu:.0}%"), false)
             }
@@ -532,7 +519,6 @@ impl CommandPanel {
                         h: 4.0,
                     },
                     *fraction,
-                    progress,
                 );
                 (value.clone(), false)
             }
@@ -548,7 +534,6 @@ impl CommandPanel {
                         h: 4.0,
                     },
                     *fraction,
-                    progress,
                 );
                 (value.clone(), false)
             }
@@ -565,7 +550,6 @@ impl CommandPanel {
                         h: 4.0,
                     },
                     *fraction,
-                    progress,
                 );
                 (value.clone(), false)
             }
@@ -585,7 +569,7 @@ impl CommandPanel {
                 h: row.h,
             }
         };
-        f.set_theme(themes::faded(base_theme, progress));
+        f.set_theme(base_theme);
         f.place(
             &format!("aegis-hud-gauge-value-{index}"),
             &chrome_place(value_rect, transparent()),
@@ -631,8 +615,8 @@ impl CommandPanel {
             &chrome_place(
                 rect,
                 LayoutOpts {
-                    bg: fade_color(hud.surface, progress),
-                    border: fade_color(hud.border, progress),
+                    bg: hud.surface,
+                    border: hud.border,
                     border_width: 1.0,
                     radius: 16.0,
                     pad: 0.0,
@@ -643,12 +627,7 @@ impl CommandPanel {
                 f.column_ex(&sized(rect.w, rect.h), |_| {});
             },
         );
-        render_corner_brackets(
-            f,
-            "aegis-hud-content-panel-brackets",
-            rect,
-            fade_color(hud.accent, progress),
-        );
+        render_corner_brackets(f, "aegis-hud-content-panel-brackets", rect, hud.accent);
 
         self.render_tab_bar(
             f,
@@ -658,7 +637,6 @@ impl CommandPanel {
                 w: rect.w - 20.0,
                 h: TAB_BAR_H - 4.0,
             },
-            progress,
             i18n,
         );
         // Hairline separating the tab bar from the tab body.
@@ -672,7 +650,7 @@ impl CommandPanel {
                     h: 1.0,
                 },
                 LayoutOpts {
-                    bg: fade_color(hud.border, progress),
+                    bg: hud.border,
                     border: Color::TRANSPARENT,
                     radius: 0.0,
                     pad: 0.0,
@@ -689,8 +667,8 @@ impl CommandPanel {
             h: rect.h - TAB_BAR_H - 22.0,
         };
         match self.tab {
-            Tab::System => self.render_system_section(f, area, progress, i18n, out),
-            Tab::Settings(id) => self.render_settings_tab(f, id, area, progress, i18n, out),
+            Tab::System => self.render_system_section(f, area, i18n, out),
+            Tab::Settings(id) => self.render_settings_tab(f, id, area, i18n, out),
         }
     }
 
@@ -699,13 +677,7 @@ impl CommandPanel {
     /// the bar's width, with the panel's close button at the right end.
     /// The active tab gets the accent label and an underline; hovered tabs
     /// get the theme's soft disc. Clicks are applied after the render pass.
-    pub(super) fn render_tab_bar(
-        &mut self,
-        f: &mut Frame,
-        rect: Rect,
-        progress: f32,
-        i18n: &Localizer,
-    ) {
+    pub(super) fn render_tab_bar(&mut self, f: &mut Frame, rect: Rect, i18n: &Localizer) {
         let hud = Hud::classic();
         let type_scale = self.design.typography;
         let mut tabs: Vec<(Tab, &'static str)> = vec![(Tab::System, i18n.text(Message::System))];
@@ -717,8 +689,8 @@ impl CommandPanel {
         );
         let close_w = 34.0;
         let tab_w = ((rect.w - close_w - 4.0 * tabs.len() as f32) / tabs.len() as f32).max(24.0);
-        let muted_theme = themes::faded(themes::hud_muted(themes::hud(&hud), &hud), progress);
-        let active_theme = themes::faded(themes::hud(&hud).with_fg(hud.accent), progress);
+        let muted_theme = themes::hud_muted(themes::hud(&hud), &hud);
+        let active_theme = themes::hud(&hud).with_fg(hud.accent);
         let mut action: Option<TabAction> = None;
         let mut underline: Option<Rect> = None;
         let original = f.theme();
@@ -751,19 +723,11 @@ impl CommandPanel {
                                     ..Default::default()
                                 },
                                 |f, _| {
-                                    f.row_ex(
-                                        &LayoutOpts {
-                                            cross: Align::Center,
-                                            ..Default::default()
-                                        },
-                                        |f| {
-                                            f.flex(1.0);
-                                            f.spacer(0.0);
-                                            f.label_compact_sized(&label, type_scale.label);
-                                            f.flex(1.0);
-                                            f.spacer(0.0);
-                                        },
-                                    );
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    f.label_compact_sized(&label, type_scale.label);
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
                                 },
                             );
                             if selected {
@@ -787,19 +751,11 @@ impl CommandPanel {
                                 ..Default::default()
                             },
                             |f, _| {
-                                f.row_ex(
-                                    &LayoutOpts {
-                                        cross: Align::Center,
-                                        ..Default::default()
-                                    },
-                                    |f| {
-                                        f.flex(1.0);
-                                        f.spacer(0.0);
-                                        f.icon(Icon::X, 13.0);
-                                        f.flex(1.0);
-                                        f.spacer(0.0);
-                                    },
-                                );
+                                f.flex(1.0);
+                                f.spacer(0.0);
+                                f.icon(Icon::X, 13.0);
+                                f.flex(1.0);
+                                f.spacer(0.0);
                             },
                         );
                         if response.clicked {
@@ -821,7 +777,7 @@ impl CommandPanel {
                         h: 2.0,
                     },
                     LayoutOpts {
-                        bg: fade_color(hud.accent, progress),
+                        bg: hud.accent,
                         border: Color::TRANSPARENT,
                         radius: 1.0,
                         pad: 0.0,
@@ -850,7 +806,6 @@ impl CommandPanel {
         f: &mut Frame,
         id: ModuleId,
         area: Rect,
-        progress: f32,
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
@@ -859,7 +814,7 @@ impl CommandPanel {
         if self.settings.is_none() {
             let original = f.theme();
             let muted = themes::hud_muted(themes::hud(&hud), &hud);
-            f.set_theme(themes::faded(muted, progress));
+            f.set_theme(muted);
             f.place(
                 "aegis-hud-settings-empty",
                 &chrome_place(area, transparent()),
@@ -890,7 +845,7 @@ impl CommandPanel {
         let design = self.design;
         let mut events = ModuleEvents::default();
         let original = f.theme();
-        f.set_theme(themes::faded(themes::application(&design), progress));
+        f.set_theme(themes::application(&design));
         f.place(
             "aegis-hud-settings",
             &chrome_place(area, transparent()),
@@ -949,29 +904,16 @@ impl CommandPanel {
             "aegis-hud-notifications-panel",
             notifications,
             i18n.text(Message::Notifications),
-            progress,
         );
-        self.render_messages_section(f, body, progress, i18n, out);
-        let body = self.render_side_panel(
-            f,
-            "aegis-hud-tray-panel",
-            tray,
-            i18n.text(Message::Tray),
-            progress,
-        );
-        self.render_tray_section(f, body, progress, cursor, i18n);
+        self.render_messages_section(f, body, i18n, out);
+        let body =
+            self.render_side_panel(f, "aegis-hud-tray-panel", tray, i18n.text(Message::Tray));
+        self.render_tray_section(f, body, cursor, i18n);
     }
 
     /// One dark glass side-column panel with a small muted section header
     /// at its top; returns the body area below the header.
-    fn render_side_panel(
-        &self,
-        f: &mut Frame,
-        id: &str,
-        rect: Rect,
-        title: &str,
-        progress: f32,
-    ) -> Rect {
+    fn render_side_panel(&self, f: &mut Frame, id: &str, rect: Rect, title: &str) -> Rect {
         let hud = Hud::classic();
         let type_scale = self.design.typography;
         f.place(
@@ -979,8 +921,8 @@ impl CommandPanel {
             &chrome_place(
                 rect,
                 LayoutOpts {
-                    bg: fade_color(hud.surface, progress),
-                    border: fade_color(hud.border, progress),
+                    bg: hud.surface,
+                    border: hud.border,
                     border_width: 1.0,
                     radius: 16.0,
                     pad: 0.0,
@@ -991,17 +933,9 @@ impl CommandPanel {
                 f.column_ex(&sized(rect.w, rect.h), |_| {});
             },
         );
-        render_corner_brackets(
-            f,
-            &format!("{id}-brackets"),
-            rect,
-            fade_color(hud.accent, progress),
-        );
+        render_corner_brackets(f, &format!("{id}-brackets"), rect, hud.accent);
         let original = f.theme();
-        f.set_theme(themes::faded(
-            themes::hud_muted(themes::hud(&hud), &hud),
-            progress,
-        ));
+        f.set_theme(themes::hud_muted(themes::hud(&hud), &hud));
         f.place(
             &format!("{id}-header"),
             &chrome_place(
@@ -1042,14 +976,13 @@ impl CommandPanel {
         &mut self,
         f: &mut Frame,
         area: Rect,
-        progress: f32,
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
         let hud = Hud::classic();
         let type_scale = self.design.typography;
         let original = f.theme();
-        f.set_theme(themes::faded(themes::hud(&hud), progress));
+        f.set_theme(themes::hud(&hud));
         let status = self.status.clone();
         let volume_themed = self.themed_icon(volume_icon_name(&status));
         let network_themed = self.themed_icon(network_icon_name(status.network));
@@ -1062,8 +995,8 @@ impl CommandPanel {
         };
         // Group headers: a small muted caption above each control group,
         // replacing the old bare separators.
-        let base_theme = themes::faded(themes::hud(&hud), progress);
-        let muted_theme = themes::faded(themes::hud_muted(themes::hud(&hud), &hud), progress);
+        let base_theme = themes::hud(&hud);
+        let muted_theme = themes::hud_muted(themes::hud(&hud), &hud);
         let group_header = move |f: &mut Frame, label: &str| {
             f.set_theme(muted_theme);
             f.label_compact_sized(label, type_scale.footnote);
@@ -1327,7 +1260,6 @@ impl CommandPanel {
         &mut self,
         f: &mut Frame,
         area: Rect,
-        progress: f32,
         cursor: (f32, f32),
         i18n: &Localizer,
     ) {
@@ -1337,7 +1269,7 @@ impl CommandPanel {
         if cells.is_empty() {
             let original = f.theme();
             let muted = themes::hud_muted(themes::hud(&hud), &hud);
-            f.set_theme(themes::faded(muted, progress));
+            f.set_theme(muted);
             f.place(
                 "aegis-hud-tray-empty",
                 &chrome_place(area, transparent()),
@@ -1394,7 +1326,7 @@ impl CommandPanel {
         let mut secondary: Vec<(String, bool)> = Vec::new();
         let mut resolved: Vec<(String, Rect)> = Vec::new();
         let original = f.theme();
-        f.set_theme(themes::faded(themes::hud(&hud), progress));
+        f.set_theme(themes::hud(&hud));
         f.place("aegis-hud-tray", &chrome_place(area, transparent()), |f| {
             f.column_ex(&sized(area.w, area.h), |f| {
                 f.flex(1.0);
@@ -1431,6 +1363,7 @@ impl CommandPanel {
                                                 |f, _| {
                                                     f.column_ex(
                                                         &LayoutOpts {
+                                                            flex: 1.0,
                                                             gap: 3.0,
                                                             cross: Align::Center,
                                                             ..Default::default()
@@ -1519,7 +1452,6 @@ impl CommandPanel {
         &mut self,
         f: &mut Frame,
         area: Rect,
-        progress: f32,
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
@@ -1529,7 +1461,7 @@ impl CommandPanel {
         let original = f.theme();
         if notifications.is_empty() {
             let muted = themes::hud_muted(themes::hud(&hud), &hud);
-            f.set_theme(themes::faded(muted, progress));
+            f.set_theme(muted);
             f.place(
                 "aegis-hud-messages-empty",
                 &chrome_place(area, transparent()),
@@ -1558,8 +1490,8 @@ impl CommandPanel {
             return;
         }
         let base = themes::hud(&hud);
-        let row_theme = themes::faded(base, progress);
-        let muted_theme = themes::faded(themes::hud_muted(base, &hud), progress);
+        let row_theme = base;
+        let muted_theme = themes::hud_muted(base, &hud);
         f.set_theme(row_theme);
         f.place(
             "aegis-hud-messages",
@@ -1587,7 +1519,7 @@ impl CommandPanel {
                                             pad: 10.0,
                                             radius: 12.0,
                                             cross: Align::Center,
-                                            bg: fade_color(hud.surface_dim, progress),
+                                            bg: hud.surface_dim,
                                             ..Default::default()
                                         },
                                         |f, _| {

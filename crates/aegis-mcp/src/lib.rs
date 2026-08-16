@@ -9,8 +9,6 @@
 //! ADR-0087).
 
 mod config;
-mod identity;
-mod interaction_domain;
 mod mcp;
 mod tools;
 

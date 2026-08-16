@@ -266,8 +266,14 @@ impl Server {
             return None;
         }
         let transition = s.window.transition?;
-        let aegis_model::transition::TransitionEffect::Minimize { style, target } =
-            transition.effect?;
+        let (style, target) = match transition.effect? {
+            aegis_model::transition::TransitionEffect::Minimize { style, target } => {
+                (style, target)
+            }
+            // Open/close fades carry no genie deformation.
+            aegis_model::transition::TransitionEffect::Open
+            | aegis_model::transition::TransitionEffect::Close => return None,
+        };
         if style != aegis_model::dock::MinimizeAnimationStyle::Genie {
             return None;
         }
@@ -323,6 +329,18 @@ impl Server {
                 let mut origin = surface_draw_origin(s);
                 origin.x += delta.0;
                 origin.y += delta.1;
+                // ADR-0029 open/close fade: the same transition that drives
+                // the interpolated size also drives an opacity multiplier.
+                // Subsurfaces inherit it from their root through the shared
+                // root delta path; popups below reuse their root's fade.
+                let transition_opacity = if root.is_null() {
+                    None
+                } else {
+                    unsafe { &*root }
+                        .window
+                        .transition
+                        .and_then(|t| t.opacity_at(self.state.now_ms()))
+                };
                 SurfacePixels {
                     id: s.resource as usize,
                     window: if s.xdg_toplevel.is_null() {
@@ -347,6 +365,7 @@ impl Server {
                         viewport_src: s.viewport_src,
                         viewport_dst: s.viewport_dst,
                         transition_size: render_rect.map(|r| r.size),
+                        transition_opacity,
                         minimize_warp,
                         ..Default::default()
                     },
@@ -412,6 +431,15 @@ impl Server {
                 let mut origin = surface_draw_origin(s);
                 origin.x += delta.0;
                 origin.y += delta.1;
+                // ADR-0029 open/close fade (see the shm path).
+                let transition_opacity = if root.is_null() {
+                    None
+                } else {
+                    unsafe { &*root }
+                        .window
+                        .transition
+                        .and_then(|t| t.opacity_at(self.state.now_ms()))
+                };
                 Some(SurfaceDmabuf {
                     id: s.resource as usize,
                     window: if s.xdg_toplevel.is_null() {
@@ -443,6 +471,7 @@ impl Server {
                         viewport_src: s.viewport_src,
                         viewport_dst: s.viewport_dst,
                         transition_size: render_rect.map(|r| r.size),
+                        transition_opacity,
                         minimize_warp,
                         ..Default::default()
                     },

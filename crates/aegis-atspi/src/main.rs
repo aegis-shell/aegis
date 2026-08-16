@@ -3,7 +3,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use aegis_ipc::{ActorCapability, AgentHello, Client, ConnectionCapabilities};
+use aegis_ipc::{ActorCapability, ConnectionCapabilities};
 use aegis_model::semantic::{SemanticAction, SemanticActionIntent, SemanticRole, SemanticState};
 use aegis_model::window::{Window, WindowId};
 use aegis_model::{Rect, Size};
@@ -55,30 +55,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "aegis-atspi must be launched by the compositor with --credential-stdin".into(),
         );
     }
-    let credential = Some(read_credential_from_stdin()?);
+    let credential = aegis_agent::read_credential_from_stdin()?;
     let requested = vec![
         ActorCapability::ObserveWindows,
         ActorCapability::PublishAccessibilityTree,
         ActorCapability::DispatchAccessibilityAction,
     ];
-    let mut client = Client::connect_agent_with_timeout(
-        &socket,
-        ConnectionCapabilities {
+    let connected = aegis_agent::connect(&aegis_agent::ConnectParams {
+        socket,
+        capabilities: ConnectionCapabilities {
             query: true,
             control: true,
             input: false,
             session: false,
             interaction_domain: false,
         },
-        None,
-        AgentHello {
-            label: Some("Aegis AT-SPI adapter".into()),
-            requested,
-            credential,
-        },
-        Duration::from_secs(120),
-    )?;
-    client.set_io_timeout(Some(Duration::from_secs(40)))?;
+        label: "Aegis AT-SPI adapter".into(),
+        requested,
+        credential: aegis_agent::CredentialSource::Injected(&credential),
+        handshake_timeout: Duration::from_secs(120),
+        post_timeout: Duration::from_secs(40),
+    })?;
+    let mut client = connected.client;
     let accessibility = async_io::block_on(atspi::AccessibilityConnection::new())?;
     let mut state = AdapterState {
         objects: BTreeMap::new(),
@@ -110,23 +108,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             client.complete_accessibility_action(request.request_id, result)?;
         }
     }
-}
-
-fn read_credential_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
-    use std::io::{BufRead as _, Read as _};
-    let mut credential = String::new();
-    std::io::stdin()
-        .lock()
-        .take(257)
-        .read_line(&mut credential)?;
-    let credential = credential.trim_end_matches(['\r', '\n']).to_owned();
-    if credential.len() < 32
-        || credential.len() > 256
-        || !credential.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("invalid compositor-issued credential".into());
-    }
-    Ok(credential)
 }
 
 async fn scan(

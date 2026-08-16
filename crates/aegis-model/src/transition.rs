@@ -20,6 +20,13 @@ pub const MINIMIZE_GENIE_DURATION_MS: u64 = 360;
 pub const MINIMIZE_SCALE_DURATION_MS: u64 = 200;
 pub const MINIMIZE_SUCK_DURATION_MS: u64 = 240;
 
+/// Duration of the window open (map) transition: a quick grow that reads as
+/// "appearing" without delaying interaction.
+pub const OPEN_DURATION_MS: u64 = 200;
+
+/// Duration of the window close (unmap) transition.
+pub const CLOSE_DURATION_MS: u64 = 180;
+
 /// The interpolation curve of a [`WindowTransition`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
@@ -57,6 +64,17 @@ pub enum TransitionEffect {
         style: MinimizeAnimationStyle,
         target: Point,
     },
+    /// A window opening: a fade-and-scale in from a slightly inset rect.
+    /// The rectangle interpolation grows from `from` to the window rect
+    /// while the renderer raises opacity with the same progress; the
+    /// combination reads as the window "fading in".
+    Open,
+    /// A window closing: a fade-and-scale out toward a slightly inset rect.
+    /// The model rect is gone, so the renderer keeps the last presented
+    /// buffer and drives the same interpolation in reverse while opacity
+    /// falls to zero. `from` holds the window's final rect (the flight
+    /// starts at the full rect and shrinks toward the inset target).
+    Close,
 }
 
 /// One in-flight geometry transition. `to` is always the window's model
@@ -82,6 +100,19 @@ pub struct WindowTransition {
 }
 
 impl WindowTransition {
+    /// The opacity multiplier this transition implies at `now_ms`: `None`
+    /// means fully opaque (no fade), `Some(t)` fades with the eased
+    /// progress. Open fades in (`t`), close fades out (`1 - t`); geometry
+    /// flights (minimize, plain rect changes) stay opaque unless a future
+    /// effect says otherwise.
+    pub fn opacity_at(&self, now_ms: u64) -> Option<f32> {
+        let t = self.progress_at(now_ms)?;
+        match self.effect? {
+            TransitionEffect::Open => Some(t),
+            TransitionEffect::Close => Some(1.0 - t),
+            TransitionEffect::Minimize { .. } => None,
+        }
+    }
     /// Start a transition from `from` at `now_ms` with the default duration.
     pub fn new(from: Rect, now_ms: u64) -> WindowTransition {
         WindowTransition {
@@ -121,6 +152,32 @@ impl WindowTransition {
                 style,
                 target: centre,
             }),
+        }
+    }
+
+    /// Start a window-open transition from `from` (a slightly inset rect) at
+    /// `now_ms`. The window's model rect is the target.
+    pub fn open(from: Rect, now_ms: u64) -> WindowTransition {
+        WindowTransition {
+            from,
+            started_ms: now_ms,
+            duration_ms: OPEN_DURATION_MS,
+            easing: Easing::EaseOutCubic,
+            effect: Some(TransitionEffect::Open),
+        }
+    }
+
+    /// Start a window-close transition: the flight begins at the window's
+    /// final rect (`from`) and interpolates toward a slightly inset rect
+    /// while opacity fades to zero. The renderer needs `from` because the
+    /// model window is gone once the close begins.
+    pub fn close(from: Rect, now_ms: u64) -> WindowTransition {
+        WindowTransition {
+            from,
+            started_ms: now_ms,
+            duration_ms: CLOSE_DURATION_MS,
+            easing: Easing::EaseInCubic,
+            effect: Some(TransitionEffect::Close),
         }
     }
 
@@ -302,5 +359,52 @@ mod tests {
         // The point is centred on the icon.
         assert_eq!(suck.origin.x + 1, icon.origin.x + 24);
         assert_eq!(suck.origin.y + 1, icon.origin.y + 24);
+    }
+
+    #[test]
+    fn open_and_close_transitions_carry_effect_duration_and_easing() {
+        let rect = Rect::new(100, 100, 800, 600);
+        let open = WindowTransition::open(rect, 1000);
+        assert_eq!(open.duration_ms, OPEN_DURATION_MS);
+        assert_eq!(open.easing, Easing::EaseOutCubic);
+        assert_eq!(open.effect, Some(TransitionEffect::Open));
+        assert!(open.rect_at(rect, 1000).is_some());
+        assert!(open.rect_at(rect, 1000 + OPEN_DURATION_MS).is_none());
+
+        let close = WindowTransition::close(rect, 1000);
+        assert_eq!(close.duration_ms, CLOSE_DURATION_MS);
+        assert_eq!(close.easing, Easing::EaseInCubic);
+        assert_eq!(close.effect, Some(TransitionEffect::Close));
+        assert!(close.rect_at(rect, 1000).is_some());
+        assert!(close.rect_at(rect, 1000 + CLOSE_DURATION_MS).is_none());
+    }
+
+    #[test]
+    fn opacity_at_fades_open_in_and_close_out() {
+        let rect = Rect::new(0, 0, 100, 100);
+        let open = WindowTransition::open(rect, 1000);
+        // At start the open fade is fully transparent; at the end opaque.
+        assert_eq!(open.opacity_at(1000), Some(0.0));
+        assert_eq!(open.opacity_at(1000 + OPEN_DURATION_MS), None);
+        let quarter = open.progress_at(1000 + OPEN_DURATION_MS / 4);
+        let opacity = open.opacity_at(1000 + OPEN_DURATION_MS / 4);
+        assert!(opacity.is_some_and(|o| o > 0.0 && o < 1.0));
+        assert_eq!(opacity, quarter);
+
+        let close = WindowTransition::close(rect, 1000);
+        assert_eq!(close.opacity_at(1000), Some(1.0));
+        assert_eq!(close.opacity_at(1000 + CLOSE_DURATION_MS), None);
+        // Close fades out: opacity strictly decreases while in flight.
+        let early = close.opacity_at(1000 + CLOSE_DURATION_MS / 4);
+        let late = close.opacity_at(1000 + CLOSE_DURATION_MS / 2);
+        assert!(early.is_some_and(|o| o > 0.0));
+        assert!(late.is_some_and(|o| early.unwrap() > o));
+
+        // Geometry flights and no-effect transitions stay opaque.
+        let plain = WindowTransition::new(rect, 1000);
+        assert_eq!(plain.opacity_at(1050), None);
+        let icon = Rect::new(500, 1020, 48, 48);
+        let genie = WindowTransition::minimize(rect, 1000, MinimizeAnimationStyle::Genie, icon);
+        assert_eq!(genie.opacity_at(1050), None);
     }
 }

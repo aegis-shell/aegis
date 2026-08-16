@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use aegis_design::materials::{chrome_place, sized, sized_fill};
-use aegis_design::{Design, GlassRole, themes};
+use aegis_design::{Design, GlassRole};
 use aegis_model::notify::{Notification, NotificationQueue};
 use aegis_model::window::{SpaceUse, Window};
 use aegis_model::workspace::WorkspaceSnapshot;
@@ -509,16 +509,19 @@ impl Chrome for Hud {
         if layout.visible[LEFT] && self.chip_fade[LEFT] > 0.01 {
             let fade = self.chip_fade[LEFT];
             let chip = layout.chips[LEFT];
+            // One frame-scoped switch fades the whole chip — theme colors,
+            // text, icons, and raster tints — stamped per node at build
+            // time. Restored at the end of the block; lens also resets it
+            // every frame begin.
+            f.set_opacity(fade);
             f.place(
                 "aegis-hud-chip-left",
-                &chrome_place(chip, chip_opts(&design, fade)),
+                &chrome_place(chip, chip_opts(&design)),
                 |f| {
                     f.column_ex(&sized(chip.w, chip.h), |_| {});
                 },
             );
-            f.set_theme(
-                themes::faded(original_theme, fade).with_fg(hud_foreground_color(&design, fade)),
-            );
+            f.set_theme(original_theme.with_fg(design.hud_foreground.primary));
             let mut x = chip.x + CHIP_PAD_X;
             let mut cell = |width: f32| {
                 let rect = Rect {
@@ -537,7 +540,6 @@ impl Chrome for Hud {
                 &design,
                 "aegis-hud-network",
                 rect,
-                fade,
                 self.themed_icon(network_icon_name(self.status.network)),
                 Icon::Globe,
                 "",
@@ -548,6 +550,7 @@ impl Chrome for Hud {
                 // dimmed to a whisper while the radio is off.
                 let bt_fade = fade * if enabled { 1.0 } else { 0.35 };
                 if let Some(icon) = self.themed_icon("bluetooth-symbolic") {
+                    f.set_opacity(bt_fade);
                     f.place(
                         "aegis-hud-bluetooth",
                         &chrome_place(rect, centered_layer()),
@@ -560,18 +563,19 @@ impl Chrome for Hud {
                                     ..Default::default()
                                 },
                                 |f| unsafe {
-                                    f.push_style(hud_glyph_outline(&design, bt_fade));
+                                    f.push_style(hud_glyph_outline(&design));
                                     f.image_tinted(
                                         icon as *mut lens::sys::flux_image,
                                         16.0,
                                         16.0,
-                                        hud_foreground_color(&design, bt_fade),
+                                        design.hud_foreground.primary,
                                     );
                                     f.pop_style();
                                 },
                             );
                         },
                     );
+                    f.set_opacity(fade);
                 }
             }
             if let Some(battery) = self.status.battery {
@@ -581,7 +585,6 @@ impl Chrome for Hud {
                     &design,
                     "aegis-hud-battery",
                     rect,
-                    fade,
                     self.themed_icon(&battery_icon_name(battery)),
                     Icon::Zap,
                     &format!("{}%", battery.percent),
@@ -611,28 +614,28 @@ impl Chrome for Hud {
                         },
                         |f| match texture {
                             Some(texture) => unsafe {
-                                f.push_style(hud_glyph_outline(&design, fade));
+                                f.push_style(hud_glyph_outline(&design));
                                 f.image_tinted(
                                     texture as *mut lens::sys::flux_image,
                                     18.0,
                                     18.0,
-                                    hud_foreground_color(&design, fade),
+                                    design.hud_foreground.primary,
                                 );
                                 f.pop_style();
                             },
                             None => match fallback {
                                 Some(icon) => unsafe {
-                                    f.push_style(hud_glyph_outline(&design, fade));
+                                    f.push_style(hud_glyph_outline(&design));
                                     f.image_tinted(
                                         icon as *mut lens::sys::flux_image,
                                         18.0,
                                         18.0,
-                                        hud_foreground_color(&design, fade),
+                                        design.hud_foreground.primary,
                                     );
                                     f.pop_style();
                                 },
                                 None => {
-                                    f.push_style(hud_glyph_outline(&design, fade));
+                                    f.push_style(hud_glyph_outline(&design));
                                     f.icon(Icon::FileText, 16.0);
                                     f.pop_style();
                                 }
@@ -652,7 +655,6 @@ impl Chrome for Hud {
                     rect,
                     &format!("+{}", fold.hidden.min(99)),
                     design.typography.footnote,
-                    fade,
                 );
             }
 
@@ -665,7 +667,6 @@ impl Chrome for Hud {
                 rect,
                 &self.clock,
                 design.typography.body,
-                fade,
             );
 
             let bell_w = if notifications.is_empty() { 34.0 } else { 50.0 };
@@ -680,20 +681,21 @@ impl Chrome for Hud {
                 &design,
                 "aegis-hud-bell",
                 rect,
-                fade,
                 self.themed_icon("preferences-system-notifications-symbolic"),
                 Icon::Bell,
                 &count,
             );
+            f.set_opacity(1.0);
         }
 
         // ---- Center chip: workspace position markers ---------------------
         if layout.visible[CENTER] && self.chip_fade[CENTER] > 0.01 {
             let fade = self.chip_fade[CENTER];
             let chip = layout.chips[CENTER];
+            f.set_opacity(fade);
             f.place(
                 "aegis-hud-chip-center",
-                &chrome_place(chip, chip_opts(&design, fade)),
+                &chrome_place(chip, chip_opts(&design)),
                 |f| {
                     f.column_ex(&sized(chip.w, chip.h), |_| {});
                 },
@@ -732,7 +734,7 @@ impl Chrome for Hud {
                                 &sized_fill(
                                     contour_diameter,
                                     contour_diameter,
-                                    fade_color(hud_contour_color(&design), fade),
+                                    hud_contour_color(&design),
                                     contour_diameter * 0.5,
                                 ),
                                 |_| {},
@@ -747,7 +749,7 @@ impl Chrome for Hud {
                                 &sized_fill(
                                     diameter,
                                     diameter,
-                                    fade_color(workspace_dot_color(&design, intensity), fade),
+                                    workspace_dot_color(&design, intensity),
                                     diameter * 0.5,
                                 ),
                                 |_| {},
@@ -756,6 +758,7 @@ impl Chrome for Hud {
                     );
                 }
             }
+            f.set_opacity(1.0);
         }
 
         f.set_theme(original_theme);

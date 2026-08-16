@@ -10,7 +10,7 @@ use std::ffi::c_void;
 use std::ops::Range;
 
 use aegis_design::materials::{chrome_place, surface_layout};
-use aegis_design::{Design, GlassRole, materials, themes};
+use aegis_design::{Design, GlassRole, materials};
 use aegis_model::app::Entry;
 use aegis_model::input::{KeyChar, key_action};
 use aegis_model::launcher::{Launch, Launcher as SearchBrain};
@@ -225,8 +225,7 @@ impl Chrome for Prism {
             self.close();
         }
 
-        let original_theme = frame.theme();
-        frame.set_theme(themes::faded(original_theme, progress));
+        frame.set_opacity(progress);
         frame.place(
             "aegis-prism-scrim",
             &chrome_place(
@@ -240,7 +239,7 @@ impl Chrome for Prism {
                     // A gentle dark veil behind the panel — lighter than the
                     // `scrim` color token's modal dim, so the desktop stays
                     // readable behind the glass. Dark in both appearances.
-                    bg: Color::rgba(4, 6, 14, alpha(54, progress)),
+                    bg: Color::rgba(4, 6, 14, 54),
                     pad: 0.0,
                     ..surface_layout()
                 },
@@ -252,7 +251,7 @@ impl Chrome for Prism {
         let type_scale = design.typography;
         // The glass-panel material already carries the shared panel radius.
         let mut panel_material = materials::glass_panel(&design);
-        panel_material.bg = with_progress(design.colors.glass_surface, progress);
+        panel_material.bg = design.colors.glass_surface;
         frame.place(
             "aegis-prism-panel",
             &chrome_place(panel, panel_material),
@@ -323,7 +322,7 @@ impl Chrome for Prism {
                         h: 26.0,
                     },
                     LayoutOpts {
-                        bg: with_progress(design.colors.application_text, progress),
+                        bg: design.colors.application_text,
                         radius: 1.0,
                         pad: 0.0,
                         ..surface_layout()
@@ -342,7 +341,7 @@ impl Chrome for Prism {
                     h: 1.0,
                 },
                 LayoutOpts {
-                    bg: with_progress(design.colors.application_border, progress),
+                    bg: design.colors.application_border,
                     pad: 0.0,
                     ..surface_layout()
                 },
@@ -369,22 +368,12 @@ impl Chrome for Prism {
                     },
                 ),
                 |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: panel.w,
-                            height: EMPTY_HEIGHT,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |frame| {
-                            frame.flex(1.0);
-                            frame.label_compact_sized(
-                                i18n.text(Message::NoApplicationsFound),
-                                type_scale.body,
-                            );
-                            frame.flex(1.0);
-                        },
-                    );
+                    frame.centered(panel.w, EMPTY_HEIGHT, |frame| {
+                        frame.label_compact_sized(
+                            i18n.text(Message::NoApplicationsFound),
+                            type_scale.body,
+                        );
+                    });
                 },
             );
         } else {
@@ -412,9 +401,9 @@ impl Chrome for Prism {
                         row,
                         LayoutOpts {
                             bg: if selected {
-                                with_progress(design.colors.application_active, progress)
+                                design.colors.application_active
                             } else if hovered {
-                                with_progress(design.colors.application_hover, progress)
+                                design.colors.application_hover
                             } else {
                                 Color::TRANSPARENT
                             },
@@ -459,7 +448,7 @@ impl Chrome for Prism {
                 );
             }
         }
-        frame.set_theme(original_theme);
+        frame.set_opacity(1.0);
 
         if let Some(filtered_position) = clicked {
             Self::emit(self.brain.launch_filtered(filtered_position), out);
@@ -610,51 +599,34 @@ impl Chrome for Prism {
 
 fn render_icon(frame: &mut Frame, icon: Option<*mut c_void>, progress: f32) {
     let size = ICON_SIZE * (0.92 + progress.clamp(0.0, 1.0) * 0.08);
-    frame.column_ex(
-        &LayoutOpts {
-            width: ICON_SIZE,
-            height: ICON_SIZE,
-            cross: Align::Center,
-            ..Default::default()
+    frame.centered(ICON_SIZE, ICON_SIZE, |frame| match icon {
+        Some(pointer) => unsafe {
+            frame.image(pointer as *mut lens::sys::flux_image, size, size);
         },
-        |frame| match icon {
-            Some(pointer) => unsafe {
-                frame.image(pointer as *mut lens::sys::flux_image, size, size);
-            },
-            None => {
-                frame.column_ex(
-                    &LayoutOpts {
-                        width: size,
-                        height: size,
-                        // Neutral slate tile behind the fallback glyph: a
-                        // content color with no semantic role, identical in
-                        // both appearances.
-                        bg: Color::rgba(78, 88, 120, alpha(230, progress)),
-                        radius: 9.0,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
-                    |frame| {
-                        frame.spacer(8.0);
+        None => {
+            frame.column_ex(
+                &LayoutOpts {
+                    width: size,
+                    height: size,
+                    // Neutral slate tile behind the fallback glyph: a
+                    // content color with no semantic role, identical in
+                    // both appearances.
+                    bg: Color::rgba(78, 88, 120, 230),
+                    radius: 9.0,
+                    ..Default::default()
+                },
+                |frame| {
+                    frame.centered(size, size, |frame| {
                         frame.icon(Icon::FileText, 20.0);
-                    },
-                );
-            }
-        },
-    );
+                    });
+                },
+            );
+        }
+    });
 }
 
 fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-fn alpha(base: u8, progress: f32) -> u8 {
-    (base as f32 * progress.clamp(0.0, 1.0)).round() as u8
-}
-
-fn with_progress(color: Color, progress: f32) -> Color {
-    let (_, _, _, opacity) = color.components();
-    color.with_alpha(alpha(opacity, progress))
 }
 
 #[cfg(test)]
