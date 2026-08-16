@@ -864,7 +864,7 @@ unsafe extern "C" fn icc_creator_set_icc_file(
             );
             return;
         }
-        if length < 132 || length > ICC_MAX_BYTES {
+        if !(132..=ICC_MAX_BYTES).contains(&length) {
             ffi::wl_resource_post_error(
                 res,
                 ICC_ERROR_BAD_SIZE,
