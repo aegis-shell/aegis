@@ -310,7 +310,7 @@ pub(super) fn write_stream_frame<H: Handler>(
     let lease_alive = std::time::Instant::now() < *lease_deadline.lock().unwrap();
     let scope_allows = scope
         .resolve(handler)
-        .is_some_and(|scope| scope_permits_stream(&scope, target));
+        .is_some_and(|scope| scope_permits_stream(&scope, &target));
     if !lease_alive || !scope_allows {
         let reason = if !lease_alive {
             "privileged capability lease expired"

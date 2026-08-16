@@ -29,6 +29,7 @@ fn interaction_domain_output_info(
             logical_origin: aegis_model::Point::default(),
         },
         available_modes: Vec::new(),
+        color_caps: aegis_model::edid::EdidColorCapabilities::default(),
     }
 }
 

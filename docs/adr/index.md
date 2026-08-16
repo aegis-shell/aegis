@@ -58,7 +58,7 @@ background and how the decisions fit together, see
 | [0049](0049-standalone-modular-control-center.md) | Standalone modular Control Center with revisioned settings IPC (amends [0044](0044-dock-and-control-center-crates.md)) | Superseded by [0056](0056-system-settings-identity-and-boundary.md) |
 | [0050](0050-fuji-agent-product-and-bridge-rename.md) | fuji agent product and the aegis-fuji bridge rename (amends [0047](0047-neenee-agent-realm-platform-bridge.md)) | Accepted |
 | [0051](0051-portal-backend-dbus-bridge.md) | xdg-desktop-portal backend as an out-of-process D-Bus bridge | Superseded by [0075](0075-independent-portal-package-and-backend-contract.md) |
-| [0052](0052-scoped-output-frame-streaming.md) | Scoped output frame streaming | Accepted (implemented; dmabuf transport per [0124](0124-window-open-close-fade-transitions.md) audit) |
+| [0052](0052-scoped-output-frame-streaming.md) | Scoped output frame streaming (pacing superseded by [0126](0126-damage-driven-stream-pacing-and-geometry-renegotiation.md)) | Accepted (implemented; dmabuf transport per [0124](0124-window-open-close-fade-transitions.md) audit) |
 | [0053](0053-portal-session-services-and-grants.md) | Portal backend ABI ownership and scoped session services | Superseded by [0075](0075-independent-portal-package-and-backend-contract.md) |
 | [0054](0054-interactive-target-picking.md) | Interactive target picking and window-scoped stream targets | Proposed |
 | [0055](0055-zero-copy-dmabuf-frame-export.md) | Zero-copy dmabuf export for ScreenCast and frame capture | Superseded by the portal slot-ring design (portal ADR-0005/0006); shipped as IPC protocol 25 |
@@ -132,4 +132,8 @@ background and how the decisions fit together, see
 | [0122](0122-original-mit-cursor-theme-replaces-bibata.md) | Original MIT cursor theme replaces the bundled Bibata fallback (supersedes [0070](0070-svg-cursors-with-bundled-bibata-fallback.md)) | Accepted |
 | [0123](0123-chrome-fades-via-lens-opacity.md) | Chrome enter/exit fades go through lens opacity | Accepted |
 | [0124](0124-window-open-close-fade-transitions.md) | Window open/close fade transitions (extends [0029](0029-animation-and-effect-policy.md)) | Accepted |
-| [0125](0125-agent-primitive-families-and-shared-agent-client.md) | Agent primitive families and the shared agent client layer (amends [0027](0027-ipc-and-introspection.md), [0090](0090-native-capability-broker-and-stateless-mcp-edge.md)) | Accepted |
+| [0125](0125-ipc-primitive-families-and-shared-ipc-client.md) | IPC primitive families and the shared IPC client library (amends [0027](0027-ipc-and-introspection.md), [0090](0090-native-capability-broker-and-stateless-mcp-edge.md)) | Accepted |
+| [0126](0126-damage-driven-stream-pacing-and-geometry-renegotiation.md) | Damage-driven stream pacing and stream renegotiation (supersedes the forced-cadence pacing of [0052](0052-scoped-output-frame-streaming.md); amends [0052](0052-scoped-output-frame-streaming.md), [0054](0054-interactive-target-picking.md)) | Accepted |
+| [0127](0127-occlusion-safe-window-streams-and-cursor-compositing.md) | Occlusion-safe window streams and stream cursor compositing (amends [0052](0052-scoped-output-frame-streaming.md), [0054](0054-interactive-target-picking.md), [0126](0126-damage-driven-stream-pacing-and-geometry-renegotiation.md)) | Accepted |
+| [0128](0128-peer-identity-bound-built-in-scopes-and-capture-indicator.md) | Peer-identity-bound built-in scopes and the capture indicator | Accepted |
+| [0129](0129-color-management.md) | Color management — wp_color_management_v1 server, uniform framebuffer encoding, KMS HDR signaling | Accepted |

@@ -46,7 +46,9 @@ impl ObservationLeases {
             };
             self.pending.remove(&oldest);
         }
-        let expires_at = now.checked_add(Duration::from_millis(ttl_ms)).unwrap_or(now);
+        let expires_at = now
+            .checked_add(Duration::from_millis(ttl_ms))
+            .unwrap_or(now);
         self.pending
             .insert(token.0.clone(), PendingObservation { expires_at, client });
     }

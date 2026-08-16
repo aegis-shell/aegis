@@ -32,6 +32,60 @@ pub(super) struct PreparedWindowCapture {
     pub(super) context: WindowCaptureContext,
 }
 
+/// One window's render geometry for an offscreen tree capture: the resolved
+/// capture scale, the physical-pixel target extent it implies, and the
+/// toplevel's logical placement at query time. Shared by the one-shot
+/// `CaptureWindow` path and the per-window stream render targets
+/// (ADR-0127).
+pub(super) struct WindowTreeGeometry {
+    pub(super) window: aegis_model::window::WindowId,
+    pub(super) scale_milli: u32,
+    pub(super) physical_width: u32,
+    pub(super) physical_height: u32,
+    /// Toplevel logical origin when the geometry was resolved; the render
+    /// maps it to (0, 0), so a pure position move never changes the target.
+    pub(super) origin: aegis_model::Point,
+    /// Toplevel logical extent when the geometry was resolved.
+    pub(super) logical_size: aegis_model::Size,
+}
+
+/// Resolve one window's offscreen-capture geometry from the live model. The
+/// window is looked up across every workspace (`all_windows`): occluded,
+/// minimized, and foreign-workspace windows stay capturable. The physical
+/// extent follows the scale of the output the window is currently on, so a
+/// move between differently scaled outputs changes it (a stream treats that
+/// as a geometry change).
+pub(super) fn window_tree_geometry(
+    server: &aegis_compositor::Server,
+    window: aegis_model::window::WindowId,
+) -> Result<WindowTreeGeometry, String> {
+    let model = server
+        .all_windows()
+        .into_iter()
+        .find(|candidate| candidate.id == window)
+        .ok_or_else(|| format!("unknown window {}", window.0))?;
+    if model.size.w <= 0 || model.size.h <= 0 {
+        return Err(format!("window {} has no measurable extent", window.0));
+    }
+    let scale_milli = window_capture_scale_milli(server, &model);
+    let physical = |value: i32| {
+        u32::try_from(
+            u64::from(value as u32)
+                .saturating_mul(u64::from(scale_milli))
+                .div_ceil(1000),
+        )
+        .map_err(|_| "window capture extent overflows".to_owned())
+    };
+    Ok(WindowTreeGeometry {
+        window,
+        scale_milli,
+        physical_width: physical(model.size.w)?.max(1),
+        physical_height: physical(model.size.h)?.max(1),
+        origin: model.position,
+        logical_size: model.size,
+    })
+}
+
 /// The capture scale for one window in milli-units: the output the window is
 /// currently visible on (center-point hit test), the focused — here primary —
 /// output when the window is occluded, minimized, or on another workspace,
@@ -70,6 +124,40 @@ fn window_capture_scale_milli(
         .unwrap_or(1000)
 }
 
+/// Draw one window's complete surface tree into an open opaque pass on
+/// `canvas`, mapped so the toplevel's logical origin lands at (0, 0). The
+/// window keeps its real content whether it is visible, occluded, minimized,
+/// or on another workspace; popups extending past the toplevel bounds are
+/// clipped by the target extent (mirroring `StreamTarget::Window`
+/// semantics). Shared by the one-shot capture and per-window streams.
+pub(super) fn draw_window_tree(
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    server: &aegis_compositor::Server,
+    canvas: &flux::Canvas,
+    geometry: &WindowTreeGeometry,
+) {
+    let scale = geometry.scale_milli as f32 / 1000.0;
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    let origin = geometry.origin;
+    let map = move |_: Option<aegis_model::window::WindowId>, natural: aegis_model::Rect| {
+        aegis_model::Rect::new(
+            natural.origin.x - origin.x,
+            natural.origin.y - origin.y,
+            natural.size.w,
+            natural.size.h,
+        )
+    };
+    let shm = server.window_capture_frames(geometry.window);
+    let dmabuf = server.window_capture_dmabuf_frames(geometry.window);
+    let surface_order = server.window_capture_frame_order(geometry.window);
+    renderer.draw_surfaces_ordered_mapped(device, canvas, &surface_order, &shm, &dmabuf, &map);
+    canvas.restore();
+}
+
 /// Render one window's complete surface tree into a fresh offscreen readback
 /// target and submit the frame. The window keeps its real content whether it
 /// is visible, occluded, minimized, or on another workspace; the image's
@@ -84,26 +172,9 @@ pub(super) fn begin_window_capture(
     security_generation: u64,
     scheme: aegis_model::settings::ColorScheme,
 ) -> Result<PreparedWindowCapture, String> {
-    let model = server
-        .all_windows()
-        .into_iter()
-        .find(|candidate| candidate.id == window)
-        .ok_or_else(|| format!("unknown window {}", window.0))?;
-    if model.size.w <= 0 || model.size.h <= 0 {
-        return Err(format!("window {} has no measurable extent", window.0));
-    }
-    let scale_milli = window_capture_scale_milli(server, &model);
-    let scale = scale_milli as f32 / 1000.0;
-    let physical = |value: i32| {
-        u32::try_from(
-            u64::from(value as u32)
-                .saturating_mul(u64::from(scale_milli))
-                .div_ceil(1000),
-        )
-        .map_err(|_| "window capture extent overflows".to_owned())
-    };
-    let physical_width = physical(model.size.w)?.max(1);
-    let physical_height = physical(model.size.h)?.max(1);
+    let geometry = window_tree_geometry(server, window)?;
+    let physical_width = geometry.physical_width;
+    let physical_height = geometry.physical_height;
     let surface = flux::Surface::offscreen_readback(device, physical_width, physical_height)
         .map_err(|error| {
             format!(
@@ -141,24 +212,7 @@ pub(super) fn begin_window_capture(
             flux_last_error_detail()
         )
     })?;
-    canvas.save();
-    if scale != 1.0 {
-        canvas.scale(scale, scale);
-    }
-    let origin = model.position;
-    let map = move |_: Option<aegis_model::window::WindowId>, natural: aegis_model::Rect| {
-        aegis_model::Rect::new(
-            natural.origin.x - origin.x,
-            natural.origin.y - origin.y,
-            natural.size.w,
-            natural.size.h,
-        )
-    };
-    let shm = server.window_capture_frames(window);
-    let dmabuf = server.window_capture_dmabuf_frames(window);
-    let surface_order = server.window_capture_frame_order(window);
-    renderer.draw_surfaces_ordered_mapped(device, &canvas, &surface_order, &shm, &dmabuf, &map);
-    canvas.restore();
+    draw_window_tree(device, renderer, server, &canvas, &geometry);
     canvas.end_checked().map_err(|error| {
         format!(
             "end window {} canvas: {error}{}",
@@ -194,10 +248,10 @@ pub(super) fn begin_window_capture(
         },
         context: WindowCaptureContext {
             window,
-            scale_milli,
+            scale_milli: geometry.scale_milli,
             rect: aegis_model::Rect {
-                origin: model.position,
-                size: model.size,
+                origin: geometry.origin,
+                size: geometry.logical_size,
             },
         },
     })

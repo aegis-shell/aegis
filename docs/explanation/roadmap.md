@@ -231,8 +231,14 @@ gestures (`zwp_pointer_gestures_v1`) and tablet tools
 (`zwp_tablet_manager_v2`, full axis routing with pointer-emulation fallback)
 land with the libinput backend.
 
-**Remaining for M7.** Color management (needs color-space support in the
-flux engine first). Multi-monitor rendering correctness and gesture/tablet
+**Remaining for M7.** Color management landed (ADR-0129):
+`wp_color_management_v1` (v1) tags client content, the DRM backend
+negotiates the framebuffer encoding (SDR 8-bit, deep-color 10-bit,
+BT.2020 PQ HDR when every output opts in and proves ST 2084), per-output
+EDID capabilities are reported, display ICC profiles can drive the
+framebuffer space, and `[night_light]` programs CRTC gamma tables on a
+schedule. Mixed HDR/SDR multi-output awaits per-output presentation
+surfaces. Multi-monitor rendering correctness and gesture/tablet
 feel need real hardware to verify. The per-output display policy landed as
 `[[output]]` config entries: scale, live DRM mode selection, position, and
 primary are in effect and editable through the command panel's settings

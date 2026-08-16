@@ -15,10 +15,11 @@ use crate::schema::{
     ActorActionIntent, ActorActionReceipt, ActorCapability, ActorResource, AgentGrantInfo,
     AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult, Command, ConfirmPickResult,
     ConnectionCapabilities, Event, InteractionDomainAction, InteractionDomainActionResult,
-    LeaseGrant, LeaseRequest, ObservationToken, ObserveSnapshot, PROTOCOL_VERSION, PickKind,
-    PickResult, Request, ResourceGrant, ResourceGrantId, Response, Scope, SecretPromptResult,
-    SemanticObservation, SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat,
-    StreamTarget, SystemAction, SystemStatus, TransactOp, TransactResult,
+    LeaseGrant, LeaseRequest, ObservationToken, ObserveSnapshot, OutputInfo, PROTOCOL_VERSION,
+    PickKind, PickResult, Request, ResourceGrant, ResourceGrantId, Response, Scope,
+    SecretPromptResult, SemanticObservation, SettingsAction, SettingsReceipt, SettingsSnapshot,
+    StreamCursorMode, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus, TransactOp,
+    TransactResult,
 };
 
 /// Decoded Interaction Domain observation returned by [`Client::capture_interaction_domain`].
@@ -80,7 +81,19 @@ pub struct StreamFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamMessage {
     Frame(StreamFrame),
-    Ended { stream_id: u64, reason: String },
+    Ended {
+        stream_id: u64,
+        reason: String,
+    },
+    /// The stream's target geometry changed (protocol 29): the stream is
+    /// frozen and produces no further frames until it is restarted
+    /// (`stop_output_stream` + a fresh start re-negotiates at the new
+    /// geometry).
+    GeometryChanged {
+        stream_id: u64,
+        width: u32,
+        height: u32,
+    },
     LeaseRenewed,
 }
 
@@ -608,6 +621,31 @@ impl Client {
     pub fn outputs(&mut self) -> io::Result<Vec<aegis_model::output::OutputInfo>> {
         write_msg(&mut self.stream, &Request::GetOutputs)?;
         match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Outputs { outputs } => Ok(outputs
+                .into_iter()
+                .map(|output| aegis_model::output::OutputInfo {
+                    connector: output.connector,
+                    geometry: output.geometry.unwrap_or_default(),
+                    available_modes: output.available_modes.unwrap_or_default(),
+                    // The lean IPC shape carries no EDID color capabilities;
+                    // the model field defaults for pre-field IPC peers.
+                    color_caps: aegis_model::edid::EdidColorCapabilities::default(),
+                })
+                .collect()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Outputs, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Enumerate the live outputs for capture addressing (protocol 29,
+    /// ADR-0126): connector, primary flag, and the physical-pixel rectangle
+    /// in desktop coordinates a [`StreamTarget::Output`] selector addresses.
+    pub fn enumerate_outputs(&mut self) -> io::Result<Vec<OutputInfo>> {
+        write_msg(&mut self.stream, &Request::EnumerateOutputs)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
             Response::Outputs { outputs } => Ok(outputs),
             Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
@@ -715,7 +753,7 @@ impl Client {
         }
     }
 
-    /// Read a consistent multi-class snapshot with the journal cursor in one
+    /// Read a multi-class snapshot with the journal cursor in a single
     /// round trip (protocol 28, ADR-0125; the Observe primitive).
     pub fn observe(&mut self) -> io::Result<ObserveSnapshot> {
         write_msg(&mut self.stream, &Request::Observe)?;
@@ -731,16 +769,19 @@ impl Client {
 
     /// Atomically authorize and apply an ordered op batch, returning the
     /// main loop's authoritative per-op receipt or a precondition conflict
-    /// (protocol 28, ADR-0125; the Transact primitive).
+    /// (protocol 28, ADR-0125; the Transact primitive). Every precondition
+    /// that is `Some` must hold at the commit boundary.
     pub fn transact(
         &mut self,
         expected_journal_seq: Option<u64>,
+        expected_interaction_domain_revision: Option<u64>,
         ops: Vec<TransactOp>,
     ) -> io::Result<TransactResult> {
         write_msg(
             &mut self.stream,
             &Request::Transact {
                 expected_journal_seq,
+                expected_interaction_domain_revision,
                 ops,
             },
         )?;
@@ -750,6 +791,32 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Transact, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Read this connection's live grant: capabilities, the re-resolved
+    /// scope, lease, and Actor session (protocol 28).
+    pub fn connection_state(
+        &mut self,
+    ) -> io::Result<(
+        ConnectionCapabilities,
+        Scope,
+        Option<LeaseGrant>,
+        Option<crate::ActorSessionSnapshot>,
+    )> {
+        write_msg(&mut self.stream, &Request::GetConnectionState)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::ConnectionState {
+                caps,
+                scope,
+                lease,
+                session,
+            } => Ok((caps, scope, lease, session)),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected ConnectionState, got {other:?}"),
             )),
         }
     }
@@ -873,18 +940,31 @@ impl Client {
     /// [`Client::next_stream_message`]; stop with
     /// [`Client::stop_output_stream`] or by dropping the connection.
     pub fn start_output_stream(&mut self, max_fps: Option<u32>) -> io::Result<StreamStarted> {
-        self.start_output_stream_target(max_fps, StreamTarget::Output)
+        self.start_output_stream_target(max_fps, StreamTarget::Output { output: None })
     }
 
     /// Start a continuous frame stream with an explicit target (ADR-0054):
-    /// the whole output, or one window's visible region cropped from the
-    /// output frame. Window ids come from [`Client::pick_target`]; the
-    /// compositor ends the stream when the window closes or its size
-    /// changes.
+    /// the whole output, one connector's region of it (protocol 29), or one
+    /// window's visible region cropped from the output frame. Window ids
+    /// come from [`Client::pick_target`]; the compositor ends the stream
+    /// when the window closes and freezes it with
+    /// [`StreamMessage::GeometryChanged`] when the target's size changes.
     pub fn start_output_stream_target(
         &mut self,
         max_fps: Option<u32>,
         target: StreamTarget,
+    ) -> io::Result<StreamStarted> {
+        self.start_output_stream_with(max_fps, target, None)
+    }
+
+    /// Start a continuous frame stream with an explicit cursor mode
+    /// (protocol 29). `Embedded` is accepted and stored but currently
+    /// produces the same frames as `Hidden`.
+    pub fn start_output_stream_with(
+        &mut self,
+        max_fps: Option<u32>,
+        target: StreamTarget,
+        cursor: Option<StreamCursorMode>,
     ) -> io::Result<StreamStarted> {
         write_msg(
             &mut self.stream,
@@ -892,6 +972,7 @@ impl Client {
                 max_fps,
                 target,
                 dmabuf: None,
+                cursor,
             },
         )?;
         match read_msg::<_, Response>(&mut self.stream)? {
@@ -1261,6 +1342,17 @@ impl Client {
                 }
                 Ok(Event::StreamEnded { stream_id, reason }) => {
                     return Ok(StreamMessage::Ended { stream_id, reason });
+                }
+                Ok(Event::StreamGeometryChanged {
+                    stream_id,
+                    width,
+                    height,
+                }) => {
+                    return Ok(StreamMessage::GeometryChanged {
+                        stream_id,
+                        width,
+                        height,
+                    });
                 }
                 Ok(_) => {
                     // Unrelated events (the connection is not subscribed)

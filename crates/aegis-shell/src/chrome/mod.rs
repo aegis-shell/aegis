@@ -26,6 +26,7 @@ mod confirm_prompt;
 mod controlled_window_guard;
 mod launcher;
 mod overview;
+mod recording_indicator;
 mod screenshot;
 mod secret_prompt;
 mod toast;
@@ -42,6 +43,7 @@ pub use confirm_prompt::{ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, Con
 pub use controlled_window_guard::ControlledWindowGuard;
 pub use launcher::Launcher;
 pub use overview::Overview;
+pub use recording_indicator::RecordingIndicator;
 pub use screenshot::{PickerMode, ScreenshotSelector};
 pub use secret_prompt::{SecretPrompt, SecretPromptParams};
 pub use toast::Toast;

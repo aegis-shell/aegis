@@ -209,6 +209,11 @@ struct StreamLane {
     tx: SyncSender<Outbound>,
     scope: LiveScopeBinding,
     target: crate::schema::StreamTarget,
+    /// The protocol version the owning connection negotiated. Events added
+    /// after a stream started (e.g. `StreamGeometryChanged`, version 29) are
+    /// only pushed to lanes new enough to decode them; an older client just
+    /// observes frames stop.
+    version: u32,
     lease_deadline: Arc<Mutex<std::time::Instant>>,
     /// Frames handed to the writer but not yet written. The producer
     /// (`Server::push_stream_frame`) increments and the writer decrements, so
@@ -258,7 +263,10 @@ fn event_observe_capability(ev: &Event) -> Option<ActorCapability> {
         }
         Event::SettingsChanged { .. } => ActorCapability::ObserveSettings,
         Event::SystemStatusChanged => ActorCapability::ObserveSystem,
-        Event::Journal { .. } | Event::StreamFrame { .. } | Event::StreamEnded { .. } => {
+        Event::Journal { .. }
+        | Event::StreamFrame { .. }
+        | Event::StreamEnded { .. }
+        | Event::StreamGeometryChanged { .. } => {
             return None;
         }
     })
@@ -287,11 +295,7 @@ fn install_lane_filters<H: Handler + 'static>(
         let Some(scope) = binding.resolve(&*journal) else {
             return false;
         };
-        journal_entry_permitted(
-            entry,
-            &scope,
-            binding.principal.as_ref().map(AsRef::as_ref),
-        )
+        journal_entry_permitted(entry, &scope, binding.principal.as_ref().map(AsRef::as_ref))
     }));
 }
 
@@ -517,7 +521,7 @@ impl Server {
             (
                 lane.tx.clone(),
                 lane.scope.clone(),
-                lane.target,
+                lane.target.clone(),
                 Arc::clone(&lane.lease_deadline),
                 Arc::clone(&lane.queued),
             )
@@ -550,6 +554,32 @@ impl Server {
                 reason: reason.to_owned(),
             }));
         }
+    }
+
+    /// Notify a stream that its target geometry changed (protocol 29,
+    /// ADR-0126): the lane stays registered — the stream object survives,
+    /// frozen, until the client restarts it — and the compositor produces
+    /// no further frames for it. The event only goes to lanes that
+    /// negotiated version 29 or later; an older client cannot decode it and
+    /// simply observes frames stop, which is the documented degradation.
+    /// Returns `false` when the stream is unknown.
+    pub fn stream_geometry_changed(&self, stream_id: u64, width: u32, height: u32) -> bool {
+        let tx = {
+            let streams = self.streams.lock().unwrap();
+            let Some(lane) = streams.get(&stream_id) else {
+                return false;
+            };
+            if lane.version < 29 {
+                return true;
+            }
+            lane.tx.clone()
+        };
+        let _ = tx.try_send(Outbound::Event(Event::StreamGeometryChanged {
+            stream_id,
+            width,
+            height,
+        }));
+        true
     }
 }
 

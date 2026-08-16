@@ -44,11 +44,13 @@ pub(super) fn effective_scope<H: Handler>(
     }
 }
 
-pub(super) fn scope_permits_stream(scope: &Scope, target: crate::schema::StreamTarget) -> bool {
+pub(super) fn scope_permits_stream(scope: &Scope, target: &crate::schema::StreamTarget) -> bool {
     scope.pregrants(ActorCapability::StreamOutput)
         && match target {
-            crate::schema::StreamTarget::Output => true,
-            crate::schema::StreamTarget::Window { window } => scope.permits_window(window),
+            // An output selector names a connector, not a scoped resource:
+            // its existence is checked at stream start on the main loop.
+            crate::schema::StreamTarget::Output { .. } => true,
+            crate::schema::StreamTarget::Window { window } => scope.permits_window(*window),
         }
 }
 
@@ -280,6 +282,9 @@ pub(super) fn journal_entry_permitted(
         JournalMutation::AgentAuth { principal, .. } => {
             subject.is_none_or(|subject| principal == subject)
         }
+        // A platform scope claim is compositor-internal: principal-bound
+        // agent lanes never observe it.
+        JournalMutation::ScopeClaim { .. } => subject.is_none(),
         JournalMutation::ActorSession { principal, .. }
         | JournalMutation::ResourceGrant { principal, .. }
         | JournalMutation::ResourceGrantAttempt { principal, .. }

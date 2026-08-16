@@ -4,9 +4,7 @@
 
 use super::*;
 
-fn paired_handler(
-    pregranted: Vec<ActorCapability>,
-) -> (Arc<TestHandler>, PathBuf) {
+fn paired_handler(pregranted: Vec<ActorCapability>) -> (Arc<TestHandler>, PathBuf) {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
     *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
@@ -38,17 +36,21 @@ fn transact_commits_and_returns_per_op_receipts() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
     let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
-    let mut client = Client::connect_with(&path, ConnectionCapabilities {
-        query: true,
-        control: true,
-        input: false,
-        session: false,
-        interaction_domain: false,
-    })
+    let mut client = Client::connect_with(
+        &path,
+        ConnectionCapabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            interaction_domain: false,
+        },
+    )
     .expect("connect");
 
     let result = client
         .transact(
+            None,
             None,
             vec![
                 aegis_ipc::TransactOp::Focus {
@@ -109,6 +111,7 @@ fn transact_preflight_refuses_out_of_scope_batch_without_applying() {
     let error = client
         .transact(
             None,
+            None,
             vec![
                 aegis_ipc::TransactOp::Focus {
                     id: WindowId(1),
@@ -142,17 +145,20 @@ fn transact_precondition_conflict_applies_nothing() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
     let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
-    let mut client = Client::connect_with(&path, ConnectionCapabilities {
-        query: true,
-        control: true,
-        input: false,
-        session: false,
-        interaction_domain: false,
-    })
+    let mut client = Client::connect_with(
+        &path,
+        ConnectionCapabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            interaction_domain: false,
+        },
+    )
     .expect("connect");
 
     let result = client
-        .transact(None, vec![aegis_ipc::TransactOp::ToggleTiling])
+        .transact(None, None, vec![aegis_ipc::TransactOp::ToggleTiling])
         .expect("first transact");
     let aegis_ipc::TransactResult::Committed { receipt } = result else {
         panic!("expected commit, got {result:?}");
@@ -162,12 +168,14 @@ fn transact_precondition_conflict_applies_nothing() {
     let result = client
         .transact(
             Some(receipt.before_seq),
+            None,
             vec![aegis_ipc::TransactOp::Minimize { id: WindowId(1) }],
         )
         .expect("conflicting transact");
     assert_eq!(
         result,
         aegis_ipc::TransactResult::PreconditionConflict {
+            precondition: aegis_ipc::TransactPrecondition::JournalSeq,
             expected: 0,
             actual: 1
         }
@@ -181,6 +189,7 @@ fn transact_precondition_conflict_applies_nothing() {
     let result = client
         .transact(
             Some(receipt.after_seq),
+            None,
             vec![aegis_ipc::TransactOp::Minimize { id: WindowId(1) }],
         )
         .expect("retry with the fresh cursor");
@@ -195,21 +204,25 @@ fn transact_rejects_empty_and_invalid_batches() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
     let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
-    let mut client = Client::connect_with(&path, ConnectionCapabilities {
-        query: true,
-        control: true,
-        input: false,
-        session: false,
-        interaction_domain: false,
-    })
+    let mut client = Client::connect_with(
+        &path,
+        ConnectionCapabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            interaction_domain: false,
+        },
+    )
     .expect("connect");
 
     let error = client
-        .transact(None, vec![])
+        .transact(None, None, vec![])
         .expect_err("an empty batch is refused");
     assert!(error.to_string().contains("ops"), "{error}");
     let error = client
         .transact(
+            None,
             None,
             vec![aegis_ipc::TransactOp::SetWindowGeometry {
                 id: WindowId(1),
@@ -264,7 +277,9 @@ fn agent_coarse_subscription_is_gated_by_observation_scope() {
     server.broadcast(Event::InteractionDomainsChanged { revision: 9 });
     server.broadcast(Event::WindowsChanged);
 
-    client.set_io_timeout(Some(Duration::from_millis(500))).unwrap();
+    client
+        .set_io_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     match client.next_event().expect("one permitted event") {
         Event::WindowsChanged => {}
         other => panic!("expected WindowsChanged, got {other:?}"),
@@ -326,7 +341,9 @@ fn agent_journal_subscription_filters_by_subject_and_scope() {
         effect: aegis_ipc::Effect::Applied,
     });
 
-    client.set_io_timeout(Some(Duration::from_millis(500))).unwrap();
+    client
+        .set_io_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     // The other principal's entry was filtered; the resource-permitted
     // entries arrive in order, matching `GetJournal`'s filter exactly.
     for expected_seq in [2, 3] {
@@ -349,7 +366,9 @@ fn agent_subscriptions_observe_scope_narrowing_live() {
     client.subscribe().expect("subscribe");
 
     server.broadcast(Event::WindowsChanged);
-    client.set_io_timeout(Some(Duration::from_millis(500))).unwrap();
+    client
+        .set_io_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     assert!(matches!(
         client.next_event().expect("event while permitted"),
         Event::WindowsChanged
@@ -363,4 +382,86 @@ fn agent_subscriptions_observe_scope_narrowing_live() {
         .next_event()
         .expect_err("a forgotten principal stops delivery");
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock, "{error}");
+}
+
+#[test]
+fn transact_interaction_domain_revision_precondition() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_with(
+        &path,
+        ConnectionCapabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            interaction_domain: false,
+        },
+    )
+    .expect("connect");
+
+    // The test handler's Interaction Domain snapshot carries revision 4.
+    let result = client
+        .transact(None, Some(3), vec![aegis_ipc::TransactOp::ToggleTiling])
+        .expect("conflicting transact");
+    assert_eq!(
+        result,
+        aegis_ipc::TransactResult::PreconditionConflict {
+            precondition: aegis_ipc::TransactPrecondition::InteractionDomainRevision,
+            expected: 3,
+            actual: 4,
+        }
+    );
+    assert!(handler.commands.lock().unwrap().is_empty());
+
+    let result = client
+        .transact(None, Some(4), vec![aegis_ipc::TransactOp::ToggleTiling])
+        .expect("transact at the observed revision");
+    assert!(
+        matches!(result, aegis_ipc::TransactResult::Committed { .. }),
+        "the batch commits when the revision holds: {result:?}"
+    );
+}
+
+#[test]
+fn connection_state_echoes_the_live_grant() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_with(
+        &path,
+        ConnectionCapabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            interaction_domain: false,
+        },
+    )
+    .expect("connect");
+    let (caps, scope, lease, session) = client.connection_state().expect("connection state");
+    assert!(caps.query && caps.control && !caps.input);
+    assert_eq!(scope, client.scope().clone());
+    assert!(lease.is_some(), "a privileged connection holds a lease");
+    assert!(session.is_some());
+
+    // A paired agent reads its registry ceiling, re-resolved live.
+    let (handler, path) = paired_handler(vec![ActorCapability::Focus]);
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut agent = paired_client(&path, ConnectionCapabilities::QUERY);
+    let (_, scope, _, _) = agent.connection_state().expect("agent connection state");
+    assert_eq!(scope.ops, Some(vec![ActorCapability::Focus]));
+
+    *handler.refresh_result.lock().unwrap() = Ok(Some(aegis_ipc::AgentIdentity {
+        principal: aegis_security::authority::ActorPrincipal::new("prin_prim").unwrap(),
+        pregranted: vec![ActorCapability::Focus, ActorCapability::Close],
+        gated: vec![],
+    }));
+    let (_, scope, _, _) = agent.connection_state().expect("re-resolved state");
+    assert_eq!(
+        scope.ops,
+        Some(vec![ActorCapability::Focus, ActorCapability::Close]),
+        "ceiling changes are visible without reconnecting"
+    );
 }

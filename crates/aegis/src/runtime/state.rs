@@ -246,4 +246,8 @@ pub(super) struct CompositorRuntime {
     pub(super) scan_req_tx: std::sync::mpsc::Sender<AppScanRequest>,
     pub(super) scan_result_rx: std::sync::mpsc::Receiver<AppScanResult>,
     pub(super) previous_render_at: std::time::Instant,
+    /// Night-light live state and its 1 Hz evaluation cadence
+    /// (aegis_model::night_light; applied through the backend's GAMMA_LUT).
+    pub(super) night_light: aegis_model::night_light::NightLight,
+    pub(super) night_light_last_eval: std::time::Instant,
 }

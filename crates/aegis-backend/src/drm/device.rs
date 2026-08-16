@@ -222,8 +222,14 @@ impl DrmBackend {
     /// Acquire the seat, choose a connected DRM card/output, enable atomic
     /// modesetting, and attach libinput to the same seat. `configured_modes`
     /// carries the config's per-connector `mode` requests (ADR-0028) so the
-    /// very first modeset already honors them.
-    pub fn open(configured_modes: HashMap<String, ModeSpec>) -> Result<Self, DrmError> {
+    /// very first modeset already honors them; `configured_color` carries the
+    /// per-connector `hdr` / `deep_color` policy and `configured_icc` the
+    /// per-connector ICC profile paths, likewise.
+    pub fn open(
+        configured_modes: HashMap<String, ModeSpec>,
+        configured_color: HashMap<String, ColorPolicy>,
+        configured_icc: HashMap<String, String>,
+    ) -> Result<Self, DrmError> {
         let pending = Rc::new(Cell::new(None));
         let callback_pending = Rc::clone(&pending);
         let seat = libseat::Seat::open(move |_seat, event| {
@@ -244,7 +250,8 @@ impl DrmBackend {
                 .map_err(|error| DrmError::Seat(format!("initial dispatch: {error:?}")))?;
         }
 
-        let (card, displays) = open_card_and_outputs(&seat, &configured_modes)?;
+        let (card, displays) =
+            open_card_and_outputs(&seat, &configured_modes, &configured_color, &configured_icc)?;
         let size = displays.size;
         let cursor_extent = (
             card.get_driver_capability(DriverCapability::CursorWidth)
@@ -379,8 +386,14 @@ impl DrmBackend {
             hotplug_pending: false,
             pending_resize: None,
             surface_modifiers: Vec::new(),
+            surface_color_mode: DisplayColorMode::Sdr,
+            surface_icc: None,
+            gamma_blob: None,
+            hdr_metadata_blob: None,
             surface_stale: false,
             configured_modes,
+            configured_color,
+            configured_icc,
             touchpads: HashMap::new(),
             touchpad_config: TouchpadConfig::default(),
             wakeup_fd: None,
@@ -393,6 +406,36 @@ impl DrmBackend {
     }
 
     /// Create Flux's exportable offscreen target at the selected display mode.
+    /// Load the configured ICC profile's parametric color space (ADR-0069
+    /// two-tier extraction covers matrix+TRC profiles). `None` — the sRGB
+    /// default — when unset, unreadable, or LUT-only.
+    fn configured_icc_space(&self) -> Option<flux::ColorSpace> {
+        let path = self.displays.icc_profile.as_deref()?;
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::warn!("drm: cannot read ICC profile {path}: {error}");
+                return None;
+            }
+        };
+        match flux::IccProfile::new(&bytes) {
+            Ok(profile) => match profile.color_space() {
+                Some(space) => {
+                    log::info!("drm: framebuffer color space from ICC profile {path}");
+                    Some(space)
+                }
+                None => {
+                    log::warn!("drm: ICC profile {path} is not matrix+TRC; framebuffer stays sRGB");
+                    None
+                }
+            },
+            Err(error) => {
+                log::warn!("drm: cannot parse ICC profile {path}: {error}");
+                None
+            }
+        }
+    }
+
     pub fn create_surface(&mut self, device: &flux::Device) -> Result<flux::Surface, DrmError> {
         // A recreated Flux surface reuses slot numbers for different VkImages.
         // Advance the epoch before allocating it so an equal-size recreation
@@ -402,11 +445,68 @@ impl DrmBackend {
         // images; a recreated surface never reuses them.
         self.presented_composite = None;
         let (width, height) = self.physical_size();
-        let surface =
-            flux::Surface::offscreen_dmabuf(device, width, height, &self.displays.modifiers)?;
+        let color_mode = self.displays.color_mode;
+        let icc_space = match color_mode {
+            DisplayColorMode::Sdr | DisplayColorMode::SdrDeepColor => self.configured_icc_space(),
+            DisplayColorMode::Hdr => None,
+        };
+        let surface = match (color_mode, icc_space) {
+            (DisplayColorMode::Sdr, None) => {
+                flux::Surface::offscreen_dmabuf(device, width, height, &self.displays.modifiers)?
+            }
+            (DisplayColorMode::Sdr, Some(space)) => {
+                flux::Surface::offscreen_dmabuf_with_color_options(
+                    device,
+                    width,
+                    height,
+                    &self.displays.modifiers,
+                    flux::SurfaceColorOptions {
+                        color_spaces: &[space],
+                        ..Default::default()
+                    },
+                )?
+            }
+            (DisplayColorMode::SdrDeepColor, icc) => {
+                // An ICC profile takes precedence over the sRGB default.
+                let spaces = match icc {
+                    Some(space) => vec![space],
+                    None => vec![flux::ColorSpace::SRGB],
+                };
+                flux::Surface::offscreen_dmabuf_with_color_options(
+                    device,
+                    width,
+                    height,
+                    &self.displays.modifiers,
+                    flux::SurfaceColorOptions {
+                        color_spaces: &spaces,
+                        offscreen_formats: &[flux::Format::FLUX_FORMAT_RGB10A2_UNORM],
+                        ..Default::default()
+                    },
+                )?
+            }
+            (DisplayColorMode::Hdr, _) => flux::Surface::offscreen_dmabuf_with_color_options(
+                device,
+                width,
+                height,
+                &self.displays.modifiers,
+                flux::SurfaceColorOptions {
+                    color_spaces: &[flux::ColorSpace::BT2020_PQ],
+                    offscreen_formats: &[flux::Format::FLUX_FORMAT_RGB10A2_UNORM],
+                    ..Default::default()
+                },
+            )?,
+        };
         if !surface.is_exportable() {
             return Err(DrmError::DmabufUnsupported);
         }
+        let info = surface.info();
+        log::info!(
+            "drm: compositor output {color_mode:?}: {}x{} {:?} content {:?}",
+            info.width,
+            info.height,
+            info.format,
+            info.content_space,
+        );
         if let Some(modifier) = surface.dmabuf_modifier() {
             log::info!(
                 "drm: compositor output modifier {modifier:#018x}{}",
@@ -420,6 +520,31 @@ impl DrmBackend {
         // Remember which intersection the surface was built with; a hotplug
         // that changes it flags the surface stale until it is recreated here.
         self.surface_modifiers = self.displays.modifiers.clone();
+        self.surface_color_mode = color_mode;
+        self.surface_icc = self.displays.icc_profile.clone();
+        // The HDR static-metadata blob rides every connector commit in HDR
+        // mode; build it with the surface and retire it when leaving HDR.
+        match color_mode {
+            DisplayColorMode::Hdr if self.hdr_metadata_blob.is_none() => {
+                match self
+                    .card()
+                    .create_property_blob(&Self::hdr_output_metadata_bytes()[..])
+                {
+                    Ok(value @ property::Value::Blob(id)) => {
+                        self.hdr_metadata_blob = Some((value, id));
+                    }
+                    other => {
+                        log::warn!("drm: HDR_OUTPUT_METADATA blob allocation failed: {other:?}");
+                    }
+                }
+            }
+            DisplayColorMode::Sdr | DisplayColorMode::SdrDeepColor => {
+                if let Some((_, id)) = self.hdr_metadata_blob.take() {
+                    let _ = self.card().destroy_property_blob(id);
+                }
+            }
+            DisplayColorMode::Hdr => {}
+        }
         self.surface_stale = false;
         self.sync_capable = flux::dmabuf_sync_supported(device);
         self.explicit_sync = self
@@ -909,6 +1034,42 @@ impl DrmBackend {
         }
     }
 
+    /// CTA-861.3 static metadata type 1 for the BT.2020 PQ framebuffer, as
+    /// `struct hdr_output_metadata` (linux/hdmi.h): metadata_type 1, EOTF
+    /// ST 2084, BT.2020 primaries, D65 white, 1000 cd/m² mastering. Padded to
+    /// the kernel struct's 32-byte size.
+    fn hdr_output_metadata_bytes() -> [u8; 32] {
+        let mut blob = [0u8; 32];
+        let mut at = 0usize;
+        let put_u32 = |blob: &mut [u8; 32], at: &mut usize, value: u32| {
+            blob[*at..*at + 4].copy_from_slice(&value.to_ne_bytes());
+            *at += 4;
+        };
+        let put_u16 = |blob: &mut [u8; 32], at: &mut usize, value: u16| {
+            blob[*at..*at + 2].copy_from_slice(&value.to_ne_bytes());
+            *at += 2;
+        };
+        put_u32(&mut blob, &mut at, 1); // HDMI static metadata type 1
+        blob[at] = 2; // EOTF: ST 2084 (PQ)
+        blob[at + 1] = 0; // static metadata type 1
+        at += 2;
+        let xy = |v: f32| (f64::from(v) / 0.00002).round() as u16; // 0.00002 units
+        for (x, y) in [
+            (0.708f32, 0.292f32), // BT.2020 R
+            (0.170, 0.797),       // BT.2020 G
+            (0.131, 0.046),       // BT.2020 B
+            (0.3127, 0.3290),     // D65 white point
+        ] {
+            put_u16(&mut blob, &mut at, xy(x));
+            put_u16(&mut blob, &mut at, xy(y));
+        }
+        put_u16(&mut blob, &mut at, 1000); // max display mastering luminance (cd/m²)
+        put_u16(&mut blob, &mut at, 50); // min: 50 × 0.0001 = 0.005 cd/m²
+        put_u16(&mut blob, &mut at, 1000); // MaxCLL
+        put_u16(&mut blob, &mut at, 400); // MaxFALL
+        blob
+    }
+
     pub(super) fn commit_scanout(
         &mut self,
         mut scanout: Scanout,
@@ -976,6 +1137,48 @@ impl DrmBackend {
                 props.crtc_active,
                 property::Value::Boolean(true),
             );
+            // Color pipeline signaling. These connector properties are
+            // sticky, so every commit sets them explicitly: an SDR commit
+            // after HDR must reset Colorspace and clear the HDR metadata.
+            if let Some((colorspace, default_value, bt2020_value)) =
+                output.props.connector_colorspace
+            {
+                let value = match self.displays.color_mode {
+                    DisplayColorMode::Hdr => bt2020_value,
+                    DisplayColorMode::Sdr | DisplayColorMode::SdrDeepColor => default_value,
+                };
+                // The harvested enum value travels as a raw u64; the kernel
+                // compares values, not the drm-rs variant.
+                request.add_property(
+                    output.connector,
+                    colorspace,
+                    property::Value::UnsignedRange(value),
+                );
+            }
+            if let Some(hdr_metadata) = output.props.connector_hdr_metadata {
+                let value = match self.displays.color_mode {
+                    DisplayColorMode::Hdr => self
+                        .hdr_metadata_blob
+                        .as_ref()
+                        .map(|(value, _)| *value)
+                        .unwrap_or(property::Value::Blob(0)),
+                    DisplayColorMode::Sdr | DisplayColorMode::SdrDeepColor => {
+                        property::Value::Blob(0)
+                    }
+                };
+                request.add_property(output.connector, hdr_metadata, value);
+            }
+            if let Some(max_bpc) = output.props.connector_max_bpc {
+                let bpc = match self.displays.color_mode {
+                    DisplayColorMode::Sdr => 8,
+                    DisplayColorMode::SdrDeepColor | DisplayColorMode::Hdr => 10,
+                };
+                request.add_property(
+                    output.connector,
+                    max_bpc,
+                    property::Value::UnsignedRange(bpc),
+                );
+            }
             request.add_property(
                 primary.handle,
                 plane_props.fb_id,

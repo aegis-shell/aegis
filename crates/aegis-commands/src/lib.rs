@@ -1298,6 +1298,11 @@ pub fn format_event(ev: &Event) -> String {
             ..
         } => format!("stream {stream_id} frame #{sequence} {width}x{height} ({dropped} dropped)"),
         Event::StreamEnded { stream_id, reason } => format!("stream {stream_id} ended: {reason}"),
+        Event::StreamGeometryChanged {
+            stream_id,
+            width,
+            height,
+        } => format!("stream {stream_id} geometry changed to {width}x{height}; restart it"),
     }
 }
 

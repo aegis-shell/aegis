@@ -1,5 +1,48 @@
 use super::*;
 
+/// Kernel-verified credentials of one accepted peer (Linux `SO_PEERCRED`).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PeerCred {
+    pub(super) pid: u32,
+    pub(super) uid: u32,
+}
+
+/// Read the peer's credentials from the socket. `None` only when the
+/// kernel refuses the query, which a unix-stream peer never does in
+/// practice; callers treat it as unusable and drop the connection.
+pub(super) fn peer_cred(stream: &UnixStream) -> Option<PeerCred> {
+    use std::os::fd::AsRawFd as _;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` point at valid, correctly sized storage for
+    // the SO_PEERCRED ucred payload, and the fd is a live unix socket.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    (rc == 0 && cred.pid > 0).then_some(PeerCred {
+        pid: cred.pid as u32,
+        uid: cred.uid,
+    })
+}
+
+/// The effective uid of this server process. SO_PEERCRED reports the peer's
+/// real uid; a same-user session runs every component under one uid, so the
+/// comparison against the server's effective uid is exact.
+fn server_uid() -> u32 {
+    // SAFETY: geteuid cannot fail.
+    unsafe { libc::geteuid() }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn accept_loop<H: Handler + 'static>(
     listener: UnixListener,
@@ -20,6 +63,16 @@ pub(super) fn accept_loop<H: Handler + 'static>(
             let _ = stream.shutdown(Shutdown::Both);
             continue;
         };
+        // Defense in depth behind the 0600 socket: refuse any peer whose
+        // uid differs from the compositor's (ADR-0128). A refused
+        // connection is closed before it can send a byte.
+        let peer_pid = match peer_cred(&stream) {
+            Some(cred) if cred.uid == server_uid() => cred.pid,
+            _ => {
+                let _ = stream.shutdown(Shutdown::Both);
+                continue;
+            }
+        };
         if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err()
             || stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err()
         {
@@ -36,7 +89,7 @@ pub(super) fn accept_loop<H: Handler + 'static>(
             .name("aegis-ipc-conn".into())
             .spawn(move || {
                 let _permit = permit;
-                serve_connection(stream, h, s, js, st, n, l, conn_id);
+                serve_connection(stream, h, s, js, st, n, l, conn_id, peer_pid);
             });
     }
 }
@@ -57,6 +110,7 @@ pub(super) fn serve_connection<H: Handler + 'static>(
     next_sub: Arc<AtomicU64>,
     next_lease: Arc<AtomicU64>,
     conn_id: u64,
+    peer_pid: u32,
 ) {
     let mut read_half = match stream.try_clone() {
         Ok(s) => s,
@@ -159,6 +213,7 @@ pub(super) fn serve_connection<H: Handler + 'static>(
         &next_lease,
         &shutdown,
         conn_id,
+        peer_pid,
     );
     if let Some(id) = sub_id {
         subs.lock().unwrap().remove(&id);

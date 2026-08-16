@@ -467,6 +467,18 @@ pub struct SurfaceRec {
     /// The `wp_fractional_scale_v1` resource bound for this surface, if any.
     /// The server posts `preferred_scale` here when the output's scale changes.
     pub fractional_scale: *mut ffi::wl_resource,
+    // ----- wp_color_management_v1 state -----
+    /// The `wp_color_management_surface_v1` resource bound for this surface,
+    /// if any.
+    pub color_management: *mut ffi::wl_resource,
+    /// The `wp_color_management_surface_feedback_v1` resource, if any.
+    pub color_feedback: *mut ffi::wl_resource,
+    /// Pending image description from `set_image_description`, applied at
+    /// commit. `None` pending means no change; the inner `None` means the
+    /// client unset the tag (back to the sRGB default).
+    pending_image_description: Option<Option<aegis_model::color::ContentColor>>,
+    /// Committed image description; `None` is the protocol-default sRGB.
+    image_description: Option<aegis_model::color::ContentColor>,
     /// Committed xdg-shell window geometry (excluding client shadows). Its
     /// size is the window rect's size; its origin is the frame inset by
     /// which the buffer sits up-left of the window rect (see
@@ -568,6 +580,10 @@ impl SurfaceRec {
             pending_viewport_dst: None,
             viewport_resource: std::ptr::null_mut(),
             fractional_scale: std::ptr::null_mut(),
+            color_management: std::ptr::null_mut(),
+            color_feedback: std::ptr::null_mut(),
+            pending_image_description: None,
+            image_description: None,
             window_geometry: None,
             pending_window_geometry: None,
             input_region: None,
@@ -1174,6 +1190,10 @@ pub(crate) struct ClosingFrame {
     pub dmabuf: Option<DmabufBuffer>,
     pub buffer_width: i32,
     pub buffer_height: i32,
+    /// The surface's committed image description at close time
+    /// (`wp_color_management_v1` tag), so the ghost renders like the live
+    /// surface did.
+    pub color: Option<aegis_model::color::ContentColor>,
     /// The in-flight close transition (fade + slight shrink).
     pub transition: aegis_model::transition::WindowTransition,
 }
@@ -1425,6 +1445,13 @@ pub(crate) struct State {
     /// (ADR-0028). Applied to every backend-reported output set in
     /// `set_outputs`.
     output_policies: std::collections::HashMap<String, aegis_model::output::OutputPolicy>,
+    /// The session color pipeline actually in effect (reported by the
+    /// backend through `Server::set_color_pipeline`). The output image
+    /// description advertised over `wp_color_management_v1` derives from it.
+    pub(crate) color_pipeline: aegis_model::output::ColorPipeline,
+    /// Live `wp_color_management_output_v1` resources, for
+    /// `image_description_changed` broadcasts on pipeline changes.
+    pub(crate) color_management_outputs: Vec<*mut ffi::wl_resource>,
     /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
     /// current workspace at first map; rendering and input see only the
     /// visible set (`visible_toplevels`).

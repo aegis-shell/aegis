@@ -104,16 +104,24 @@ impl Host {
     /// Open the selected backend. `configured_modes` carries the config's
     /// per-connector `mode` requests (ADR-0028); only the DRM path consumes
     /// them, so the very first modeset already honors the configured modes.
+    /// `configured_color` carries the per-connector `hdr` / `deep_color`
+    /// policy and `configured_icc` the ICC profile paths, likewise DRM-only.
     pub fn open(
         kind: BackendKind,
         title: &str,
         width: i32,
         height: i32,
         configured_modes: HashMap<String, ModeSpec>,
+        configured_color: HashMap<String, aegis_model::output::ColorPolicy>,
+        configured_icc: HashMap<String, String>,
     ) -> Result<Self, HostError> {
         match kind {
             BackendKind::Nested => Ok(Self::Nested(NestedHost::open(title, width, height)?)),
-            BackendKind::Drm => Ok(Self::Drm(DrmBackend::open(configured_modes)?)),
+            BackendKind::Drm => Ok(Self::Drm(DrmBackend::open(
+                configured_modes,
+                configured_color,
+                configured_icc,
+            )?)),
             BackendKind::Auto => {
                 let outer_wayland =
                     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty());
@@ -122,7 +130,11 @@ impl Host {
                     Ok(Self::Nested(NestedHost::open(title, width, height)?))
                 } else {
                     log::info!("backend: auto selected drm (no outer Wayland display)");
-                    Ok(Self::Drm(DrmBackend::open(configured_modes)?))
+                    Ok(Self::Drm(DrmBackend::open(
+                        configured_modes,
+                        configured_color,
+                        configured_icc,
+                    )?))
                 }
             }
         }
@@ -429,6 +441,37 @@ impl Backend for Host {
         match self {
             Self::Nested(host) => host.set_configured_modes(modes),
             Self::Drm(host) => host.set_configured_modes(modes),
+        }
+    }
+
+    fn set_configured_color_policies(
+        &mut self,
+        policies: HashMap<String, aegis_model::output::ColorPolicy>,
+    ) {
+        match self {
+            Self::Nested(host) => host.set_configured_color_policies(policies),
+            Self::Drm(host) => host.set_configured_color_policies(policies),
+        }
+    }
+
+    fn set_configured_icc_profiles(&mut self, profiles: HashMap<String, String>) {
+        match self {
+            Self::Nested(host) => host.set_configured_icc_profiles(profiles),
+            Self::Drm(host) => host.set_configured_icc_profiles(profiles),
+        }
+    }
+
+    fn set_gamma_gains(&mut self, gains: Option<[f32; 3]>) {
+        match self {
+            Self::Nested(host) => host.set_gamma_gains(gains),
+            Self::Drm(host) => host.set_gamma_gains(gains),
+        }
+    }
+
+    fn color_pipeline(&self) -> aegis_model::output::ColorPipeline {
+        match self {
+            Self::Nested(host) => host.color_pipeline(),
+            Self::Drm(host) => host.color_pipeline(),
         }
     }
 

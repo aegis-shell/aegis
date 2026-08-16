@@ -30,7 +30,9 @@ use aegis_model::input::{
     PointerAxisSource, PointerGestureEvent, TabletEvent, TabletToolInfo, TouchpadCapabilities,
     TouchpadConfig, TouchpadScrollMethod, TouchpadStatus,
 };
-use aegis_model::output::{ModeSpec, OutputKind, OutputMode, Scale, automatic_scale, physical_ppi};
+use aegis_model::output::{
+    ColorPolicy, ModeSpec, OutputKind, OutputMode, Scale, automatic_scale, physical_ppi,
+};
 use drm::buffer::{Buffer, DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
 use drm::control::{
     self, AtomicCommitFlags, Device as ControlDevice, FbCmd2Flags, Mode, ModeTypeFlags,
@@ -306,6 +308,21 @@ struct OutputAtomicProperties {
     /// `OUT_FENCE_PTR`: produces a sync_file for completion of an atomic
     /// commit. Direct scanout uses it for correct Wayland buffer release.
     crtc_out_fence_ptr: Option<property::Handle>,
+    /// Connector `Colorspace` property plus the harvested enum values for
+    /// `Default` and `BT2020_RGB` (None when the driver exposes neither the
+    /// property nor those values). Set on every commit — the property is
+    /// sticky, so an SDR commit after HDR must reset it explicitly.
+    connector_colorspace: Option<(property::Handle, u64, u64)>,
+    /// Connector `HDR_OUTPUT_METADATA` blob property (CTA-861.3 static
+    /// metadata type 1). Set for HDR commits, cleared (blob 0) for SDR.
+    connector_hdr_metadata: Option<property::Handle>,
+    /// Connector `max bpc` range property. Driven to 10 for deep-color/HDR
+    /// modes, 8 for SDR — drivers otherwise clamp it on their own.
+    connector_max_bpc: Option<property::Handle>,
+    /// CRTC `GAMMA_LUT` blob property and the driver's table size
+    /// (`GAMMA_LUT_SIZE`, typically 256 or 1024 entries). Night light
+    /// programs a per-channel gain ramp here; absent on legacy drivers.
+    crtc_gamma_lut: Option<(property::Handle, u32)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -386,6 +403,36 @@ struct Output {
     /// The connector's advertised modes at selection time (deduplicated,
     /// highest resolution first), surfaced through `output_infos`.
     available_modes: Vec<OutputMode>,
+    /// HDR/wide-gamut capabilities parsed from the connector's EDID.
+    color_caps: aegis_model::edid::EdidColorCapabilities,
+}
+
+/// The session-wide color pipeline mode. The compositor renders one shared
+/// framebuffer for every output, so the pixel encoding is uniform: HDR
+/// engages only when all active outputs allow and support it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DisplayColorMode {
+    /// 8-bit sRGB (the default).
+    Sdr,
+    /// 10-bit sRGB in an RGB10A2-class container — deep color for banding.
+    SdrDeepColor,
+    /// BT.2020 PQ (HDR10-class) in an RGB10A2-class container.
+    Hdr,
+}
+
+impl DisplayColorMode {
+    /// The framebuffer fourcc candidates in preference order.
+    fn fb_candidates(self) -> &'static [DrmFourcc] {
+        match self {
+            DisplayColorMode::Sdr => &[DrmFourcc::Xrgb8888, DrmFourcc::Argb8888],
+            DisplayColorMode::SdrDeepColor | DisplayColorMode::Hdr => &[
+                DrmFourcc::Xbgr2101010,
+                DrmFourcc::Abgr2101010,
+                DrmFourcc::Xrgb8888,
+                DrmFourcc::Argb8888,
+            ],
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -399,6 +446,13 @@ struct DisplaySet {
     /// format above and governs client direct scanout.
     scanout_formats: HashMap<u32, Vec<u64>>,
     overlay: OverlayPlaneInventory,
+    /// The negotiated session color pipeline. Derived from `format` and the
+    /// requested policy: an 8-bit format means SDR regardless of intent.
+    color_mode: DisplayColorMode,
+    /// The ICC profile driving the framebuffer's content space (SDR modes
+    /// only): the first connected connector with an `icc_profile` config
+    /// entry, in connector order.
+    icc_profile: Option<String>,
 }
 
 /// Current overlay allocation contract. Discovery is useful for diagnostics,
@@ -434,6 +488,8 @@ type DisplaySignature = (
     DrmFourcc,
     Vec<u64>,
     Vec<(u32, Vec<u64>)>,
+    DisplayColorMode,
+    Option<String>,
     Vec<OutputSignature>,
     OverlayPlaneInventory,
 );
@@ -698,6 +754,17 @@ pub struct DrmBackend {
     pending_resize: Option<Size>,
     /// Modifier intersection the live Flux surface was created with.
     surface_modifiers: Vec<u64>,
+    /// Color pipeline mode the live Flux surface was created with.
+    surface_color_mode: DisplayColorMode,
+    /// ICC profile path the live Flux surface's content space came from.
+    surface_icc: Option<String>,
+    /// Live `GAMMA_LUT` blob id (night light). Replaced on each new table;
+    /// destroyed when neutral restores the driver default ramp.
+    gamma_blob: Option<u64>,
+    /// Pre-created `HDR_OUTPUT_METADATA` blob (CTA-861.3 static metadata
+    /// type 1, BT.2020 primaries, PQ EOTF) shared by every connector in
+    /// HDR mode; created/destroyed with the HDR surface.
+    hdr_metadata_blob: Option<(property::Value<'static>, u64)>,
     /// Set when a hotplug changed that intersection; the surface must be
     /// recreated (resize alone cannot change a surface's modifier).
     surface_stale: bool,
@@ -705,6 +772,13 @@ pub struct DrmBackend {
     /// entries (ADR-0028). Consulted on every output (re)selection: startup,
     /// hotplug, and session resume.
     configured_modes: HashMap<String, ModeSpec>,
+    /// Per-connector color policy (`hdr` / `deep_color`) from the config's
+    /// `[[output]]` entries. Same consultation cadence as `configured_modes`.
+    configured_color: HashMap<String, ColorPolicy>,
+    /// Per-connector ICC profile paths from the config's `[[output]]`
+    /// entries. The chosen profile drives the framebuffer's content space
+    /// in SDR modes.
+    configured_icc: HashMap<String, String>,
     /// Retained libinput handles for touchpads currently on the seat.
     touchpads: HashMap<String, Device>,
     touchpad_config: TouchpadConfig,
@@ -886,6 +960,7 @@ impl Backend for DrmBackend {
                         },
                     },
                     available_modes: output.available_modes.clone(),
+                    color_caps: output.color_caps,
                 }
             })
             .collect()
@@ -914,6 +989,92 @@ impl Backend for DrmBackend {
         // frame is acquired. This makes a System Settings mode edit live
         // without racing scanout ownership.
         self.hotplug_pending = true;
+    }
+
+    fn set_configured_color_policies(&mut self, policies: HashMap<String, ColorPolicy>) {
+        if self.configured_color == policies {
+            return;
+        }
+        self.configured_color = policies;
+        // Same reconciliation path as mode changes: re-selection re-runs the
+        // color-mode negotiation, and a framebuffer format change flags the
+        // Flux surface stale for recreation.
+        self.hotplug_pending = true;
+    }
+
+    fn color_pipeline(&self) -> aegis_model::output::ColorPipeline {
+        match self.displays.color_mode {
+            DisplayColorMode::Sdr => aegis_model::output::ColorPipeline::Sdr,
+            DisplayColorMode::SdrDeepColor => aegis_model::output::ColorPipeline::SdrDeepColor,
+            DisplayColorMode::Hdr => aegis_model::output::ColorPipeline::Hdr,
+        }
+    }
+
+    fn set_configured_icc_profiles(&mut self, profiles: HashMap<String, String>) {
+        if self.configured_icc == profiles {
+            return;
+        }
+        self.configured_icc = profiles;
+        // A content-space change needs a surface rebuild, same as a
+        // color-mode change.
+        self.hotplug_pending = true;
+    }
+
+    fn set_gamma_gains(&mut self, gains: Option<[f32; 3]>) {
+        let mut request = atomic::AtomicModeReq::new();
+        let mut touched = false;
+        for output in &self.displays.outputs {
+            let Some((prop, size)) = output.props.crtc_gamma_lut else {
+                continue;
+            };
+            let value = match gains {
+                Some([red, green, blue]) => {
+                    // drm_color_lut { red, green, blue, __reserved } per
+                    // entry, linear ramp scaled by the channel gains.
+                    let entries = size.max(2) as usize;
+                    let mut lut = Vec::with_capacity(entries * 8);
+                    for index in 0..entries {
+                        let base = index as f32 / (entries - 1) as f32;
+                        for gain in [red, green, blue] {
+                            let scaled = (base * gain.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                            lut.extend_from_slice(&scaled.to_ne_bytes());
+                        }
+                        lut.extend_from_slice(&0u16.to_ne_bytes());
+                    }
+                    match self.card().create_property_blob(&lut[..]) {
+                        Ok(value @ property::Value::Blob(id)) => {
+                            if let Some(previous) = self.gamma_blob.replace(id) {
+                                let _ = self.card().destroy_property_blob(previous);
+                            }
+                            value
+                        }
+                        other => {
+                            log::warn!("drm: GAMMA_LUT blob allocation failed: {other:?}");
+                            continue;
+                        }
+                    }
+                }
+                // NULL blob restores the driver's default (linear) ramp.
+                None => property::Value::Blob(0),
+            };
+            request.add_property(output.crtc, prop, value);
+            touched = true;
+        }
+        if !touched {
+            return;
+        }
+        // Property-only commit: no modeset, no page-flip event.
+        if let Err(error) = self
+            .card()
+            .atomic_commit(AtomicCommitFlags::empty(), request)
+        {
+            log::warn!("drm: GAMMA_LUT commit failed: {error}");
+        }
+        if gains.is_none()
+            && let Some(previous) = self.gamma_blob.take()
+        {
+            let _ = self.card().destroy_property_blob(previous);
+        }
     }
 
     fn dispatch(&mut self) -> bool {
@@ -1293,6 +1454,7 @@ mod tests {
                     },
                 ],
                 available_modes: Vec::new(),
+                color_caps: aegis_model::edid::EdidColorCapabilities::default(),
             },
             OutputCandidate {
                 connector: connector::Handle::from(raw(2)),
@@ -1308,6 +1470,7 @@ mod tests {
                     modifiers: vec![0, 9],
                 }],
                 available_modes: Vec::new(),
+                color_caps: aegis_model::edid::EdidColorCapabilities::default(),
             },
         ];
 

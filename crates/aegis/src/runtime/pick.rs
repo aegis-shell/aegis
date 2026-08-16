@@ -45,6 +45,7 @@ pub(super) fn picker_mode(kind: aegis_ipc::PickKind) -> aegis_shell::PickerMode 
         aegis_ipc::PickKind::Region => aegis_shell::PickerMode::Region,
         aegis_ipc::PickKind::Pixel => aegis_shell::PickerMode::Pixel,
         aegis_ipc::PickKind::Window => aegis_shell::PickerMode::Window,
+        aegis_ipc::PickKind::Output => aegis_shell::PickerMode::Output,
     }
 }
 
@@ -120,6 +121,10 @@ mod tests {
         assert_eq!(
             picker_mode(aegis_ipc::PickKind::Window),
             aegis_shell::PickerMode::Window
+        );
+        assert_eq!(
+            picker_mode(aegis_ipc::PickKind::Output),
+            aegis_shell::PickerMode::Output
         );
     }
 }

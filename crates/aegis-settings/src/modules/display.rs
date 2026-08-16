@@ -457,6 +457,7 @@ mod tests {
                 logical_origin: Point { x, y },
             },
             available_modes: vec![mode],
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         }
     }
 

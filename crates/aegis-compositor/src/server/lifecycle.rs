@@ -201,6 +201,15 @@ impl Server {
                 data,
                 extensions::fractional_scale_bind,
             );
+            // wp_color_management_v1 (staging) at v1: parametric + ICC image
+            // descriptions for client content tagging.
+            ffi::wl_global_create(
+                display,
+                &ffi::wp_color_manager_v1_interface,
+                1,
+                data,
+                extensions::color_manager_bind,
+            );
             let idle_inhibit_global = ffi::wl_global_create(
                 display,
                 &ffi::zwp_idle_inhibit_manager_v1_interface,

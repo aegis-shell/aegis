@@ -64,6 +64,7 @@ survive; its execution session cannot.
 | `GetWorkspaces` | `Workspaces` | `query`; Actor: `ObserveWorkspaces` |
 | `GetNotifications` | `Notifications` | `query`; Actor: `ObserveNotifications` |
 | `GetOutputs` | `Outputs` | `query`; Actor: `ObserveOutputs` |
+| `EnumerateOutputs` | `Outputs` (lean: connector, primary, physical rect only) | `query`; Actor: `ObserveOutputs` (protocol 29) |
 | `GetJournal { since }` | `Journal` | `query`; Actor: `ObserveJournal` |
 | `GetInteractionDomains` | `InteractionDomains` | `query`; Actor: `ObserveInteractionDomains` |
 | `GetSettings` | `Settings` with a revisioned snapshot | `query`; Actor: `ObserveSettings` |
@@ -78,18 +79,19 @@ survive; its execution session cannot.
 | `ConsumeResourceGrant { id, resource }` | `ResourceGrantConsumed` | owning live Actor session and exact resource |
 | `RevokeResourceGrant { id }` | `ResourceGrantRevoked` | owning live Actor session |
 | `GetAccessibilityWindows` | `AccessibilityWindows` | authenticated system provider + `ObserveWindows` + `PublishAccessibilityTree`; never ordinary observation |
-| `Observe` | `Observed` with a consistent multi-class snapshot and journal cursor | `query`; every class gated by the live scope like the matching `Get*` (protocol 28) |
-| `Transact { expected_journal_seq?, ops }` | `Transact` with a commit receipt or a precondition conflict | `control`; every op authorized like its `Command` (protocol 28) |
+| `Observe` | `Observed` with a multi-class snapshot and journal cursor | `query`; every class gated by the live scope like the matching `Get*` (protocol 28) |
+| `GetConnectionState` | `ConnectionState` with the connection's own caps, re-resolved scope, lease, and Actor session | always; a paired agent reads its registry ceiling without reconnecting (protocol 28) |
+| `Transact { expected_journal_seq?, expected_interaction_domain_revision?, ops }` | `Transact` with a commit receipt or a precondition conflict | `control`; every op authorized like its `Command` (protocol 28) |
 | `PublishAccessibilityTree { update }` | `AccessibilityTreePublished` | authenticated provider + `PublishAccessibilityTree` |
 | `NextAccessibilityAction { timeout_ms }` | `AccessibilityAction` | authenticated provider + `DispatchAccessibilityAction` |
 | `CompleteAccessibilityAction { request_id, success, message }` | `AccessibilityActionCompleted` | owning provider session and pending request |
-| `StreamOutputStart { max_fps }` | `StreamOutputStarted` | `control` + `StreamOutput` scope op |
+| `StreamOutputStart { max_fps, target, dmabuf, cursor }` | `StreamOutputStarted` | `control` + `StreamOutput` scope op |
 | `StreamOutputStop { stream_id }` | `StreamOutputStopped` | `control` + `StreamOutput` scope op |
 | `SetIdleInhibit { inhibit }` | `IdleInhibitSet { inhibited }` | `control` + `IdleInhibit` scope op |
 
 `Observe` (protocol 28, ADR-0125; the Observe primitive) reads windows,
 workspaces, outputs, notifications, Interaction Domains, and the journal
-cursor in one consistent round trip. Each class is independently gated by
+cursor in a single round trip. Each class is independently gated by
 the connection's live scope: a refused class is `null` in the snapshot,
 exactly as if the matching `Get*` request had been refused; permitted
 classes are scope-filtered like the individual queries. The journal cursor
@@ -133,7 +135,8 @@ Actors use `Origin::Actor { conn_id, principal }`:
 - `ActorSession { session, principal, action }`; or
 - `ResourceGrant { session, principal, capability, resource_kind, action }`; or
 - `ResourceGrantAttempt { session, principal, action, capability?, resource_kind? }`; or
-- `CapabilityUse { session, principal, capability, action }`.
+- `CapabilityUse { session, principal, capability, action }`; or
+- `ScopeClaim { scope }`.
 
 An `ActorAction` never stores its observation bearer token, typed text,
 values, key codes, or pointer coordinates. `AuditedCommand` similarly removes
@@ -154,7 +157,11 @@ command or semantic-action event: accessibility publication/dispatch,
 capture, semantic observation, stream start/stop, idle-inhibit enable/disable,
 interactive picks/prompts, and wallpaper application. It retains the precise
 operation category but not the endpoint payload. Routine snapshot polling is
-not durably logged.
+not durably logged. `ScopeClaim` records built-in scope claims refused by
+the peer-identity gate at the handshake
+([ADR-0128](../adr/0128-peer-identity-bound-built-in-scopes-and-capture-indicator.md));
+it retains only the claimed scope name — never the peer's executable path
+or pid — and principal-bound lanes never observe it.
 
 Actor session ids and IPC connection ids are separate namespaces. The server
 binds them explicitly and re-resolves that binding at effect boundaries;
@@ -254,10 +261,14 @@ op individually. The reply is the authoritative receipt: `before_seq` and
 batch is not rolled back; a refused op is reported in its receipt entry.
 
 With `expected_journal_seq`, the batch commits only when the journal's
-`latest_seq` still equals it at the commit boundary; otherwise the reply is
-`PreconditionConflict { expected, actual }`, nothing applies, and nothing is
-journaled. Read the cursor from `Observe`'s `journal_cursor` and retry at
-the fresh cursor after a conflict.
+`latest_seq` still equals it at the commit boundary; with
+`expected_interaction_domain_revision`, only when the Interaction Domain
+authority revision still equals it. Both currencies may be specified; the
+reply names the one that failed. A conflict is
+`PreconditionConflict { precondition, expected, actual }`: nothing applies
+and nothing is journaled. Read the journal cursor from `Observe`'s
+`journal_cursor` and the revision from any Interaction Domain snapshot, and
+retry at fresh values after a conflict.
 
 `LaunchApp` launches an enumerated desktop entry directly on the desktop —
 no Interaction Domain sandbox — and optionally directs its first root
@@ -678,20 +689,63 @@ descriptor.
 
 ## Streaming
 
-`Request::StreamOutputStart { max_fps }` opens a continuous frame stream for
-the focused physical output (ADR-0052). Authorization matches
+`Request::StreamOutputStart { max_fps, target, dmabuf, cursor }` opens a
+continuous frame stream (ADR-0052, pacing and renegotiation per
+[ADR-0126](../adr/0126-damage-driven-stream-pacing-and-geometry-renegotiation.md),
+window rendering and cursor compositing per
+[ADR-0127](../adr/0127-occlusion-safe-window-streams-and-cursor-compositing.md)).
+Authorization matches
 `CaptureOutput`: the `control` capability plus an explicit `StreamOutput`
 entry in the connection's scope `ops`, never inherited through the
 unrestricted default. The reply `Response::StreamOutputStarted { stream_id,
-width, height, format }` fixes the output geometry for the stream's lifetime.
-`max_fps` throttles delivery; it defaults to 30 and is clamped to 1–60.
+width, height, format }` fixes the negotiated geometry until the stream is
+restarted. `max_fps` throttles delivery; it defaults to 30 and is clamped
+to 1–240 since protocol 29 (1–60 before).
 
-Each presented frame arrives as `Event::StreamFrame { stream_id, sequence,
+`target` selects what the stream captures: the whole desktop frame
+(`{"type":"Output"}`, the default), one connector's physical rectangle of
+it (`{"type":"Output","output":"HDMI-A-1"}`, protocol 29; an unknown
+connector is refused, and `Request::EnumerateOutputs` reports the
+selectable connectors with their rectangles), or one window
+(`{"type":"Window","window":...}`, protocol 6). A window stream renders
+the window's complete surface tree into its own offscreen target
+([ADR-0127](../adr/0127-occlusion-safe-window-streams-and-cursor-compositing.md)),
+independent of the desktop frame: an occluded, minimized, or
+foreign-workspace window keeps streaming its real content, and no foreign
+pixels can leak into the stream. `cursor`
+(protocol 29) negotiates the cursor mode: `hidden` (the default) keeps the
+compositor's theme cursor out of the frames, `embedded` composites it
+wherever its position falls inside the captured region — drawn on the GPU
+for dmabuf streams and for window streams, blended into the readback for
+SHM output streams. Only the theme cursor is negotiated; a client-provided
+cursor surface is scene content and appears in output streams regardless
+of mode, and on the software-cursor fallback (nested or degraded direct
+display) the presented frame already contains the cursor, so `hidden`
+cannot subtract it there. A window target may opt
+into the dmabuf transport since protocol 29; the runtime honors it
+wherever an exportable capture surface is available and falls back to SHM
+with a warning otherwise.
+
+Streams are damage-driven: an output stream captures from every real
+composite that presents while its `max_fps` interval has elapsed, but it
+never forces a frame at that cadence. On a static screen a stream forces
+at most one presentation per one-second liveness tick (and one immediately
+after start), so a consumer observes ~1 fps instead of a frozen picture
+at a fraction of the former rendering cost. Window streams render their
+own target instead of capturing from composites: a window stream renders
+when its surface tree committed since the last capture and its `max_fps`
+interval elapsed, re-rendering the clean tree at the same one-second
+liveness tick.
+
+Each captured frame arrives as `Event::StreamFrame { stream_id, sequence,
 width, height, stride, format, damage, dropped, byte_len }` followed
 immediately by one sealed memfd of `byte_len` tightly packed pixels
 (`height` rows of `stride` bytes), transferred with the same sealed-blob
-rules as one-shot captures. `format` is `Bgra8` today; `damage` is
-conservative and reports one full-frame rectangle in this version. `dropped`
+rules as one-shot captures. `format` is `Bgra8` today; `damage` describes,
+in the stream's own coordinate space, the regions that changed since the
+last frame the consumer received. It is conservative: a forced
+(liveness-tick) frame, a moved crop origin, or damage that never
+intersected the target all report one full-frame rectangle. `dropped`
 is the cumulative count of frames lost to backpressure since the stream
 started: delivery runs over a bounded two-frame lane per stream, and excess
 frames are dropped rather than queued.
@@ -699,8 +753,16 @@ frames are dropped rather than queued.
 `Request::StreamOutputStop { stream_id }` ends a stream owned by the calling
 connection and answers `Response::StreamOutputStopped`. The server ends a
 stream with `Event::StreamEnded { stream_id, reason }` when the connection's
-scope is revoked or narrowed, its lease expires, the output geometry
-changes, or the compositor shuts down. Session lock and an inactive VT pause
+scope is revoked or narrowed, its lease expires, the streamed window
+closes, the streamed connector disappears, or the compositor shuts down.
+A pure geometry change — desktop resize, a mode change on the streamed
+connector, or a window resize — instead freezes the stream with
+`Event::StreamGeometryChanged { stream_id, width, height }` (protocol 29):
+the stream stays registered but produces no further frames until the
+client restarts it with `StreamOutputStop` plus a fresh
+`StreamOutputStart`, which re-negotiates at the new geometry. The event
+goes only to connections that negotiated protocol 29; an older client
+simply observes frames stop. Session lock and an inactive VT pause
 delivery instead of ending the stream; resuming restarts it transparently.
 Disconnecting the connection stops every stream it owned. Frame events,
 lease-renewal replies, and end events interleave on the streaming
@@ -709,7 +771,7 @@ of one reply per request.
 
 Frame readback uses the shared CPU path for SHM-transport consumers.
 Connections that negotiate the dmabuf transport (protocol 25 and later, and
-`dmabuf: true` in the hello handshake) receive frames as GPU-copied slot
+`dmabuf: true` on the start request) receive frames as GPU-copied slot
 references instead: the compositor blits each presented frame into a fixed
 per-stream slot ring, delivers the slot once with JSON metadata only, and
 recycles it on `StreamBufferRelease`. Both transports apply the same
@@ -751,15 +813,44 @@ the live scene and capture no screen content.
 
 | Request | Reply | Scope op | Purpose |
 |---------|-------|----------|---------|
-| `PickTarget { kind }` | `Picked { result }` | `PickTarget` | Region, pixel, or window picking for Screenshot and ScreenCast ([ADR-0054](../adr/0054-interactive-target-picking.md)) |
+| `PickTarget { kind }` | `Picked { result }` | `PickTarget` | Region, pixel, window, or output picking for Screenshot and ScreenCast ([ADR-0054](../adr/0054-interactive-target-picking.md)) |
 | `PickApp { choices, subject, last_choice }` | `AppPicked { result }` | `PickApp` | AppChooser portal: one application out of the candidates (protocol 14) |
 | `PromptSecret { title, reason }` | `SecretPrompted { result }` | `PromptSecret` | Reserved masked credential prompt; both ends zeroize their copies. The portal's vault unlock is Portal-owned and does not use it ([ADR-0112](../adr/0112-native-portal-secret-with-portal-owned-prompts.md)) (protocol 15) |
 | `PickConfirm { title, body, accept_label }` | `ConfirmPicked { result }` | `PickConfirm` | Yes/no consent dialogs (Account, DynamicLauncher, Wallpaper, future Access) (protocol 16) |
+
+`PickTarget` kinds and results: `Region` answers the dragged rectangle,
+`Pixel` the clicked point and its colour, and `Window` the clicked
+toplevel — or, on Enter or a click on empty desktop, the whole output as
+the bare `Output` result (no connector). `Output` (protocol 29,
+[ADR-0128](../adr/0128-peer-identity-bound-built-in-scopes-and-capture-indicator.md))
+highlights the output under the cursor and answers
+`Output { connector }` with the clicked connector; Escape cancels every
+kind. The bare `Output` shape is unchanged: `connector` is additive and
+omitted when absent, so pre-29 replies and requests round-trip exactly as
+before.
 
 ## Scopes and Agent Authorization
 
 Named scopes survive only as hardcoded trusted-component grants (ADR-0090);
 config-declared `[[agent.scope]]` entries were removed in protocol 18.
+
+A built-in scope name is not authority by itself
+([ADR-0128](../adr/0128-peer-identity-bound-built-in-scopes-and-capture-indicator.md)).
+At accept the server reads the peer's `SO_PEERCRED` and refuses any
+connection whose uid differs from the compositor's — defense in depth
+behind the owner-only `0600` socket. When `Hello` names a built-in scope,
+the peer's canonicalized `/proc/<pid>/exe` must appear in that scope's
+executable allowlist, or the claim is refused with
+`scope 'X' is not available to this process` and journaled as a
+`ScopeClaim` refusal; an unreadable identity fails closed. The same match
+governs the `[agent] lockdown` exemption, so the exemption can never be
+name-only. Compiled-in allowlists map `aegis-portal` to
+`xdg-desktop-portal-aegis` and the admin scopes to the `aegis` CLI in the
+usual install prefixes; the additive `[ipc.scope_executables]` config
+table replaces them per scope (see the
+[configuration reference](config.md#ipc)). Anonymous connections and
+paired agents are unaffected: peer identity binds platform components,
+never agents (ADR-0088).
 
 Native `aegis` commands use separate `aegis-owner-admin`,
 `aegis-interaction-domain-admin`, and `aegis-agent-admin` scopes for ordinary

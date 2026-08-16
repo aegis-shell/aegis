@@ -415,10 +415,16 @@ fn opaque_frame_fill_replaces_undefined_and_previous_contents() {
 
         let mut pixels = vec![0; size.0 as usize * size.1 as usize * 4];
         surface.read_pixels(&mut pixels).unwrap();
+        // ADR-0069 (optics): the output transform dithers ±1 LSB when
+        // quantizing to 8 bit, so an opaque fill is exact up to one
+        // quantum per channel, not bit-identical.
         assert!(
-            pixels
-                .chunks_exact(4)
-                .all(|pixel| pixel == expected.as_slice()),
+            pixels.chunks_exact(4).all(|pixel| {
+                pixel
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(got, want)| got.abs_diff(*want) <= 1)
+            }),
             "opaque fill did not replace every output pixel"
         );
     }

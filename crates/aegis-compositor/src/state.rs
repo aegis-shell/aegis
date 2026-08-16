@@ -80,6 +80,7 @@ impl State {
                 dmabuf,
                 buffer_width: (*rec).width,
                 buffer_height: (*rec).height,
+                color: (*rec).image_description.clone(),
                 transition,
             };
             if self.closing_frames.len() >= MAX_CLOSING_FRAMES {
@@ -224,9 +225,12 @@ impl State {
                 connector: "nested".to_owned(),
                 geometry: aegis_model::output::OutputGeometry::default(),
                 available_modes: Vec::new(),
+                color_caps: aegis_model::edid::EdidColorCapabilities::default(),
             }],
             outputs_revision: 0,
             output_policies: std::collections::HashMap::new(),
+            color_pipeline: aegis_model::output::ColorPipeline::default(),
+            color_management_outputs: Vec::new(),
             last_work_area: aegis_model::Rect::default(),
             epoch: std::time::Instant::now(),
             last_app_geometries,

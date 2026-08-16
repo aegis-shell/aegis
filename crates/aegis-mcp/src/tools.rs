@@ -19,13 +19,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::BridgeConfig;
-use aegis_agent::{InteractionDomainSession, ManagedInteractionDomain};
+use aegis_ipc_client::{InteractionDomainSession, ManagedInteractionDomain};
 
 const MAX_JOURNAL_ENTRIES: usize = 200;
 const MAX_APP_RESULTS: usize = 200;
 const MAX_INPUT_ACTIONS: usize = 64;
 const MAX_INLINE_MCP_IMAGE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_PENDING_OBSERVATIONS: usize = 64;
 
 /// ConnectionCapabilities and resource/operation allowlists observed at startup.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -132,12 +131,11 @@ pub struct AegisPlatform {
     config: BridgeConfig,
     grant: ToolGrant,
     interaction_domain: InteractionDomainSession,
-    identity: aegis_agent::IdentityStore,
-    /// Keep the exact authenticated IPC connection that received each
-    /// observation alive until `interaction_domain_input` consumes it. Observation leases
-    /// are connection-bound by the compositor; opening a fresh connection for
-    /// the next MCP tool call would correctly invalidate the token.
-    pending_observations: aegis_agent::ObservationLeases,
+    /// The one persistent broker connection for this platform (ADR-0125):
+    /// lease renewal is lazy and a wedge re-pairs transparently, so
+    /// observation tokens are always consumed on the connection that
+    /// issued them and no lease map is needed.
+    conn: aegis_ipc_client::PersistentConnection,
 }
 
 mod platform;
@@ -932,10 +930,6 @@ pub enum PlatformError {
     #[error("the managed Agent Interaction Domain does not exist")]
     NoManagedInteractionDomain,
     #[error(
-        "the observation token is unknown, expired, already consumed, or belongs to another MCP process"
-    )]
-    UnknownObservation,
-    #[error(
         "creating the managed Agent Interaction Domain requires CreateInteractionDomain in the named scope"
     )]
     InteractionDomainCreationNotGranted,
@@ -954,12 +948,19 @@ pub enum PlatformError {
     #[error(transparent)]
     Config(#[from] crate::ConfigError),
     #[error("managed Interaction Domain lifecycle failed: {0}")]
-    InteractionDomain(String),
+    InteractionDomain(#[from] aegis_ipc_client::SessionError),
 }
 
-impl From<aegis_agent::SessionError> for PlatformError {
-    fn from(error: aegis_agent::SessionError) -> Self {
-        Self::InteractionDomain(error.to_string())
+impl aegis_ipc_client::ClassifyError for PlatformError {
+    fn is_transport_failure(&self) -> bool {
+        match self {
+            PlatformError::Ipc(error) => aegis_ipc_client::is_transport_failure(error),
+            PlatformError::Connect { source, .. } => aegis_ipc_client::is_transport_failure(source),
+            PlatformError::InteractionDomain(aegis_ipc_client::SessionError::Io(error)) => {
+                aegis_ipc_client::is_transport_failure(error)
+            }
+            _ => false,
+        }
     }
 }
 

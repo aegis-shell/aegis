@@ -1152,6 +1152,13 @@ impl CompositorRuntime {
             }
             self.host.set_buffer_scale();
             self.server.set_outputs(self.host.output_infos());
+            self.server.set_color_pipeline(self.host.color_pipeline());
+            // Reconcile live streams with the new geometry (ADR-0126):
+            // streams whose negotiated size no longer matches are frozen
+            // with `StreamGeometryChanged`; a streamed connector that
+            // disappeared ends its stream. Before this unification the
+            // hotplug path left streams delivering at the stale geometry.
+            self.handle_output_geometry_change();
             // KMS plane capabilities can change when a connector is added,
             // removed, or remodeset. Existing linux-dmabuf v4 feedback
             // objects are subscriptions, so refresh their preferred scanout

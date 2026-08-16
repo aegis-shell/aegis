@@ -126,6 +126,7 @@ impl Handler for CtlHandler {
                     refresh_mhz: 60000,
                 },
             ],
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         }]
     }
     fn command(&self, _conn_id: u64, _subject: Option<&str>, cmd: Command) {

@@ -147,6 +147,12 @@ pub(super) struct LiveState {
     journal_broadcaster: aegis_ipc::JournalBroadcaster,
     capture_delivery_gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
     scopes: std::sync::RwLock<std::collections::HashMap<String, aegis_ipc::Scope>>,
+    /// The `[ipc.scope_executables]` config overlay (ADR-0128): per-scope
+    /// executable allowlists replacing the compiled-in defaults. Resolution
+    /// reads the current map, so a live config reload takes effect at the
+    /// next connection handshake.
+    scope_executables:
+        std::sync::RwLock<std::collections::HashMap<String, Vec<std::path::PathBuf>>>,
     /// Pairing registry for capability-borrowing agents (ADR-0088).
     agent_auth: std::sync::RwLock<PrincipalRegistry>,
     /// Runtime-grant decisions for paired agents (ADR-0088).
@@ -285,6 +291,7 @@ impl LiveState {
             journal_broadcaster,
             capture_delivery_gate,
             scopes: std::sync::RwLock::new(scopes),
+            scope_executables: std::sync::RwLock::new(std::collections::HashMap::new()),
             agent_auth: std::sync::RwLock::new(agent_auth),
             grants: std::sync::RwLock::new(grants),
             actor_sessions: std::sync::Mutex::new(
@@ -542,6 +549,15 @@ impl LiveState {
         *self.settings.write().unwrap() = snapshot;
     }
 
+    /// Replace the `[ipc.scope_executables]` overlay (ADR-0128) on startup
+    /// and after each live config reload.
+    pub(super) fn set_scope_executables(
+        &self,
+        overlay: std::collections::HashMap<String, Vec<std::path::PathBuf>>,
+    ) {
+        *self.scope_executables.write().unwrap() = overlay;
+    }
+
     pub(super) fn set_system_status(&self, snapshot: aegis_ipc::SystemStatus) {
         *self.system_status.write().unwrap() = snapshot;
     }
@@ -708,6 +724,7 @@ impl aegis_ipc::Handler for LiveState {
         conn_id: u64,
         subject: Option<&str>,
         expected_journal_seq: Option<u64>,
+        expected_interaction_domain_revision: Option<u64>,
         ops: Vec<aegis_ipc::Command>,
     ) -> Result<aegis_ipc::TransactResult, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -717,6 +734,7 @@ impl aegis_ipc::Handler for LiveState {
             .send(TransactRequest {
                 origin: aegis_ipc::Origin::ipc(conn_id, subject),
                 expected_journal_seq,
+                expected_interaction_domain_revision,
                 ops,
                 reply: reply_tx,
             })
@@ -749,6 +767,29 @@ impl aegis_ipc::Handler for LiveState {
 
     fn resolve_scope(&self, name: &str) -> Option<aegis_ipc::Scope> {
         self.scopes.read().unwrap().get(name).cloned()
+    }
+
+    fn builtin_scope_permitted(&self, name: &str, peer_exe: Option<&std::path::Path>) -> bool {
+        let permitted = peer_exe.is_some_and(|peer_exe| {
+            // A configured `[ipc.scope_executables]` entry replaces the
+            // compiled-in defaults for its scope (ADR-0128).
+            let allowlist = self
+                .scope_executables
+                .read()
+                .unwrap()
+                .get(name)
+                .cloned()
+                .or_else(|| builtin_scope_executables(name));
+            allowlist.is_some_and(|allowlist| scope_exe_permitted(&allowlist, peer_exe))
+        });
+        if !permitted {
+            // The journal carries the matching ScopeClaim refusal; the log
+            // line keeps the diagnostic (which executable tried) local.
+            log::warn!(
+                "ipc: built-in scope '{name}' claim refused for peer executable {peer_exe:?}"
+            );
+        }
+        permitted
     }
 
     fn agent_lookup(&self, credential: &str) -> Option<aegis_ipc::AgentIdentity> {
@@ -1578,6 +1619,7 @@ impl aegis_ipc::Handler for LiveState {
         max_fps: Option<u32>,
         target: aegis_ipc::StreamTarget,
         allow_dmabuf: bool,
+        cursor: aegis_ipc::StreamCursorMode,
     ) -> Result<aegis_ipc::StreamInfo, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.stream_controls
@@ -1589,6 +1631,7 @@ impl aegis_ipc::Handler for LiveState {
                     max_fps,
                     target,
                     allow_dmabuf,
+                    cursor,
                     reply: reply_tx,
                 },
             })

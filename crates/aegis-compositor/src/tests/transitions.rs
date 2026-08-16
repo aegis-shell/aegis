@@ -16,6 +16,7 @@ fn closing_frame_interpolates_then_settles() {
         dmabuf: None,
         buffer_width: 800,
         buffer_height: 600,
+        color: None,
         transition: aegis_model::transition::WindowTransition::close(rect, 1000),
     };
 
@@ -70,7 +71,7 @@ fn closing_frame_ids_never_repeat() {
 /// oldest ghost instead of growing compositor memory.
 #[test]
 fn closing_frame_capacity_drops_oldest() {
-    assert!(MAX_CLOSING_FRAMES >= 4);
+    const { assert!(MAX_CLOSING_FRAMES >= 4) };
     let rect = aegis_model::Rect::new(0, 0, 100, 100);
     let mut frames: Vec<ClosingFrame> = Vec::new();
     for i in 0..(MAX_CLOSING_FRAMES + 3) {
@@ -81,6 +82,7 @@ fn closing_frame_capacity_drops_oldest() {
             dmabuf: None,
             buffer_width: 100,
             buffer_height: 100,
+            color: None,
             transition: aegis_model::transition::WindowTransition::close(rect, 1000),
         };
         if frames.len() >= MAX_CLOSING_FRAMES {

@@ -510,6 +510,12 @@ impl Localizer {
             percent,
         )
     }
+
+    /// The recording indicator's label: a localized "screen recording"
+    /// marker carrying the live capture-stream count (ADR-0128).
+    pub fn recording_stream_count(self, count: u32) -> String {
+        interpolate(&catalog(self.language).recording_with_count, "count", count)
+    }
 }
 
 impl Default for Localizer {
@@ -710,6 +716,7 @@ struct Catalog {
     laptop: String,
     desktop_chassis: String,
     charging: String,
+    recording_with_count: String,
 }
 
 static ENGLISH: OnceLock<Catalog> = OnceLock::new();

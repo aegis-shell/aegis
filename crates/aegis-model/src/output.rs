@@ -115,6 +115,57 @@ pub struct OutputPolicy {
     pub transform: Option<Transform>,
     /// Whether this output is the primary (focused) one.
     pub primary: bool,
+    /// Allow HDR (BT.2020 PQ) output on this connector. The compositor's
+    /// shared framebuffer enters HDR mode only when *every* active output
+    /// both allows it here and advertises ST 2084 support through EDID;
+    /// anything less stays SDR.
+    pub hdr: bool,
+    /// Allow a 10-bit deep-color framebuffer (RGB10A2-class scanout) for
+    /// reduced banding in SDR. Also gated on every active output allowing
+    /// it and every primary plane supporting the format.
+    pub deep_color: bool,
+}
+
+/// Per-connector color policy (the `hdr` / `deep_color` fields of a
+/// `[[output]]` config entry), consumed by the backend at modeset time.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ColorPolicy {
+    /// Allow HDR (BT.2020 PQ) on this connector.
+    pub hdr: bool,
+    /// Allow a 10-bit deep-color SDR framebuffer on this connector.
+    pub deep_color: bool,
+}
+
+/// The session-wide color pipeline actually in effect (the compositor
+/// renders one shared framebuffer, so the pixel encoding is uniform).
+/// Reported by the backend; the compositor server derives the per-output
+/// image description for `wp_color_management_v1` from it.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorPipeline {
+    /// 8-bit sRGB (the default).
+    #[default]
+    Sdr,
+    /// 10-bit sRGB in an RGB10A2-class container (deep color).
+    SdrDeepColor,
+    /// BT.2020 PQ (HDR10-class) in an RGB10A2-class container.
+    Hdr,
+}
+
+impl ColorPipeline {
+    /// The output image description this pipeline presents to clients:
+    /// the space the framebuffer is written in.
+    pub fn output_color(self) -> crate::color::ParametricColor {
+        use crate::color::{ContentPrimaries, ContentTransfer, NamedPrimaries, NamedTransfer};
+        match self {
+            ColorPipeline::Sdr | ColorPipeline::SdrDeepColor => crate::color::ContentColor::SRGB,
+            ColorPipeline::Hdr => crate::color::ParametricColor {
+                primaries: ContentPrimaries::Named(NamedPrimaries::Bt2020),
+                transfer: ContentTransfer::Named(NamedTransfer::Pq),
+            },
+        }
+    }
 }
 
 /// A scale factor. Carries a fractional value so HiDPI hardware that prefers
@@ -201,6 +252,12 @@ pub struct OutputInfo {
     /// `serde(default)` keeps pre-field IPC peers compatible.
     #[cfg_attr(feature = "serde", serde(default))]
     pub available_modes: Vec<OutputMode>,
+    /// Color capabilities parsed from the display's EDID (HDR transfer
+    /// support, BT.2020 colorimetry). All-false where the backend cannot
+    /// read EDID (nested). `serde(default)` keeps pre-field IPC peers
+    /// compatible.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub color_caps: crate::edid::EdidColorCapabilities,
 }
 
 /// Per-output geometry (ADR-0028): the physical mode, scale, transform, and

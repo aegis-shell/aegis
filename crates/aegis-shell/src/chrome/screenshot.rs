@@ -19,6 +19,9 @@
 //!   through [`ChromeEvents::picked_window`], a click on empty desktop (or
 //!   Enter/Space) chooses the whole output through
 //!   [`ChromeEvents::pick_output`].
+//! - `Output` highlights the output under the cursor; a click (or
+//!   Enter/Space) emits its connector through
+//!   [`ChromeEvents::picked_output`] (version 29, ADR-0128).
 //!
 //! Escape always cancels a picker session through
 //! [`ChromeEvents::pick_cancelled`]; the compositor closes the loop by
@@ -60,6 +63,8 @@ pub enum PickerMode {
     Pixel,
     /// Click a window, or choose the whole output.
     Window,
+    /// Click an output to pick it by connector (version 29, ADR-0128).
+    Output,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -92,6 +97,13 @@ pub struct ScreenshotSelector {
     confirmed: Option<aegis_model::Rect>,
     /// Window under the cursor in window-pick mode (topmost first).
     hovered: Option<WindowId>,
+    /// Output under the cursor in output-pick mode (its connector), hit-tested
+    /// against the pushed output snapshot.
+    hovered_output: Option<String>,
+    /// The outputs the output-pick mode hit-tests and highlights: the live
+    /// connectors and their desktop logical rects, mirrored from the pushed
+    /// [`crate::SystemStatus`].
+    outputs: Vec<aegis_model::output::OutputInfo>,
     /// The design snapshot the selector paints from, from
     /// [`ChromeUpdate::Appearance`]. Seeded on registration by
     /// [`crate::Shell::add`] and refreshed when the desktop color scheme
@@ -115,6 +127,8 @@ impl ScreenshotSelector {
             current: Point::default(),
             confirmed: None,
             hovered: None,
+            hovered_output: None,
+            outputs: Vec::new(),
             design: Design::dark(),
         }
     }
@@ -137,6 +151,7 @@ impl ScreenshotSelector {
         self.anchor = None;
         self.confirmed = None;
         self.hovered = None;
+        self.hovered_output = None;
     }
 
     /// Whether the selector is currently open.
@@ -184,6 +199,36 @@ impl ScreenshotSelector {
                     && cursor.y < top + window.size.h as f32
             })
             .map(|window| window.id)
+    }
+
+    /// The connector of the output whose desktop logical rect contains
+    /// `cursor`, or `None` outside every output. The same coordinate space
+    /// [`Self::window_at`] hit-tests in: compositor logical pixels.
+    fn output_at(outputs: &[aegis_model::output::OutputInfo], cursor: Point) -> Option<String> {
+        outputs
+            .iter()
+            .find(|output| {
+                let rect = output.geometry.logical_rect();
+                let left = rect.origin.x as f32;
+                let top = rect.origin.y as f32;
+                cursor.x >= left
+                    && cursor.x < left + rect.size.w as f32
+                    && cursor.y >= top
+                    && cursor.y < top + rect.size.h as f32
+            })
+            .map(|output| output.connector.clone())
+    }
+
+    /// Confirm the hovered output in output-pick mode: its connector goes to
+    /// the waiting IPC request. With no output under the cursor (a layout
+    /// transition can leave a gap) the pick degrades to the legacy
+    /// whole-output answer instead of hanging.
+    fn confirm_output(&mut self, out: &mut ChromeEvents) {
+        match self.hovered_output.clone() {
+            Some(connector) => out.picked_output = Some(connector),
+            None => out.pick_output = true,
+        }
+        self.reset();
     }
 
     /// Advance the region-drag state from explicit input edges. Releasing the
@@ -237,6 +282,7 @@ impl ScreenshotSelector {
         self.anchor = None;
         self.confirmed = None;
         self.hovered = None;
+        self.hovered_output = None;
     }
 
     /// Current Liquid Glass body. Region and window selection use the target
@@ -264,6 +310,23 @@ impl ScreenshotSelector {
                     y: window.position.y as f32,
                     w: window.size.w.max(1) as f32,
                     h: window.size.h.max(1) as f32,
+                }),
+            PickerMode::Output => self
+                .hovered_output
+                .as_ref()
+                .and_then(|connector| {
+                    self.outputs
+                        .iter()
+                        .find(|output| &output.connector == connector)
+                })
+                .map(|output| {
+                    let rect = output.geometry.logical_rect();
+                    LensRect {
+                        x: rect.origin.x as f32,
+                        y: rect.origin.y as f32,
+                        w: rect.size.w.max(1) as f32,
+                        h: rect.size.h.max(1) as f32,
+                    }
                 }),
         }
     }
@@ -475,6 +538,45 @@ impl ScreenshotSelector {
                 &self.design,
             );
         }
+    }
+
+    /// Draw the Liquid Glass highlight and connector label for the hovered
+    /// output. With no output under the cursor the frozen canvas itself is
+    /// the implicit whole-desktop target, exactly like window mode's empty
+    /// desktop.
+    fn render_output_pick(&self, frame: &mut Frame, display: (f32, f32)) {
+        let Some(output) = self.hovered_output.as_ref().and_then(|connector| {
+            self.outputs
+                .iter()
+                .find(|output| &output.connector == connector)
+        }) else {
+            return;
+        };
+        let logical = output.geometry.logical_rect();
+        let rect = LensRect {
+            x: logical.origin.x as f32,
+            y: logical.origin.y as f32,
+            w: logical.size.w.max(1) as f32,
+            h: logical.size.h.max(1) as f32,
+        };
+        frame.place(
+            "aegis-picker-output",
+            &materials::chrome_place(rect, {
+                let mut material = materials::glass_panel(&self.design);
+                material.radius = self.glass_radius(rect);
+                material
+            }),
+            |_| {},
+        );
+        Self::render_status_pill(
+            frame,
+            "aegis-picker-output-label",
+            &output.connector,
+            rect,
+            display,
+            true,
+            &self.design,
+        );
     }
 
     fn start_pick(&mut self, mode: PickerMode) {
@@ -705,6 +807,13 @@ impl Chrome for ScreenshotSelector {
                     self.reset();
                 }
             }
+            PickerMode::Output => {
+                self.current = cursor;
+                self.hovered_output = Self::output_at(&self.outputs, cursor);
+                if pressed {
+                    self.confirm_output(out);
+                }
+            }
         }
         if !self.active {
             return;
@@ -717,6 +826,7 @@ impl Chrome for ScreenshotSelector {
             PickerMode::Region => self.render_region(frame, display, i18n),
             PickerMode::Pixel => self.render_pixel_lens(frame, display),
             PickerMode::Window => self.render_window_pick(frame, display, windows),
+            PickerMode::Output => self.render_output_pick(frame, display),
         }
     }
 
@@ -768,6 +878,10 @@ impl Chrome for ScreenshotSelector {
                 self.current = cursor;
                 self.hovered = Self::window_at(windows, cursor);
             }
+            PickerMode::Output => {
+                self.current = cursor;
+                self.hovered_output = Self::output_at(&self.outputs, cursor);
+            }
         }
     }
 
@@ -779,6 +893,7 @@ impl Chrome for ScreenshotSelector {
                     .is_some_and(|rect| rect.size.w > 0 && rect.size.h > 0),
                 PickerMode::Pixel => true,
                 PickerMode::Window => self.hovered.is_some(),
+                PickerMode::Output => self.hovered_output.is_some(),
             }
         {
             BACKDROP_BLUR_SIGMA
@@ -837,8 +952,12 @@ impl Chrome for ScreenshotSelector {
     }
 
     fn update(&mut self, update: ChromeUpdate<'_>) {
-        if let ChromeUpdate::Appearance(design) = update {
-            self.design = *design;
+        match update {
+            ChromeUpdate::Appearance(design) => self.design = *design,
+            ChromeUpdate::SystemStatus(status) => {
+                self.outputs = status.display.outputs.clone();
+            }
+            _ => {}
         }
     }
 
@@ -868,6 +987,8 @@ impl Chrome for ScreenshotSelector {
                     out.pick_output = true;
                     self.reset();
                 }
+                // Confirm keys pick the hovered output in output mode.
+                PickerMode::Output => self.confirm_output(out),
                 PickerMode::Pixel => {}
             },
             _ => {}
@@ -1190,5 +1311,128 @@ mod tests {
         );
         assert!(out.pick_output);
         assert!(!s.active());
+    }
+
+    fn test_output(
+        connector: &str,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> aegis_model::output::OutputInfo {
+        aegis_model::output::OutputInfo {
+            connector: connector.into(),
+            geometry: aegis_model::output::OutputGeometry {
+                mode: aegis_model::output::OutputMode {
+                    width: w,
+                    height: h,
+                    refresh_mhz: 60_000,
+                },
+                scale: aegis_model::output::Scale(1.0),
+                transform: aegis_model::Transform::Normal,
+                logical_origin: aegis_model::Point { x, y },
+            },
+            available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
+        }
+    }
+
+    #[test]
+    fn output_mode_hit_tests_against_the_output_rects() {
+        let outputs = vec![
+            test_output("HDMI-A-1", 0, 0, 1920, 1080),
+            test_output("DP-1", 1920, 0, 2560, 1440),
+        ];
+        assert_eq!(
+            ScreenshotSelector::output_at(&outputs, Point { x: 20.0, y: 20.0 }),
+            Some("HDMI-A-1".to_owned())
+        );
+        assert_eq!(
+            ScreenshotSelector::output_at(&outputs, Point { x: 2000.0, y: 20.0 }),
+            Some("DP-1".to_owned())
+        );
+        assert_eq!(
+            ScreenshotSelector::output_at(&outputs, Point { x: 5000.0, y: 20.0 }),
+            None
+        );
+        // Edge: the right/bottom edge is exclusive, like window hit-testing.
+        assert_eq!(
+            ScreenshotSelector::output_at(&outputs, Point { x: 1920.0, y: 20.0 }),
+            Some("DP-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn output_mode_enter_emits_the_hovered_connector() {
+        let mut s = ScreenshotSelector::new();
+        s.start_pick(PickerMode::Output);
+        s.outputs = vec![
+            test_output("HDMI-A-1", 0, 0, 1920, 1080),
+            test_output("DP-1", 1920, 0, 2560, 1440),
+        ];
+        s.hovered_output = Some("DP-1".to_owned());
+        let mut out = ChromeEvents::default();
+        s.key_char(
+            &KeyChar {
+                keysym: aegis_model::input::XKB_KEY_Return,
+                ch: None,
+                mods: aegis_model::input::Mods::NONE,
+            },
+            &mut out,
+        );
+        assert_eq!(out.picked_output.as_deref(), Some("DP-1"));
+        assert!(!out.pick_output);
+        assert!(!s.active());
+    }
+
+    #[test]
+    fn output_mode_enter_without_a_hover_falls_back_to_bare_output() {
+        let mut s = ScreenshotSelector::new();
+        s.start_pick(PickerMode::Output);
+        let mut out = ChromeEvents::default();
+        s.key_char(
+            &KeyChar {
+                keysym: aegis_model::input::XKB_KEY_Return,
+                ch: None,
+                mods: aegis_model::input::Mods::NONE,
+            },
+            &mut out,
+        );
+        assert!(out.pick_output);
+        assert!(out.picked_output.is_none());
+        assert!(!s.active());
+    }
+
+    #[test]
+    fn output_mode_escape_cancels() {
+        let mut s = ScreenshotSelector::new();
+        s.start_pick(PickerMode::Output);
+        let mut out = ChromeEvents::default();
+        s.key_char(
+            &KeyChar {
+                keysym: aegis_model::input::XKB_KEY_Escape,
+                ch: None,
+                mods: aegis_model::input::Mods::NONE,
+            },
+            &mut out,
+        );
+        assert!(out.pick_cancelled);
+        assert!(out.picked_output.is_none());
+        assert!(!s.active());
+    }
+
+    #[test]
+    fn output_mode_status_updates_refresh_the_hit_test_snapshot() {
+        let mut s = ScreenshotSelector::new();
+        let status = crate::SystemStatus {
+            display: aegis_model::settings::DisplayStatus {
+                outputs: vec![test_output("HDMI-A-1", 0, 0, 1920, 1080)],
+                ..aegis_model::settings::DisplayStatus::default()
+            },
+            ..crate::SystemStatus::default()
+        };
+        s.update(ChromeUpdate::SystemStatus(&status));
+        assert_eq!(s.outputs.len(), 1);
+        assert_eq!(s.outputs[0].connector, "HDMI-A-1");
     }
 }

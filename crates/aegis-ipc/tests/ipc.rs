@@ -54,6 +54,8 @@ struct TestHandler {
     stream_stops: Mutex<Vec<u64>>,
     stream_disconnects: Mutex<Vec<u64>>,
     stream_targets: Mutex<Vec<aegis_ipc::StreamTarget>>,
+    stream_cursors: Mutex<Vec<aegis_ipc::StreamCursorMode>>,
+    enumerated: Vec<aegis_ipc::OutputInfo>,
     picks: Mutex<Vec<(u64, aegis_ipc::PickKind)>>,
     app_picks: Mutex<Vec<(u64, Vec<String>)>>,
     secret_prompts: Mutex<Vec<(u64, String)>>,
@@ -109,6 +111,8 @@ impl TestHandler {
             stream_stops: Mutex::new(Vec::new()),
             stream_disconnects: Mutex::new(Vec::new()),
             stream_targets: Mutex::new(Vec::new()),
+            stream_cursors: Mutex::new(Vec::new()),
+            enumerated: sample_outputs(),
             picks: Mutex::new(Vec::new()),
             app_picks: Mutex::new(Vec::new()),
             secret_prompts: Mutex::new(Vec::new()),
@@ -169,6 +173,8 @@ impl TestHandler {
             stream_stops: Mutex::new(Vec::new()),
             stream_disconnects: Mutex::new(Vec::new()),
             stream_targets: Mutex::new(Vec::new()),
+            stream_cursors: Mutex::new(Vec::new()),
+            enumerated: sample_outputs(),
             picks: Mutex::new(Vec::new()),
             app_picks: Mutex::new(Vec::new()),
             secret_prompts: Mutex::new(Vec::new()),
@@ -263,6 +269,9 @@ impl Handler for TestHandler {
     fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
         Vec::new()
     }
+    fn enumerate_outputs(&self) -> Vec<aegis_ipc::OutputInfo> {
+        self.enumerated.clone()
+    }
     fn journal_since(&self, _since: u64) -> aegis_ipc::JournalSnapshot {
         aegis_ipc::JournalSnapshot {
             entries: vec![],
@@ -279,6 +288,7 @@ impl Handler for TestHandler {
         conn_id: u64,
         subject: Option<&str>,
         expected_journal_seq: Option<u64>,
+        expected_interaction_domain_revision: Option<u64>,
         ops: Vec<Command>,
     ) -> Result<aegis_ipc::TransactResult, String> {
         let before_seq = self.transact_seq.load(Ordering::SeqCst);
@@ -286,8 +296,19 @@ impl Handler for TestHandler {
             && expected != before_seq
         {
             return Ok(aegis_ipc::TransactResult::PreconditionConflict {
+                precondition: aegis_ipc::TransactPrecondition::JournalSeq,
                 expected,
                 actual: before_seq,
+            });
+        }
+        let revision = self.interaction_domains().revision;
+        if let Some(expected) = expected_interaction_domain_revision
+            && expected != revision
+        {
+            return Ok(aegis_ipc::TransactResult::PreconditionConflict {
+                precondition: aegis_ipc::TransactPrecondition::InteractionDomainRevision,
+                expected,
+                actual: revision,
             });
         }
         let mut after_seq = before_seq;
@@ -575,8 +596,10 @@ impl Handler for TestHandler {
         _max_fps: Option<u32>,
         target: aegis_ipc::StreamTarget,
         _allow_dmabuf: bool,
+        cursor: aegis_ipc::StreamCursorMode,
     ) -> Result<aegis_ipc::StreamInfo, String> {
         self.stream_targets.lock().unwrap().push(target);
+        self.stream_cursors.lock().unwrap().push(cursor);
         let stream_id = self.stream_starts.fetch_add(1, Ordering::AcqRel) + 1;
         Ok(aegis_ipc::StreamInfo {
             stream_id,
@@ -905,6 +928,49 @@ fn sample_windows() -> Vec<Window> {
     b.title = Some("second".into());
     b.state.maximized = true;
     vec![a, b]
+}
+
+/// Two fixed outputs for the `EnumerateOutputs`/`GetOutputs` tests. The
+/// rich fields are populated so the lean-reply stripping is observable.
+fn sample_outputs() -> Vec<aegis_ipc::OutputInfo> {
+    vec![
+        aegis_ipc::OutputInfo {
+            connector: "HDMI-A-1".into(),
+            primary: true,
+            rect: aegis_model::Rect::new(0, 0, 1920, 1080),
+            geometry: Some(aegis_model::output::OutputGeometry {
+                mode: aegis_model::output::OutputMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                },
+                ..aegis_model::output::OutputGeometry::default()
+            }),
+            available_modes: Some(vec![aegis_model::output::OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            }]),
+        },
+        aegis_ipc::OutputInfo {
+            connector: "DP-1".into(),
+            primary: false,
+            rect: aegis_model::Rect::new(1920, 0, 2560, 1440),
+            geometry: Some(aegis_model::output::OutputGeometry {
+                mode: aegis_model::output::OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_mhz: 60_000,
+                },
+                ..aegis_model::output::OutputGeometry::default()
+            }),
+            available_modes: Some(vec![aegis_model::output::OutputMode {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 60_000,
+            }]),
+        },
+    ]
 }
 
 #[path = "ipc/agent.rs"]

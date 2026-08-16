@@ -252,7 +252,12 @@ impl DrmBackend {
                 self.pending_flips.clear();
                 self.forget_composite_fb_cache();
                 self.hotplug_pending = false;
-                match open_card_and_outputs(&self.seat, &self.configured_modes) {
+                match open_card_and_outputs(
+                    &self.seat,
+                    &self.configured_modes,
+                    &self.configured_color,
+                    &self.configured_icc,
+                ) {
                     Ok((card, displays)) => {
                         self.card = Some(card);
                         self.surface_stale |= displays.modifiers != self.surface_modifiers;

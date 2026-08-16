@@ -84,15 +84,18 @@ impl CompositorRuntime {
         // capture always forces a presentation frame.
         let mut frame_capture =
             self.prepare_frame_capture(session_locked, &mut pending_screenshots);
-        // A due dmabuf stream (IPC protocol 25) forces a composite present
-        // exactly like a bound readback: its capture-surface slot is filled
-        // from the presented frame right after the commit.
-        let dmabuf_stream_due = !session_locked
+        // A liveness-starved dmabuf stream (ADR-0126) forces a composite
+        // present exactly like a bound readback: its capture-surface slot is
+        // filled from the presented frame right after the commit. Ordinary
+        // max-fps due-ness never forces a frame — due dmabuf streams simply
+        // blit from whatever frame presents, so on a static screen only the
+        // one-second liveness tick keeps their consumers fed.
+        let now = std::time::Instant::now();
+        let dmabuf_stream_liveness_due =
+            !session_locked && self.host.is_active() && self.streams.liveness_due_dmabuf(now);
+        let dmabuf_stream_capture_due = !session_locked
             && self.host.is_active()
-            && !self
-                .streams
-                .due_dmabuf_ids(std::time::Instant::now())
-                .is_empty();
+            && !self.streams.due_dmabuf_ids(now).is_empty();
         let screenshot_include_cursor = self
             .config
             .as_ref()
@@ -136,7 +139,7 @@ impl CompositorRuntime {
         let cursor_only_eligible = matches!(damage, FrameDamage::None)
             && cursor_plane_changed
             && frame_capture.is_none()
-            && !dmabuf_stream_due
+            && !dmabuf_stream_liveness_due
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
@@ -176,7 +179,7 @@ impl CompositorRuntime {
         }
         if matches!(damage, FrameDamage::None)
             && frame_capture.is_none()
-            && !dmabuf_stream_due
+            && !dmabuf_stream_liveness_due
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
@@ -214,7 +217,7 @@ impl CompositorRuntime {
         let primary_plane_plan = self.plan_primary_plane(
             physical_size,
             cursor_hidden,
-            frame_capture.is_some() || dmabuf_stream_due,
+            frame_capture.is_some() || dmabuf_stream_liveness_due,
         );
         if let Some(candidate) = primary_plane_plan.direct_candidate() {
             match self.host.present_scanout(candidate, damage.area_rects()) {
@@ -239,6 +242,10 @@ impl CompositorRuntime {
                     // pacing, and re-anchor the cursor/minute baselines the
                     // skip-render path consults. Captures and screenshots are
                     // disqualified by the primary-plane plan, so none run here.
+                    // Streams cannot capture this frame (there is no
+                    // composite to read), but its damage still accumulates
+                    // for their next captured frame (ADR-0127).
+                    self.streams.accumulate_damage(&damage);
                     self.server.acknowledge_presented_surface_damage();
                     if self.server.retired_buffers_pending() {
                         self.server.release_retired_buffers(
@@ -307,6 +314,31 @@ impl CompositorRuntime {
             self.damage.force_full_redraw = true;
             damage = FrameDamage::Full;
             self.launcher_backdrop.invalidate();
+        }
+        // Opportunistic stream capture (ADR-0126): this frame composites for
+        // real damage, so every due SHM stream may piggyback on it with the
+        // shared readback — without the stream ever having forced the frame.
+        // One-shot captures keep priority; a locked or inactive session
+        // simply produces no stream frames (the streams survive). When any
+        // due SHM stream negotiated the embedded cursor mode, the readback
+        // carries a cursor snapshot along so the worker can produce a
+        // composited twin next to the pristine frame (ADR-0127).
+        if frame_capture.is_none()
+            && self.pending_capture.is_none()
+            && !self.stream_job_in_flight
+            && !session_locked
+            && self.host.is_active()
+            && !self.capture_worker.is_busy()
+            && !self
+                .streams
+                .due_shm_ids(std::time::Instant::now())
+                .is_empty()
+        {
+            frame_capture = Some(FrameCapture {
+                crop: None,
+                target: CaptureTarget::Stream,
+                cursor: self.stream_shm_cursor_state(),
+            });
         }
         match self.surface.begin_frame() {
             Ok(mut frame) => {
@@ -1421,7 +1453,29 @@ impl CompositorRuntime {
                 if self.shell.take_pick_output()
                     && let Some(pick) = self.pending_pick.take()
                 {
-                    let _ = pick.reply.send(Ok(aegis_ipc::PickResult::Output));
+                    // The window-mode whole-output answer keeps the legacy
+                    // bare shape (no connector) for wire compatibility
+                    // (ADR-0128).
+                    let _ = pick
+                        .reply
+                        .send(Ok(aegis_ipc::PickResult::Output { connector: None }));
+                }
+                if let Some(connector) = self.shell.take_picked_output()
+                    && let Some(pick) = self.pending_pick.take()
+                {
+                    let result = if self
+                        .server
+                        .output_infos()
+                        .iter()
+                        .any(|output| output.connector == connector)
+                    {
+                        Ok(aegis_ipc::PickResult::Output {
+                            connector: Some(connector),
+                        })
+                    } else {
+                        Err("the picked output is gone".to_owned())
+                    };
+                    let _ = pick.reply.send(result);
                 }
                 if self.shell.take_pick_cancelled()
                     && let Some(pick) = self.pending_pick.take()
@@ -2043,7 +2097,21 @@ impl CompositorRuntime {
                         target,
                         cursor: trigger_cursor,
                     } = capture;
-                    let cursor = if screenshot_include_cursor
+                    let cursor = if matches!(&target, CaptureTarget::Stream) {
+                        // Embedded cursor streams (ADR-0127): the binding
+                        // carried a filtered cursor state; rasterize the
+                        // theme sprite so the worker can blend a composited
+                        // twin of this frame next to the pristine one.
+                        trigger_cursor.and_then(|cursor| {
+                            capture_cursor_snapshot(
+                                &self.device,
+                                &mut self.cursor_cache,
+                                cursor.position,
+                                cursor.shape,
+                                scale,
+                            )
+                        })
+                    } else if screenshot_include_cursor
                         && matches!(&target, CaptureTarget::Screenshot { .. })
                     {
                         if capturing_frozen_screenshot {
@@ -2169,6 +2237,19 @@ impl CompositorRuntime {
                         self.host.name()
                     );
                 }
+                // Fold this frame's damage into every stream's accumulator
+                // before any stream-facing sampling below, so a frame
+                // captured from this composite carries exactly the damage
+                // that produced it (ADR-0127).
+                self.streams.accumulate_damage(&presented_damage);
+                if capture_for_present
+                    .as_ref()
+                    .is_some_and(|capture| matches!(capture.target, CaptureTarget::Stream))
+                {
+                    // A stream readback is bound to this frame: sample each
+                    // due SHM stream's damage for its delivery.
+                    self.stash_shm_stream_damage();
+                }
                 record_composite_present(
                     &mut self.damage.composite_slot_damage,
                     frame_slot,
@@ -2183,7 +2264,9 @@ impl CompositorRuntime {
                 // The frame is on its way to scanout: copy it into every due
                 // dmabuf stream's capture-surface slot (IPC protocol 25). The
                 // frame events go out once each slot's acquire fence signals.
-                if dmabuf_stream_due {
+                // Due-ness alone only rides this already-happening composite
+                // (ADR-0126); it never caused the frame.
+                if dmabuf_stream_capture_due {
                     self.blit_dmabuf_stream_frames(completion_fence.as_ref());
                 }
                 self.server.acknowledge_presented_surface_damage();
@@ -2264,11 +2347,15 @@ impl CompositorRuntime {
                         &self.ipc,
                     );
                 }
+                let (nw, nh) = self.host.physical_size();
+                self.surface.resize(nw, nh)?;
                 // The frame size a stream negotiated at start no longer
-                // matches the output; end every stream so consumers tear
-                // down their PipeWire sessions instead of compositing
-                // mismatched frames (ADR-0052).
-                self.end_all_streams("output geometry changed");
+                // matches the output: freeze each affected stream with
+                // `StreamGeometryChanged` so consumers renegotiate at the
+                // new geometry instead of compositing mismatched frames
+                // (ADR-0126). Runs after the resize so the new surface size
+                // is the geometry streams are compared against.
+                self.handle_output_geometry_change();
                 // Out-of-date / lost: rebuild the swapchain at the current
                 // physical size.
                 if let Some(capture) = self.pending_capture.take() {
@@ -2290,8 +2377,6 @@ impl CompositorRuntime {
                         self.shell.start_screenshot();
                     }
                 }
-                let (nw, nh) = self.host.physical_size();
-                self.surface.resize(nw, nh)?;
                 self.damage.composite_slot_damage.clear();
                 // Damage tracked against the old framebuffer does not
                 // describe the rebuilt one; render the next frame in full.
@@ -2310,7 +2395,7 @@ impl CompositorRuntime {
     }
 }
 
-fn capture_cursor_snapshot(
+pub(super) fn capture_cursor_snapshot(
     device: &flux::Device,
     cache: &mut cursor::CursorCache,
     position: (f32, f32),

@@ -1,6 +1,6 @@
 [package]
-name = "aegis-agent"
-description = "Shared agent client layer for the Aegis platform: pairing, credentials, state recovery, and observation leases (ADR-0125)"
+name = "aegis-ipc-client"
+description = "Shared client base for out-of-process capability bridges: pairing, credentials, state recovery, and observation leases (ADR-0125)"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

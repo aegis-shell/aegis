@@ -16,20 +16,20 @@ use aegis_ipc::{ActorCapability, AgentHello, Client, ConnectionCapabilities};
 use crate::identity::{IdentityError, IdentityStore};
 
 /// How an agent presents its pairing credential at the handshake.
-pub enum CredentialSource<'a> {
+pub enum CredentialSource {
     /// A durable paired identity: the stored credential is presented, a
     /// newly issued credential is persisted atomically, and a recognized
     /// credential is confirmed against the recorded principal.
-    Paired(&'a IdentityStore),
+    Paired(IdentityStore),
     /// A launcher-injected credential, for example a compositor-spawned
     /// adapter that received an ephemeral credential over stdin. Presented
     /// as-is and never persisted; continuity is the launcher's
     /// responsibility.
-    Injected(&'a str),
+    Injected(String),
 }
 
 /// One agent connection attempt.
-pub struct ConnectParams<'a> {
+pub struct ConnectParams {
     /// Path to the compositor IPC socket.
     pub socket: PathBuf,
     /// Coarse connection capabilities to request; the compositor intersects
@@ -41,7 +41,7 @@ pub struct ConnectParams<'a> {
     /// prompt shows it and the approved ceiling is checked against it.
     pub requested: Vec<ActorCapability>,
     /// Credential policy for this connection.
-    pub credential: CredentialSource<'a>,
+    pub credential: CredentialSource,
     /// Bound for the handshake itself; the first connection may block on
     /// the interactive pairing prompt.
     pub handshake_timeout: Duration,
@@ -57,10 +57,10 @@ pub struct Connected {
 }
 
 /// Connect to the compositor as an authenticated agent.
-pub fn connect(params: &ConnectParams<'_>) -> Result<Connected, ConnectError> {
-    let credential = match params.credential {
+pub fn connect(params: &ConnectParams) -> Result<Connected, ConnectError> {
+    let credential = match &params.credential {
         CredentialSource::Paired(store) => store.credential(),
-        CredentialSource::Injected(credential) => Some(credential.to_owned()),
+        CredentialSource::Injected(credential) => Some(credential.clone()),
     };
     let client = Client::connect_agent_with_timeout(
         &params.socket,
@@ -87,7 +87,7 @@ pub fn connect(params: &ConnectParams<'_>) -> Result<Connected, ConnectError> {
         })?;
     let issued = client.agent_issued().ok_or(ConnectError::MissingIdentity)?;
     let principal = issued.principal.clone();
-    if let CredentialSource::Paired(store) = params.credential {
+    if let CredentialSource::Paired(store) = &params.credential {
         if let Some(credential) = &issued.credential {
             store.store(&issued.principal, credential)?;
         } else {

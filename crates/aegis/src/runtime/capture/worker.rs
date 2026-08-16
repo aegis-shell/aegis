@@ -161,6 +161,10 @@ pub(in crate::runtime) enum CaptureTarget {
     /// (ADR-0052). The worker converts to opaque BGRA and the main loop fans
     /// the result out over the IPC.
     Stream,
+    /// One window stream's offscreen readback (ADR-0127), converted on the
+    /// worker and delivered to the named stream. Unlike the shared `Stream`
+    /// readback this is per stream: independent renders never share pixels.
+    StreamWindow { stream_id: u64 },
 }
 
 pub(in crate::runtime) struct PendingCapture {
@@ -197,6 +201,10 @@ enum CaptureJob {
     },
     Stream {
         capture: CapturedPixels,
+    },
+    StreamWindow {
+        capture: CapturedPixels,
+        stream_id: u64,
     },
 }
 
@@ -251,6 +259,13 @@ pub(in crate::runtime) enum CaptureCompletion {
         security_generation: u64,
         pixels: Result<StreamPixels, String>,
     },
+    /// One window stream's converted frame (ADR-0127). Delivery and drop
+    /// accounting stay on the main loop, keyed by `stream_id`.
+    StreamWindow {
+        stream_id: u64,
+        security_generation: u64,
+        pixels: Result<StreamPixels, String>,
+    },
 }
 
 impl CaptureCompletion {
@@ -258,17 +273,23 @@ impl CaptureCompletion {
     /// screenshot phase intentionally keeps the lane reserved until its file
     /// commit finishes, bounding retained PNG/readback memory to one capture.
     pub(in crate::runtime) fn finishes_reserved_job(&self) -> bool {
-        !matches!(self, Self::ScreenshotEncoded { .. } | Self::Stream { .. })
+        !matches!(
+            self,
+            Self::ScreenshotEncoded { .. } | Self::Stream { .. } | Self::StreamWindow { .. }
+        )
     }
 }
 
 /// One converted stream frame: tightly packed opaque BGRA (alpha 255),
-/// `width * 4` bytes per row (ADR-0052).
+/// `width * 4` bytes per row (ADR-0052). `cursor_bgra` carries the
+/// cursor-composited twin produced when the binding attached a cursor
+/// snapshot (ADR-0127); delivery serves it to streams that negotiated the
+/// `embedded` cursor mode and the pristine frame to `hidden` ones.
 pub(in crate::runtime) struct StreamPixels {
     pub(in crate::runtime) width: u32,
     pub(in crate::runtime) height: u32,
     pub(in crate::runtime) bgra: std::sync::Arc<[u8]>,
-    pub(in crate::runtime) damage: Vec<aegis_model::Rect>,
+    pub(in crate::runtime) cursor_bgra: Option<std::sync::Arc<[u8]>>,
 }
 
 /// Single bounded post-processing lane for screenshots and IPC pixel
@@ -543,6 +564,31 @@ impl CaptureWorker {
                                 break;
                             }
                         }
+                        CaptureJob::StreamWindow { capture, stream_id } => {
+                            let generation = capture.security_generation;
+                            let pixels = if worker_allowed
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                && generation
+                                    == worker_security_generation
+                                        .load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                super::encoding::stream_pixels(capture)
+                            } else {
+                                Err("session locked before stream frame completed".into())
+                            };
+                            if !send_completion(
+                                &completion_tx,
+                                worker_wake.as_ref(),
+                                CaptureCompletion::StreamWindow {
+                                    stream_id,
+                                    security_generation: generation,
+                                    pixels,
+                                },
+                            ) {
+                                worker_busy.store(false, std::sync::atomic::Ordering::Release);
+                                break;
+                            }
+                        }
                     }
                 }
                 worker_busy.store(false, std::sync::atomic::Ordering::Release);
@@ -640,7 +686,10 @@ pub(in crate::runtime) fn refuse_capture_target(
     // Stream frames never reserve the worker lane (they skip busy frames
     // instead), so releasing it here must not clear another target's
     // reservation.
-    if !matches!(target, CaptureTarget::Stream) {
+    if !matches!(
+        target,
+        CaptureTarget::Stream | CaptureTarget::StreamWindow { .. }
+    ) {
         worker.release();
     }
     match target {
@@ -673,7 +722,9 @@ pub(in crate::runtime) fn refuse_capture_target(
         }
         // A stream frame carries no reply channel: the main loop simply
         // skips one frame and the stream resumes at the next presentation.
-        CaptureTarget::Stream => {}
+        // Window stream frames likewise: the main loop counts the drop when
+        // it observes the failed submission.
+        CaptureTarget::Stream | CaptureTarget::StreamWindow { .. } => {}
     }
 }
 
@@ -716,6 +767,9 @@ pub(in crate::runtime) fn queue_captured_pixels(
             reply,
         },
         CaptureTarget::Stream => CaptureJob::Stream { capture },
+        CaptureTarget::StreamWindow { stream_id } => {
+            CaptureJob::StreamWindow { capture, stream_id }
+        }
     };
     if let Err(job) = worker.submit(job) {
         let target = match *job {
@@ -740,6 +794,7 @@ pub(in crate::runtime) fn queue_captured_pixels(
             }
             CaptureJob::Pixel { point, reply, .. } => CaptureTarget::Pixel { point, reply },
             CaptureJob::Stream { .. } => CaptureTarget::Stream,
+            CaptureJob::StreamWindow { stream_id, .. } => CaptureTarget::StreamWindow { stream_id },
         };
         refuse_capture_target(
             worker,

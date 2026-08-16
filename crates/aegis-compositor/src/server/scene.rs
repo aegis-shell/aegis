@@ -371,6 +371,7 @@ impl Server {
                     },
                     damage: &s.committed_damage,
                     opaque_region: s.opaque_region.as_deref(),
+                    color: s.image_description.clone(),
                 }
             })
             .collect()
@@ -476,6 +477,7 @@ impl Server {
                         ..Default::default()
                     },
                     opaque_region: s.opaque_region.clone(),
+                    color: s.image_description.clone(),
                 })
             })
             .collect()
@@ -675,6 +677,7 @@ impl Server {
                 },
                 damage: &surface.committed_damage,
                 opaque_region: surface.opaque_region.as_deref(),
+                color: surface.image_description.clone(),
             })
             .collect()
     }
@@ -722,6 +725,7 @@ impl Server {
                         ..Default::default()
                     },
                     opaque_region: surface.opaque_region.clone(),
+                    color: surface.image_description.clone(),
                 })
             })
             .collect()
@@ -845,6 +849,7 @@ impl Server {
                     )?,
                     damage: &surface.committed_damage,
                     opaque_region: surface.opaque_region.as_deref(),
+                    color: surface.image_description.clone(),
                 })
             })
             .collect()
@@ -911,6 +916,7 @@ impl Server {
                     generation: surface.generation,
                     damage: surface.committed_damage.clone(),
                     opaque_region: surface.opaque_region.clone(),
+                    color: surface.image_description.clone(),
                     buffer_id: dmabuf.buffer_id,
                     fd: dmabuf.fd,
                     drm_format: dmabuf.drm_format,
@@ -1003,6 +1009,7 @@ impl Server {
                 },
                 damage: &surface.committed_damage,
                 opaque_region: surface.opaque_region.as_deref(),
+                color: surface.image_description.clone(),
             })
             .collect::<Vec<_>>();
         let cursor = self.state.cursor_surface;
@@ -1035,6 +1042,7 @@ impl Server {
                         },
                         damage: &surface.committed_damage,
                         opaque_region: surface.opaque_region.as_deref(),
+                        color: surface.image_description.clone(),
                     });
                 }
             }
@@ -1065,6 +1073,7 @@ impl Server {
                     generation: surface.generation,
                     damage: surface.committed_damage.clone(),
                     opaque_region: surface.opaque_region.clone(),
+                    color: surface.image_description.clone(),
                     buffer_id: buffer.buffer_id,
                     fd: buffer.fd,
                     drm_format: buffer.drm_format,
@@ -1107,6 +1116,7 @@ impl Server {
                         generation: surface.generation,
                         damage: surface.committed_damage.clone(),
                         opaque_region: surface.opaque_region.clone(),
+                        color: surface.image_description.clone(),
                         buffer_id: buffer.buffer_id,
                         fd: buffer.fd,
                         drm_format: buffer.drm_format,
@@ -1204,6 +1214,7 @@ impl Server {
                     },
                     damage: &surface.committed_damage,
                     opaque_region: surface.opaque_region.as_deref(),
+                    color: surface.image_description.clone(),
                 })
             })
             .collect()
@@ -1273,6 +1284,7 @@ impl Server {
                     generation: surface.generation,
                     damage: surface.committed_damage.clone(),
                     opaque_region: surface.opaque_region.clone(),
+                    color: surface.image_description.clone(),
                     buffer_id: buffer.buffer_id,
                     fd: buffer.fd,
                     drm_format: buffer.drm_format,
@@ -1470,6 +1482,7 @@ impl Server {
                 geometry,
                 damage: &surface.committed_damage,
                 opaque_region: surface.opaque_region.as_deref(),
+                color: surface.image_description.clone(),
             });
         }
         for &child_ptr in &surface.children {
@@ -1576,6 +1589,7 @@ impl Server {
                 generation: surface.generation,
                 damage: surface.committed_damage.clone(),
                 opaque_region: surface.opaque_region.clone(),
+                color: surface.image_description.clone(),
                 buffer_id: dmabuf.buffer_id,
                 fd: dmabuf.fd,
                 drm_format: dmabuf.drm_format,
@@ -1704,6 +1718,7 @@ impl Server {
                 },
                 damage: &s.committed_damage,
                 opaque_region: s.opaque_region.as_deref(),
+                color: s.image_description.clone(),
             });
         }
         for &child_ptr in &s.children {
@@ -1801,6 +1816,7 @@ impl Server {
                 generation: s.generation,
                 damage: s.committed_damage.clone(),
                 opaque_region: s.opaque_region.clone(),
+                color: s.image_description.clone(),
                 buffer_id: db.buffer_id,
                 fd: db.fd,
                 drm_format: db.drm_format,

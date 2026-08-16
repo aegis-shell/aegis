@@ -31,6 +31,9 @@ pub fn detect_system_status() -> SystemStatus {
         touchpad: aegis_model::input::TouchpadStatus::default(),
         display: DisplayStatus::default(),
         idle_inhibited: false,
+        // Compositor-owned; the runtime patches its live value onto every
+        // host sample before publishing (ADR-0128).
+        capture_streams: 0,
     }
 }
 
@@ -66,6 +69,9 @@ pub fn detect_system_status_lightweight(
         touchpad: aegis_model::input::TouchpadStatus::default(),
         display: DisplayStatus::default(),
         idle_inhibited: false,
+        // Compositor-owned; the runtime patches its live value onto every
+        // host sample before publishing (ADR-0128).
+        capture_streams: 0,
     }
 }
 

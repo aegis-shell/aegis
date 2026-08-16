@@ -1384,9 +1384,7 @@ impl Dock {
         );
         region.shadow_blur *= shadow_factor;
         region.shadow_offset_y *= shadow_factor;
-        Some(region.with_capture_bounds(BackdropRegion::from(
-            self.capture_footprint(display),
-        )))
+        Some(region.with_capture_bounds(BackdropRegion::from(self.capture_footprint(display))))
     }
 
     fn hover_liquid_glass_region(&self) -> Option<LiquidGlassRegion> {

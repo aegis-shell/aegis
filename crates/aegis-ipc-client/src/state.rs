@@ -274,8 +274,10 @@ mod tests {
     fn compatibility_capture_is_owner_only_atomic_and_clearable() {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("aegis-agent-state-{}-{serial}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-ipc-client-state-{}-{serial}",
+            std::process::id()
+        ));
         let store = StateStore::acquire(&dir, "capture-test").expect("store");
         let path = store.write_capture(b"png").expect("capture");
         assert_eq!(fs::read(&path).expect("read"), b"png");

@@ -420,6 +420,72 @@ pub(super) fn apply_command_journaled(
     (entry.seq, entry.effect)
 }
 
+/// Commit one pre-authorized Transact batch at this commit boundary
+/// (ADR-0125): every specified precondition currency is checked first —
+/// a conflict applies nothing and journals nothing — then ops apply in
+/// order through the same chokepoint as `Do`, each returning its journal
+/// sequence number and effect as the receipt.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_transact_batch(
+    server: &mut aegis_compositor::Server,
+    notifications: &std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
+    quit: &mut bool,
+    ipc: &Option<aegis_ipc::Server>,
+    journal: &std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
+    ts_mono_ms: u64,
+    origin: aegis_ipc::Origin,
+    expected_journal_seq: Option<u64>,
+    expected_interaction_domain_revision: Option<u64>,
+    ops: Vec<aegis_ipc::Command>,
+) -> Result<aegis_ipc::TransactResult, String> {
+    if server.session_locked() {
+        return Err("session is locked".into());
+    }
+    let before_seq = journal.lock().unwrap().latest_seq();
+    if let Some(expected) = expected_journal_seq
+        && expected != before_seq
+    {
+        return Ok(aegis_ipc::TransactResult::PreconditionConflict {
+            precondition: aegis_ipc::TransactPrecondition::JournalSeq,
+            expected,
+            actual: before_seq,
+        });
+    }
+    if let Some(expected) = expected_interaction_domain_revision {
+        let actual = server.interaction_domain_revision();
+        if expected != actual {
+            return Ok(aegis_ipc::TransactResult::PreconditionConflict {
+                precondition: aegis_ipc::TransactPrecondition::InteractionDomainRevision,
+                expected,
+                actual,
+            });
+        }
+    }
+    let mut after_seq = before_seq;
+    let mut results = Vec::with_capacity(ops.len());
+    for cmd in ops {
+        let (seq, effect) = apply_command_journaled(
+            server,
+            notifications,
+            quit,
+            cmd,
+            ipc,
+            journal,
+            ts_mono_ms,
+            origin.clone(),
+        );
+        after_seq = seq;
+        results.push(aegis_ipc::TransactOpResult { seq, effect });
+    }
+    Ok(aegis_ipc::TransactResult::Committed {
+        receipt: aegis_ipc::TransactReceipt {
+            before_seq,
+            after_seq,
+            results,
+        },
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_chrome_window_command(
     server: &mut aegis_compositor::Server,
@@ -441,4 +507,201 @@ pub(super) fn apply_chrome_window_command(
         ts_mono_ms,
         aegis_ipc::Origin::Chrome,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture {
+        server: aegis_compositor::Server,
+        notifications: std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
+        journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
+        quit: bool,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self {
+                server: aegis_compositor::Server::new().expect("Server::new"),
+                notifications: std::sync::Arc::new(std::sync::Mutex::new(
+                    aegis_model::notify::NotificationQueue::new(60_000),
+                )),
+                journal: std::sync::Arc::new(std::sync::Mutex::new(
+                    aegis_ipc::Journal::default_capacity(),
+                )),
+                quit: false,
+            }
+        }
+
+        fn transact(
+            &mut self,
+            expected_journal_seq: Option<u64>,
+            expected_interaction_domain_revision: Option<u64>,
+            ops: Vec<aegis_ipc::Command>,
+        ) -> Result<aegis_ipc::TransactResult, String> {
+            apply_transact_batch(
+                &mut self.server,
+                &self.notifications,
+                &mut self.quit,
+                &None,
+                &self.journal,
+                1,
+                aegis_ipc::Origin::Ipc { conn_id: 1 },
+                expected_journal_seq,
+                expected_interaction_domain_revision,
+                ops,
+            )
+        }
+    }
+
+    #[test]
+    fn transact_batch_commits_in_order_with_per_op_receipts() {
+        let mut fixture = Fixture::new();
+        let result = fixture
+            .transact(
+                None,
+                None,
+                vec![
+                    aegis_ipc::Command::ToggleTiling,
+                    aegis_ipc::Command::Notify {
+                        summary: "s".into(),
+                        body: "b".into(),
+                        app_id: None,
+                        external_id: None,
+                    },
+                ],
+            )
+            .expect("batch");
+        let aegis_ipc::TransactResult::Committed { receipt } = result else {
+            panic!("expected commit, got {result:?}");
+        };
+        assert_eq!((receipt.before_seq, receipt.after_seq), (0, 2));
+        assert_eq!(
+            receipt
+                .results
+                .iter()
+                .map(|result| (result.seq, &result.effect))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, &aegis_ipc::Effect::Applied),
+                (2, &aegis_ipc::Effect::Applied)
+            ]
+        );
+        assert!(fixture.server.tiling(), "the first op applied");
+        assert_eq!(fixture.journal.lock().unwrap().latest_seq(), 2);
+    }
+
+    #[test]
+    fn transact_batch_precondition_conflicts_apply_nothing() {
+        let mut fixture = Fixture::new();
+        let result = fixture
+            .transact(None, None, vec![aegis_ipc::Command::ToggleTiling])
+            .expect("first batch");
+        let aegis_ipc::TransactResult::Committed { receipt } = result else {
+            panic!("expected commit, got {result:?}");
+        };
+        assert_eq!(receipt.after_seq, 1);
+
+        let result = fixture
+            .transact(Some(0), None, vec![aegis_ipc::Command::ToggleTiling])
+            .expect("conflicting batch");
+        assert_eq!(
+            result,
+            aegis_ipc::TransactResult::PreconditionConflict {
+                precondition: aegis_ipc::TransactPrecondition::JournalSeq,
+                expected: 0,
+                actual: 1,
+            }
+        );
+        assert!(
+            fixture.server.tiling(),
+            "a conflicting batch applies nothing further"
+        );
+        assert_eq!(
+            fixture.journal.lock().unwrap().latest_seq(),
+            1,
+            "a conflict journals nothing"
+        );
+
+        let revision = fixture.server.interaction_domain_revision();
+        let result = fixture
+            .transact(
+                None,
+                Some(revision + 1),
+                vec![aegis_ipc::Command::ToggleTiling],
+            )
+            .expect("revision-conflicting batch");
+        assert_eq!(
+            result,
+            aegis_ipc::TransactResult::PreconditionConflict {
+                precondition: aegis_ipc::TransactPrecondition::InteractionDomainRevision,
+                expected: revision + 1,
+                actual: revision,
+            }
+        );
+
+        let result = fixture
+            .transact(
+                Some(1),
+                Some(revision),
+                vec![aegis_ipc::Command::ToggleTiling],
+            )
+            .expect("batch at the fresh cursors");
+        assert!(
+            matches!(result, aegis_ipc::TransactResult::Committed { .. }),
+            "the batch commits when every precondition holds: {result:?}"
+        );
+    }
+
+    #[test]
+    fn transact_batch_reports_per_op_refusals_and_continues() {
+        let mut fixture = Fixture::new();
+        let result = fixture
+            .transact(
+                None,
+                None,
+                vec![
+                    aegis_ipc::Command::ToggleTiling,
+                    // The window does not exist: the physical-seat authority
+                    // check refuses this op while the batch continues.
+                    aegis_ipc::Command::Focus {
+                        id: aegis_model::window::WindowId(99),
+                        reveal: true,
+                    },
+                    aegis_ipc::Command::Notify {
+                        summary: "s".into(),
+                        body: "b".into(),
+                        app_id: None,
+                        external_id: None,
+                    },
+                ],
+            )
+            .expect("batch");
+        let aegis_ipc::TransactResult::Committed { receipt } = result else {
+            panic!("expected commit, got {result:?}");
+        };
+        assert_eq!(receipt.results.len(), 3);
+        assert!(matches!(
+            receipt.results[0].effect,
+            aegis_ipc::Effect::Applied
+        ));
+        assert!(matches!(
+            receipt.results[1].effect,
+            aegis_ipc::Effect::Refused { .. }
+        ));
+        assert!(matches!(
+            receipt.results[2].effect,
+            aegis_ipc::Effect::Applied
+        ));
+        assert_eq!(
+            receipt
+                .results
+                .iter()
+                .map(|result| result.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "every op is journaled in order"
+        );
+    }
 }

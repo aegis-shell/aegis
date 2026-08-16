@@ -22,6 +22,12 @@ pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
 pub const DRM_FORMAT_ABGR8888: u32 = 0x3432_4241;
 pub const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258;
 
+/// Packed 10-bit-per-channel ("30"): `A`/`X` in bits 31..=30, then B, G, R
+/// in descending 10-bit fields — the Vulkan `A2B10G10R10_UNORM_PACK32`
+/// layout. This is the deep-color scanout and client HDR video format.
+pub const DRM_FORMAT_ABGR2101010: u32 = 0x3033_4241;
+pub const DRM_FORMAT_XBGR2101010: u32 = 0x3033_4258;
+
 /// `WL_SHM_FORMAT_XRGB8888`. Wayland SHM formats overlap numerically with DRM
 /// fourccs for the `A`-variants but use the legacy `1` enum value for the
 /// `X`-variant, so SHM and DRM opaqueness must be tested separately. Kept here
@@ -35,7 +41,10 @@ pub const WL_SHM_FORMAT_XRGB8888: u32 = 1;
 /// SHM ingestion) must go through this predicate instead of re-listing fourccs,
 /// so adding a new alpha-free format can never silently diverge between them.
 pub fn is_format_opaque(fourcc: u32) -> bool {
-    matches!(fourcc, DRM_FORMAT_XRGB8888 | DRM_FORMAT_XBGR8888)
+    matches!(
+        fourcc,
+        DRM_FORMAT_XRGB8888 | DRM_FORMAT_XBGR8888 | DRM_FORMAT_XBGR2101010
+    )
 }
 
 /// Whether a Wayland SHM format code has an undefined (padding) alpha byte that
@@ -53,13 +62,17 @@ pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 /// select it. Kept for reference; the compositor requires explicit modifiers.
 pub const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 
-/// The 32-bit-per-pixel fourccs the compositor can import, in advertisement
-/// order.
-pub const ADVERTISED_FOURCCS: [u32; 4] = [
+/// The fourccs the compositor can import, in advertisement order. The
+/// 10-bit entries serve HDR and deep-color client content (decoded into
+/// the working space at sample time; see the renderer's
+/// `drm_format_to_flux`).
+pub const ADVERTISED_FOURCCS: [u32; 6] = [
     DRM_FORMAT_ARGB8888,
     DRM_FORMAT_XRGB8888,
     DRM_FORMAT_ABGR8888,
     DRM_FORMAT_XBGR8888,
+    DRM_FORMAT_ABGR2101010,
+    DRM_FORMAT_XBGR2101010,
 ];
 
 /// A fourcc paired with the device-supported modifiers a client may use for

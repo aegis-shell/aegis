@@ -391,3 +391,60 @@ fn automation_operation_names_accept_canonical_and_snake_case() {
         Some(aegis_ipc::ActorCapability::SystemControl)
     );
 }
+
+#[test]
+fn builtin_scope_executables_cover_every_builtin_scope() {
+    let portal = builtin_scope_executables(aegis_ipc::LOCAL_PORTAL_SCOPE).unwrap();
+    assert_eq!(
+        portal,
+        vec![
+            std::path::PathBuf::from("/usr/bin/xdg-desktop-portal-aegis"),
+            std::path::PathBuf::from("/usr/libexec/xdg-desktop-portal-aegis"),
+            std::path::PathBuf::from("/usr/lib/xdg-desktop-portal-aegis"),
+            std::path::PathBuf::from("/usr/local/bin/xdg-desktop-portal-aegis"),
+        ]
+    );
+    for admin in [
+        aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE,
+        aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE,
+        aegis_ipc::LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE,
+    ] {
+        assert_eq!(
+            builtin_scope_executables(admin).unwrap(),
+            vec![
+                std::path::PathBuf::from("/usr/bin/aegis"),
+                std::path::PathBuf::from("/usr/local/bin/aegis"),
+            ],
+            "{admin}"
+        );
+    }
+    assert!(builtin_scope_executables("some-agent-scope").is_none());
+}
+
+#[test]
+fn scope_exe_permitted_matches_literally_and_through_symlinks() {
+    let dir = std::env::temp_dir().join(format!("aegis-scope-exe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = dir.join("real-portal");
+    std::fs::write(&real, b"#!/bin/true\n").unwrap();
+    let link = dir.join("linked-portal");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let canonical_real = std::fs::canonicalize(&real).unwrap();
+
+    // A literal entry matches; a symlinked entry matches the canonical peer
+    // path the kernel reports through /proc/<pid>/exe.
+    assert!(scope_exe_permitted(
+        std::slice::from_ref(&link),
+        &canonical_real
+    ));
+    assert!(scope_exe_permitted(
+        std::slice::from_ref(&real),
+        &canonical_real
+    ));
+    assert!(!scope_exe_permitted(&[dir.join("other")], &canonical_real));
+    // An entry that does not resolve still compares literally.
+    let missing = dir.join("missing");
+    assert!(!scope_exe_permitted(&[missing], &canonical_real));
+
+    std::fs::remove_dir_all(&dir).ok();
+}

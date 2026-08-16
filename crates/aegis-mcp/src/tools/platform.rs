@@ -5,15 +5,35 @@ impl AegisPlatform {
     pub fn connect(config: BridgeConfig) -> Result<Self, PlatformError> {
         config.validate()?;
         let identity =
-            aegis_agent::IdentityStore::load(config.data_dir.clone(), &config.instance_id);
-        let client = connect_with(&config, &identity, config.io_timeout)?;
-        let principal = identity
-            .principal()
-            .ok_or(PlatformError::MissingAuthenticatedIdentity)?;
+            aegis_ipc_client::IdentityStore::load(config.data_dir.clone(), &config.instance_id);
+        let mut conn =
+            aegis_ipc_client::PersistentConnection::connect(aegis_ipc_client::ConnectParams {
+                socket: config.socket_path.clone(),
+                capabilities: ConnectionCapabilities {
+                    query: true,
+                    control: true,
+                    input: true,
+                    session: false,
+                    interaction_domain: true,
+                },
+                label: config.label.clone(),
+                requested: catalog_ops(),
+                credential: aegis_ipc_client::CredentialSource::Paired(identity),
+                // The first connection may block on the interactive pairing
+                // prompt, so the handshake gets a generous bound; per-request
+                // I/O falls back to the configured timeout right after.
+                handshake_timeout: config.io_timeout.max(GRANT_TIMEOUT),
+                post_timeout: config.io_timeout,
+            })
+            .map_err(connect_error)?;
+        let (capabilities, scope, _, _) = run(&mut conn, config.io_timeout, |client| {
+            client.connection_state().map_err(PlatformError::from)
+        })?;
         let grant = ToolGrant {
-            capabilities: client.caps(),
-            scope: client.scope().clone(),
+            capabilities,
+            scope,
         };
+        let principal = conn.principal().to_owned();
         Ok(Self {
             interaction_domain: InteractionDomainSession::acquire(
                 &config.interaction_domain_label,
@@ -23,8 +43,7 @@ impl AegisPlatform {
             )?,
             config,
             grant,
-            identity,
-            pending_observations: aegis_agent::ObservationLeases::new(MAX_PENDING_OBSERVATIONS),
+            conn,
         })
     }
 
@@ -82,182 +101,191 @@ impl AegisPlatform {
             }
         }
 
-        let mut client = self.connect_ipc_grant()?;
-        let (_, existing) = self.interaction_domain.locate(&mut client)?;
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let tag = format!("{:06x}", marker & 0xff_ffff);
-        let started_summary = format!("aegis-mcp ↔ Aegis · {tag}");
-        client.command(Command::Notify {
-            summary: started_summary.clone(),
-            body: "Live notification verified. Agent Interaction Domain smoke is running.".into(),
-            app_id: Some("aegis-mcp".into()),
-            external_id: None,
-        })?;
-        let started_notification = self.wait_for_notification(&mut client, &started_summary)?;
+        let grant = &self.grant;
+        let config = &self.config;
+        let interaction_domain = &mut self.interaction_domain;
+        run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let (_, existing) = interaction_domain.locate(client)?;
+            let marker = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let tag = format!("{:06x}", marker & 0xff_ffff);
+            let started_summary = format!("aegis-mcp ↔ Aegis · {tag}");
+            client.command(Command::Notify {
+                summary: started_summary.clone(),
+                body: "Live notification verified. Agent Interaction Domain smoke is running."
+                    .into(),
+                app_id: Some("aegis-mcp".into()),
+                external_id: None,
+            })?;
+            let started_notification =
+                Self::wait_for_notification(config.io_timeout, client, &started_summary)?;
 
-        let created_by_smoke = existing.is_none();
-        let managed = match existing {
-            Some(managed) => managed,
-            None => self.ensure_interaction_domain(&mut client)?,
-        };
-        let mut lifecycle = vec![self.verified_interaction_domain_state(&mut client, managed.id)?];
-        let mut input_probe = None;
+            let created_by_smoke = existing.is_none();
+            let managed = match existing {
+                Some(managed) => managed,
+                None => ensure_interaction_domain(grant, interaction_domain, client)?,
+            };
+            let mut lifecycle = vec![Self::verified_interaction_domain_state(client, managed.id)?];
+            let mut input_probe = None;
 
-        let cleanup = if created_by_smoke {
-            let paused_for = observation.min(Duration::from_secs(2));
-            let active_for = observation.saturating_sub(paused_for);
-            let exercise = (|| {
-                self.set_smoke_interaction_domain_state(
-                    &mut client,
-                    managed.id,
-                    InteractionDomainState::Paused,
-                )?;
-                lifecycle.push(self.verified_interaction_domain_state(&mut client, managed.id)?);
-                if !paused_for.is_zero() {
-                    std::thread::sleep(paused_for);
-                }
-                self.set_smoke_interaction_domain_state(
-                    &mut client,
-                    managed.id,
-                    InteractionDomainState::Active,
-                )?;
-                lifecycle.push(self.verified_interaction_domain_state(&mut client, managed.id)?);
-                if let Some(window) = input_window {
-                    input_probe =
-                        Some(self.exercise_agent_pointer(&mut client, managed.id, window)?);
-                }
-                if !active_for.is_zero() {
-                    std::thread::sleep(active_for);
-                }
-                Ok::<(), PlatformError>(())
-            })();
-
-            // Cleanup is attempted even if a transition or verification
-            // failed, so a diagnostic run does not strand authority.
-            let revoked = self.interaction_domain.revoke(&mut client);
-            if let Err(error) = exercise {
-                return match revoked {
-                    Ok(_) => Err(error),
-                    Err(cleanup) => Err(PlatformError::SmokeVerification(format!(
-                        "{error}; cleanup also failed: {cleanup}"
-                    ))),
-                };
-            }
-            if !revoked? {
-                return Err(PlatformError::SmokeVerification(
-                    "new smoke Interaction Domain was not present during cleanup".into(),
-                ));
-            }
-            let snapshot = client.interaction_domains()?;
-            if snapshot
-                .interaction_domains
-                .iter()
-                .any(|interaction_domain| {
-                    interaction_domain.id == managed.id
-                        && interaction_domain.state != InteractionDomainState::Revoked
-                })
-            {
-                return Err(PlatformError::SmokeVerification(
-                    "smoke Interaction Domain remained live after revocation".into(),
-                ));
-            }
-            lifecycle.push("revoked".into());
-            if let Some(probe) = input_probe.as_mut() {
-                probe.window_restored_to_human = self
-                    .window_control_interaction_domain(&mut client, WindowId(probe.window_id))?
-                    == Some(HUMAN_INTERACTION_DOMAIN);
-                if !probe.window_restored_to_human {
-                    return Err(PlatformError::SmokeVerification(format!(
-                        "window {} did not return to the human Interaction Domain after smoke revocation",
-                        probe.window_id
-                    )));
-                }
-            }
-            "revoked_test_interaction_domain"
-        } else {
-            let exercise = (|| {
-                if let Some(window) = input_window {
-                    if self.verified_interaction_domain_state(&mut client, managed.id)? != "active"
-                    {
-                        return Err(PlatformError::SmokeVerification(
-                            "the recovered managed Interaction Domain is paused; resume or reset it before an input smoke probe"
-                                .into(),
-                        ));
+            let cleanup = if created_by_smoke {
+                let paused_for = observation.min(Duration::from_secs(2));
+                let active_for = observation.saturating_sub(paused_for);
+                let exercise = (|| {
+                    Self::set_smoke_interaction_domain_state(
+                        client,
+                        managed.id,
+                        InteractionDomainState::Paused,
+                    )?;
+                    lifecycle.push(Self::verified_interaction_domain_state(client, managed.id)?);
+                    if !paused_for.is_zero() {
+                        std::thread::sleep(paused_for);
                     }
-                    input_probe =
-                        Some(self.exercise_agent_pointer(&mut client, managed.id, window)?);
-                }
-                if !observation.is_zero() {
-                    std::thread::sleep(observation);
-                }
-                Ok::<(), PlatformError>(())
-            })();
-            let restore = input_window
-                .map(|window| self.restore_smoke_window(&mut client, window))
-                .transpose();
-            if let Err(error) = exercise {
-                return match restore {
-                    Ok(_) => Err(error),
-                    Err(cleanup) => Err(PlatformError::SmokeVerification(format!(
-                        "{error}; window cleanup also failed: {cleanup}"
-                    ))),
-                };
-            }
-            restore?;
-            if let Some(probe) = input_probe.as_mut() {
-                probe.window_restored_to_human = self
-                    .window_control_interaction_domain(&mut client, WindowId(probe.window_id))?
-                    == Some(HUMAN_INTERACTION_DOMAIN);
-                if !probe.window_restored_to_human {
-                    return Err(PlatformError::SmokeVerification(format!(
-                        "window {} did not return to the human Interaction Domain after the smoke probe",
-                        probe.window_id
-                    )));
-                }
-            }
-            "preserved_existing_interaction_domain"
-        };
+                    Self::set_smoke_interaction_domain_state(
+                        client,
+                        managed.id,
+                        InteractionDomainState::Active,
+                    )?;
+                    lifecycle.push(Self::verified_interaction_domain_state(client, managed.id)?);
+                    if let Some(window) = input_window {
+                        input_probe = Some(Self::exercise_agent_pointer(
+                            config, client, managed.id, window,
+                        )?);
+                    }
+                    if !active_for.is_zero() {
+                        std::thread::sleep(active_for);
+                    }
+                    Ok::<(), PlatformError>(())
+                })();
 
-        let summary = format!("aegis-mcp ↔ Aegis · passed · {tag}");
-        client.command(Command::Notify {
-            summary: summary.clone(),
-            body: "Notification and Agent Interaction Domain controls were applied and verified."
-                .into(),
-            app_id: Some("aegis-mcp".into()),
-            external_id: None,
-        })?;
-        let notification = self.wait_for_notification(&mut client, &summary)?;
+                // Cleanup is attempted even if a transition or verification
+                // failed, so a diagnostic run does not strand authority.
+                let revoked = interaction_domain.revoke(client);
+                if let Err(error) = exercise {
+                    return match revoked {
+                        Ok(_) => Err(error),
+                        Err(cleanup) => Err(PlatformError::SmokeVerification(format!(
+                            "{error}; cleanup also failed: {cleanup}"
+                        ))),
+                    };
+                }
+                if !revoked? {
+                    return Err(PlatformError::SmokeVerification(
+                        "new smoke Interaction Domain was not present during cleanup".into(),
+                    ));
+                }
+                let snapshot = client.interaction_domains()?;
+                if snapshot
+                    .interaction_domains
+                    .iter()
+                    .any(|interaction_domain| {
+                        interaction_domain.id == managed.id
+                            && interaction_domain.state != InteractionDomainState::Revoked
+                    })
+                {
+                    return Err(PlatformError::SmokeVerification(
+                        "smoke Interaction Domain remained live after revocation".into(),
+                    ));
+                }
+                lifecycle.push("revoked".into());
+                if let Some(probe) = input_probe.as_mut() {
+                    probe.window_restored_to_human =
+                        Self::window_control_interaction_domain(client, WindowId(probe.window_id))?
+                            == Some(HUMAN_INTERACTION_DOMAIN);
+                    if !probe.window_restored_to_human {
+                        return Err(PlatformError::SmokeVerification(format!(
+                            "window {} did not return to the human Interaction Domain after smoke revocation",
+                            probe.window_id
+                        )));
+                    }
+                }
+                "revoked_test_interaction_domain"
+            } else {
+                let exercise = (|| {
+                    if let Some(window) = input_window {
+                        if Self::verified_interaction_domain_state(client, managed.id)? != "active"
+                        {
+                            return Err(PlatformError::SmokeVerification(
+                                "the recovered managed Interaction Domain is paused; resume or reset it before an input smoke probe"
+                                    .into(),
+                            ));
+                        }
+                        input_probe = Some(Self::exercise_agent_pointer(
+                            config, client, managed.id, window,
+                        )?);
+                    }
+                    if !observation.is_zero() {
+                        std::thread::sleep(observation);
+                    }
+                    Ok::<(), PlatformError>(())
+                })();
+                let restore = input_window
+                    .map(|window| Self::restore_smoke_window(client, window))
+                    .transpose();
+                if let Err(error) = exercise {
+                    return match restore {
+                        Ok(_) => Err(error),
+                        Err(cleanup) => Err(PlatformError::SmokeVerification(format!(
+                            "{error}; window cleanup also failed: {cleanup}"
+                        ))),
+                    };
+                }
+                restore?;
+                if let Some(probe) = input_probe.as_mut() {
+                    probe.window_restored_to_human =
+                        Self::window_control_interaction_domain(client, WindowId(probe.window_id))?
+                            == Some(HUMAN_INTERACTION_DOMAIN);
+                    if !probe.window_restored_to_human {
+                        return Err(PlatformError::SmokeVerification(format!(
+                            "window {} did not return to the human Interaction Domain after the smoke probe",
+                            probe.window_id
+                        )));
+                    }
+                }
+                "preserved_existing_interaction_domain"
+            };
 
-        Ok(SmokeReport {
-            status: "passed",
-            mode: "live",
-            label: self.config.label.clone(),
-            notification: SmokeNotificationReport {
-                started_id: started_notification.id,
-                id: notification.id,
-                summary,
-                observed_in_compositor_state: true,
-            },
-            interaction_domain: SmokeInteractionDomainReport {
-                id: managed.id.0,
-                created_by_smoke,
-                lifecycle,
-                cleanup,
-            },
-            visual: SmokeVisualReport {
-                status_indicator: "persistent while the Agent Interaction Domain is live",
-                details_surface: "click the status indicator to open Agent Workspaces",
-                observation_millis: observation.as_millis(),
-                input_probe,
-            },
+            let summary = format!("aegis-mcp ↔ Aegis · passed · {tag}");
+            client.command(Command::Notify {
+                summary: summary.clone(),
+                body:
+                    "Notification and Agent Interaction Domain controls were applied and verified."
+                        .into(),
+                app_id: Some("aegis-mcp".into()),
+                external_id: None,
+            })?;
+            let notification = Self::wait_for_notification(config.io_timeout, client, &summary)?;
+
+            Ok(SmokeReport {
+                status: "passed",
+                mode: "live",
+                label: config.label.clone(),
+                notification: SmokeNotificationReport {
+                    started_id: started_notification.id,
+                    id: notification.id,
+                    summary,
+                    observed_in_compositor_state: true,
+                },
+                interaction_domain: SmokeInteractionDomainReport {
+                    id: managed.id.0,
+                    created_by_smoke,
+                    lifecycle,
+                    cleanup,
+                },
+                visual: SmokeVisualReport {
+                    status_indicator: "persistent while the Agent Interaction Domain is live",
+                    details_surface: "click the status indicator to open Agent Workspaces",
+                    observation_millis: observation.as_millis(),
+                    input_probe,
+                },
+            })
         })
     }
 
     fn exercise_agent_pointer(
-        &self,
+        config: &BridgeConfig,
         client: &mut Client,
         interaction_domain: InteractionDomainId,
         window: WindowId,
@@ -278,7 +306,8 @@ impl AegisPlatform {
                 window.0
             )));
         }
-        if self.window_control_interaction_domain(client, window)? != Some(HUMAN_INTERACTION_DOMAIN)
+        if Self::window_control_interaction_domain(client, window)?
+            != Some(HUMAN_INTERACTION_DOMAIN)
         {
             return Err(PlatformError::SmokeVerification(format!(
                 "window {} is not currently controlled by the human Interaction Domain",
@@ -323,7 +352,7 @@ impl AegisPlatform {
             observation.token,
             actions.clone(),
         )?;
-        let deadline = Instant::now() + self.config.io_timeout;
+        let deadline = Instant::now() + config.io_timeout;
         loop {
             let journal = client.journal(baseline)?;
             if let Some(entry) = journal.entries.into_iter().find(|entry| {
@@ -365,13 +394,10 @@ impl AegisPlatform {
         }
     }
 
-    fn restore_smoke_window(
-        &self,
-        client: &mut Client,
-        window: WindowId,
-    ) -> Result<(), PlatformError> {
+    fn restore_smoke_window(client: &mut Client, window: WindowId) -> Result<(), PlatformError> {
         let snapshot = client.interaction_domains()?;
-        if self.window_control_interaction_domain(client, window)? == Some(HUMAN_INTERACTION_DOMAIN)
+        if Self::window_control_interaction_domain(client, window)?
+            == Some(HUMAN_INTERACTION_DOMAIN)
         {
             return Ok(());
         }
@@ -393,7 +419,6 @@ impl AegisPlatform {
     }
 
     fn window_control_interaction_domain(
-        &self,
         client: &mut Client,
         window: WindowId,
     ) -> Result<Option<InteractionDomainId>, PlatformError> {
@@ -415,13 +440,16 @@ impl AegisPlatform {
     }
 
     /// Refresh the credential-bound ceiling before publishing a catalog.
-    /// This makes administrative ceiling changes visible on the next
-    /// `tools/list` instead of retaining the process-start snapshot.
+    /// The scope is re-resolved on the live connection, so administrative
+    /// ceiling changes are visible on the next `tools/list` instead of
+    /// retaining the process-start snapshot.
     pub(crate) fn refreshed_definitions(&mut self) -> Result<Vec<ToolDefinition>, PlatformError> {
-        let client = self.connect_ipc()?;
+        let (capabilities, scope, _, _) = run(&mut self.conn, self.config.io_timeout, |client| {
+            client.connection_state().map_err(PlatformError::from)
+        })?;
         self.grant = ToolGrant {
-            capabilities: client.caps(),
-            scope: client.scope().clone(),
+            capabilities,
+            scope,
         };
         Ok(self.definitions())
     }
@@ -442,19 +470,20 @@ impl AegisPlatform {
     /// Best-effort normal shutdown. Failure is returned so the CLI can report
     /// that the recovery record was intentionally retained for the next run.
     pub fn shutdown(&mut self) -> Result<(), PlatformError> {
-        self.pending_observations.clear();
         if !self.config.revoke_on_exit {
             return Ok(());
         }
-        let mut client = self.connect_ipc_grant()?;
-        let (_, managed) = self.interaction_domain.locate(&mut client)?;
-        if managed.is_none() {
-            return Ok(());
-        }
-        if !self.can_revoke_interaction_domain() {
-            return Err(PlatformError::InteractionDomainCleanupNotGranted);
-        }
-        self.interaction_domain.revoke(&mut client)?;
+        let can_revoke = self.can_revoke_interaction_domain();
+        run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let (_, managed) = self.interaction_domain.locate(client)?;
+            if managed.is_none() {
+                return Ok(false);
+            }
+            if !can_revoke {
+                return Err(PlatformError::InteractionDomainCleanupNotGranted);
+            }
+            Ok(self.interaction_domain.revoke(client)?)
+        })?;
         Ok(())
     }
 
@@ -466,8 +495,9 @@ impl AegisPlatform {
         match kind {
             ToolKind::DesktopSnapshot => {
                 parse::<NoArgs>(arguments)?;
-                let mut client = self.connect_ipc()?;
-                let snapshot = client.observe()?;
+                let snapshot = run(&mut self.conn, self.config.io_timeout, |client| {
+                    client.observe().map_err(PlatformError::from)
+                })?;
                 Ok(ToolCallResult::json(json!({
                     "grant": self.grant,
                     "windows": snapshot.windows.unwrap_or_default(),
@@ -485,8 +515,11 @@ impl AegisPlatform {
                         "limit must be from 1 through {MAX_JOURNAL_ENTRIES}"
                     )));
                 }
-                let mut client = self.connect_ipc()?;
-                let mut snapshot = client.journal(args.since.unwrap_or(0))?;
+                let mut snapshot = run(&mut self.conn, self.config.io_timeout, |client| {
+                    client
+                        .journal(args.since.unwrap_or(0))
+                        .map_err(PlatformError::from)
+                })?;
                 snapshot.entries.truncate(limit);
                 let next_since = snapshot
                     .entries
@@ -591,30 +624,12 @@ impl AegisPlatform {
         }
     }
 
-    fn connect_ipc(&self) -> Result<Client, PlatformError> {
-        connect_with(&self.config, &self.identity, self.config.io_timeout)
-    }
-
-    /// Connect for a mutation call that may block on an interactive runtime
-    /// grant (ADR-0088). The compositor's interaction timeout is 300 s, so
-    /// these calls get a bound beyond it; query calls keep the configured
-    /// I/O timeout.
-    fn connect_ipc_grant(&self) -> Result<Client, PlatformError> {
-        connect_with(&self.config, &self.identity, GRANT_TIMEOUT)
-    }
-
-    fn take_observation_client(&mut self, token: &str) -> Result<Client, PlatformError> {
-        self.pending_observations
-            .take(token)
-            .ok_or(PlatformError::UnknownObservation)
-    }
-
     fn wait_for_notification(
-        &self,
+        io_timeout: Duration,
         client: &mut Client,
         summary: &str,
     ) -> Result<aegis_model::notify::Notification, PlatformError> {
-        let deadline = Instant::now() + self.config.io_timeout;
+        let deadline = Instant::now() + io_timeout;
         loop {
             if let Some(notification) = client.notifications()?.into_iter().find(|notification| {
                 notification.summary == summary
@@ -632,7 +647,6 @@ impl AegisPlatform {
     }
 
     fn set_smoke_interaction_domain_state(
-        &self,
         client: &mut Client,
         interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
         state: InteractionDomainState,
@@ -655,7 +669,6 @@ impl AegisPlatform {
     }
 
     fn verified_interaction_domain_state(
-        &self,
         client: &mut Client,
         interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<String, PlatformError> {
@@ -680,16 +693,19 @@ impl AegisPlatform {
     }
 
     fn command(
-        &self,
+        &mut self,
         command: Command,
         operation: &'static str,
     ) -> Result<ToolCallResult, PlatformError> {
-        let mut client = self.connect_ipc_grant()?;
         // Commands in the transaction vocabulary commit synchronously and
         // return the main loop's receipt; the rest keep the queued `Do`
         // contract (ADR-0125).
         if let Some(op) = aegis_ipc::TransactOp::from_command(&command) {
-            let result = client.transact(None, vec![op])?;
+            let result = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+                client
+                    .transact(None, None, vec![op])
+                    .map_err(PlatformError::from)
+            })?;
             return Ok(ToolCallResult::json(json!({
                 "status": "committed",
                 "operation": operation,
@@ -697,7 +713,9 @@ impl AegisPlatform {
                 "receipt": result
             })));
         }
-        client.command(command)?;
+        run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            client.command(command).map_err(PlatformError::from)
+        })?;
         Ok(ToolCallResult::json(json!({
             "status": "queued",
             "operation": operation,
@@ -748,8 +766,11 @@ impl AegisPlatform {
         arguments: Value,
     ) -> Result<ToolCallResult, PlatformError> {
         parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc()?;
-        let (snapshot, managed) = self.interaction_domain.locate(&mut client)?;
+        let (snapshot, managed) = run(&mut self.conn, self.config.io_timeout, |client| {
+            self.interaction_domain
+                .locate(client)
+                .map_err(PlatformError::from)
+        })?;
         let interaction_domain = managed.and_then(|managed| {
             snapshot
                 .interaction_domains
@@ -781,8 +802,9 @@ impl AegisPlatform {
         arguments: Value,
     ) -> Result<ToolCallResult, PlatformError> {
         parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.ensure_interaction_domain(&mut client)?;
+        let managed = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            ensure_interaction_domain(&self.grant, &mut self.interaction_domain, client)
+        })?;
         Ok(ToolCallResult::json(json!({
             "status": "active_or_recovered",
             "interaction_domain_id": managed.id.0,
@@ -808,9 +830,12 @@ impl AegisPlatform {
                 args.desktop_id
             )));
         }
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.ensure_interaction_domain(&mut client)?;
-        client.launch_in_interaction_domain(managed.id, &args.desktop_id)?;
+        let managed = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let managed =
+                ensure_interaction_domain(&self.grant, &mut self.interaction_domain, client)?;
+            client.launch_in_interaction_domain(managed.id, &args.desktop_id)?;
+            Ok(managed)
+        })?;
         Ok(ToolCallResult::json(json!({
             "status": "queued",
             "operation": "interaction_domain_launch_app",
@@ -826,36 +851,42 @@ impl AegisPlatform {
     ) -> Result<ToolCallResult, PlatformError> {
         let args: TransferArgs = parse(arguments)?;
         let window = window_id(args.window_id)?;
-        let mut client = self.connect_ipc_grant()?;
-        let (target, retain_source_as_observer) = match args.target.as_str() {
-            "agent" => {
-                let managed = self.ensure_interaction_domain(&mut client)?;
-                (managed.id, args.retain_source_as_observer.unwrap_or(true))
-            }
-            "human" => {
-                let (_, managed) = self.interaction_domain.locate(&mut client)?;
-                if managed.is_none() {
-                    return Err(PlatformError::NoManagedInteractionDomain);
+        let receipt = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let (target, retain_source_as_observer) = match args.target.as_str() {
+                "agent" => {
+                    let managed = ensure_interaction_domain(
+                        &self.grant,
+                        &mut self.interaction_domain,
+                        client,
+                    )?;
+                    (managed.id, args.retain_source_as_observer.unwrap_or(true))
                 }
-                (
-                    HUMAN_INTERACTION_DOMAIN,
-                    args.retain_source_as_observer.unwrap_or(false),
-                )
-            }
-            _ => return Err(invalid("target must be `agent` or `human`")),
-        };
-        let snapshot = client.interaction_domains()?;
-        let result = client.interaction_domain_action(InteractionDomainAction::Transact {
-            expected_revision: Some(snapshot.revision),
-            mutations: vec![InteractionDomainMutation::TransferWindow {
-                window,
-                target,
-                retain_source_as_observer,
-            }],
+                "human" => {
+                    let (_, managed) = self.interaction_domain.locate(client)?;
+                    if managed.is_none() {
+                        return Err(PlatformError::NoManagedInteractionDomain);
+                    }
+                    (
+                        HUMAN_INTERACTION_DOMAIN,
+                        args.retain_source_as_observer.unwrap_or(false),
+                    )
+                }
+                _ => return Err(invalid("target must be `agent` or `human`")),
+            };
+            let snapshot = client.interaction_domains()?;
+            let result = client.interaction_domain_action(InteractionDomainAction::Transact {
+                expected_revision: Some(snapshot.revision),
+                mutations: vec![InteractionDomainMutation::TransferWindow {
+                    window,
+                    target,
+                    retain_source_as_observer,
+                }],
+            })?;
+            let InteractionDomainActionResult::TransactionCommitted { receipt } = result else {
+                return Err(PlatformError::UnexpectedResponse);
+            };
+            Ok(receipt)
         })?;
-        let InteractionDomainActionResult::TransactionCommitted { receipt } = result else {
-            return Err(PlatformError::UnexpectedResponse);
-        };
         Ok(ToolCallResult::json(json!({
             "status": "committed",
             "target": args.target,
@@ -873,18 +904,20 @@ impl AegisPlatform {
             "paused" => InteractionDomainState::Paused,
             _ => return Err(invalid("state must be `active` or `paused`")),
         };
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.existing_interaction_domain(&mut client)?;
-        let result = client.interaction_domain_action(InteractionDomainAction::Transact {
-            expected_revision: Some(managed.revision),
-            mutations: vec![InteractionDomainMutation::SetState {
-                interaction_domain: managed.id,
-                state,
-            }],
+        let receipt = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let managed = existing_interaction_domain(&mut self.interaction_domain, client)?;
+            let result = client.interaction_domain_action(InteractionDomainAction::Transact {
+                expected_revision: Some(managed.revision),
+                mutations: vec![InteractionDomainMutation::SetState {
+                    interaction_domain: managed.id,
+                    state,
+                }],
+            })?;
+            let InteractionDomainActionResult::TransactionCommitted { receipt } = result else {
+                return Err(PlatformError::UnexpectedResponse);
+            };
+            Ok(receipt)
         })?;
-        let InteractionDomainActionResult::TransactionCommitted { receipt } = result else {
-            return Err(PlatformError::UnexpectedResponse);
-        };
         Ok(ToolCallResult::json(json!({
             "status": "committed",
             "state": args.state,
@@ -898,17 +931,17 @@ impl AegisPlatform {
     ) -> Result<ToolCallResult, PlatformError> {
         let args: CaptureArgs = parse(arguments)?;
         let region = args.region.map(TryInto::try_into).transpose()?;
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.existing_interaction_domain(&mut client)?;
-        let capture = client.capture_interaction_domain(managed.id, region)?;
-        let image_path = self.interaction_domain.store_capture(&capture.png)?;
+        let (capture, image_path) = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let managed = existing_interaction_domain(&mut self.interaction_domain, client)?;
+            let capture = client.capture_interaction_domain(managed.id, region)?;
+            let image_path = self.interaction_domain.store_capture(&capture.png)?;
+            Ok((capture, image_path))
+        })?;
         let image_bytes = capture.png.len();
         let image_png = (image_bytes <= MAX_INLINE_MCP_IMAGE_BYTES).then_some(capture.png);
         let observation_token = capture.observation.token.clone();
         let observation_ttl_ms = capture.observation.ttl_ms;
         let semantic = capture.observation.snapshot;
-        self.pending_observations
-            .retain(&observation_token, observation_ttl_ms, client);
         Ok(ToolCallResult {
             value: json!({
                 "interaction_domain_id": capture.interaction_domain.0,
@@ -932,9 +965,11 @@ impl AegisPlatform {
     fn window_capture(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
         let args: WindowArgs = parse(arguments)?;
         let window = window_id(args.window_id)?;
-        let mut client = self.connect_ipc_grant()?;
-        let capture = client.capture_window(window)?;
-        let image_path = self.interaction_domain.store_window_capture(&capture.png)?;
+        let (capture, image_path) = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let capture = client.capture_window(window)?;
+            let image_path = self.interaction_domain.store_window_capture(&capture.png)?;
+            Ok((capture, image_path))
+        })?;
         let image_bytes = capture.png.len();
         let image_png = (image_bytes <= MAX_INLINE_MCP_IMAGE_BYTES).then_some(capture.png);
         Ok(ToolCallResult {
@@ -957,13 +992,14 @@ impl AegisPlatform {
         arguments: Value,
     ) -> Result<ToolCallResult, PlatformError> {
         parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.existing_interaction_domain(&mut client)?;
-        let observation = client.observe_interaction_domain(managed.id)?;
+        let (managed, observation) = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let managed = existing_interaction_domain(&mut self.interaction_domain, client)?;
+            let observation = client.observe_interaction_domain(managed.id)?;
+            Ok((managed, observation))
+        })?;
         let token = observation.token.clone();
         let ttl_ms = observation.ttl_ms;
         let snapshot = observation.snapshot;
-        self.pending_observations.retain(&token, ttl_ms, client);
         Ok(ToolCallResult::json(json!({
             "interaction_domain_id": managed.id.0,
             "observation_token": token.0,
@@ -987,19 +1023,21 @@ impl AegisPlatform {
             .into_iter()
             .map(semantic_action)
             .collect::<Result<Vec<_>, PlatformError>>()?;
-        let mut client = self.take_observation_client(&args.observation_token)?;
-        let managed = self.existing_interaction_domain(&mut client)?;
         let target = semantic_object_id(args.target_window_id, args.target_local_id)?;
-        let receipt = client.act_in_interaction_domain(aegis_ipc::ActorActionIntent {
-            interaction_domain: managed.id,
-            target,
-            observation: ObservationToken(args.observation_token),
-            actions,
+        let (managed_id, receipt) = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            let managed = existing_interaction_domain(&mut self.interaction_domain, client)?;
+            let receipt = client.act_in_interaction_domain(aegis_ipc::ActorActionIntent {
+                interaction_domain: managed.id,
+                target,
+                observation: ObservationToken(args.observation_token),
+                actions,
+            })?;
+            Ok((managed.id, receipt))
         })?;
         Ok(ToolCallResult::json(json!({
             "status": "committed",
             "operation": "interaction_domain_input",
-            "interaction_domain_id": managed.id.0,
+            "interaction_domain_id": managed_id.0,
             "target": target,
             "verified": true,
             "receipt": receipt
@@ -1011,80 +1049,71 @@ impl AegisPlatform {
         arguments: Value,
     ) -> Result<ToolCallResult, PlatformError> {
         parse::<NoArgs>(arguments)?;
-        self.pending_observations.clear();
-        let mut client = self.connect_ipc_grant()?;
-        let revoked = self.interaction_domain.revoke(&mut client)?;
+        let revoked = run(&mut self.conn, GRANT_TIMEOUT, |client| {
+            self.interaction_domain
+                .revoke(client)
+                .map_err(PlatformError::from)
+        })?;
         Ok(ToolCallResult::json(json!({
             "status": if revoked { "revoked" } else { "not_initialized" },
             "fallback_interaction_domain_id": HUMAN_INTERACTION_DOMAIN.0
         })))
     }
 
-    fn ensure_interaction_domain(
-        &mut self,
-        client: &mut Client,
-    ) -> Result<ManagedInteractionDomain, PlatformError> {
-        let (_, managed) = self.interaction_domain.locate(client)?;
-        if let Some(managed) = managed {
-            return Ok(managed);
-        }
-        if !self.interaction_domain_op_allowed(ActorCapability::CreateInteractionDomain) {
-            return Err(PlatformError::InteractionDomainCreationNotGranted);
-        }
-        self.interaction_domain.ensure(client).map_err(Into::into)
-    }
-
-    fn existing_interaction_domain(
-        &mut self,
-        client: &mut Client,
-    ) -> Result<ManagedInteractionDomain, PlatformError> {
-        let (_, managed) = self.interaction_domain.locate(client)?;
-        managed.ok_or(PlatformError::NoManagedInteractionDomain)
-    }
-
-    fn interaction_domain_op_allowed(&self, op: ActorCapability) -> bool {
-        let listed =
-            |ops: &Option<Vec<ActorCapability>>| ops.as_ref().is_some_and(|ops| ops.contains(&op));
-        self.grant.capabilities.interaction_domain
-            && (listed(&self.grant.scope.ops) || listed(&self.grant.scope.ask_ops))
-    }
-
     fn can_revoke_interaction_domain(&self) -> bool {
-        self.interaction_domain_op_allowed(ActorCapability::RevokeInteractionDomain)
+        interaction_domain_op_allowed(&self.grant, ActorCapability::RevokeInteractionDomain)
     }
 }
 
-fn connect_with(
-    config: &BridgeConfig,
-    identity: &aegis_agent::IdentityStore,
-    post_timeout: Duration,
-) -> Result<Client, PlatformError> {
-    // The first connection may block on the interactive pairing prompt, so
-    // the handshake gets a generous bound; per-request I/O falls back to the
-    // configured timeout right after.
-    let handshake_timeout = config.io_timeout.max(GRANT_TIMEOUT);
-    let connected = aegis_agent::connect(&aegis_agent::ConnectParams {
-        socket: config.socket_path.clone(),
-        capabilities: ConnectionCapabilities {
-            query: true,
-            control: true,
-            input: true,
-            session: false,
-            interaction_domain: true,
-        },
-        label: config.label.clone(),
-        requested: catalog_ops(),
-        credential: aegis_agent::CredentialSource::Paired(identity),
-        handshake_timeout,
-        post_timeout,
-    })
-    .map_err(connect_error)?;
-    Ok(connected.client)
+fn ensure_interaction_domain(
+    grant: &ToolGrant,
+    interaction_domain: &mut InteractionDomainSession,
+    client: &mut Client,
+) -> Result<ManagedInteractionDomain, PlatformError> {
+    let (_, managed) = interaction_domain.locate(client)?;
+    if let Some(managed) = managed {
+        return Ok(managed);
+    }
+    if !interaction_domain_op_allowed(grant, ActorCapability::CreateInteractionDomain) {
+        return Err(PlatformError::InteractionDomainCreationNotGranted);
+    }
+    interaction_domain.ensure(client).map_err(Into::into)
 }
 
-fn connect_error(error: aegis_agent::ConnectError) -> PlatformError {
+fn existing_interaction_domain(
+    interaction_domain: &mut InteractionDomainSession,
+    client: &mut Client,
+) -> Result<ManagedInteractionDomain, PlatformError> {
+    let (_, managed) = interaction_domain.locate(client)?;
+    managed.ok_or(PlatformError::NoManagedInteractionDomain)
+}
+
+fn interaction_domain_op_allowed(grant: &ToolGrant, op: ActorCapability) -> bool {
+    let listed =
+        |ops: &Option<Vec<ActorCapability>>| ops.as_ref().is_some_and(|ops| ops.contains(&op));
+    grant.capabilities.interaction_domain
+        && (listed(&grant.scope.ops) || listed(&grant.scope.ask_ops))
+}
+
+/// Run one request on the persistent connection with the right I/O timeout:
+/// query calls use the configured bound, mutation calls get GRANT_TIMEOUT
+/// because they may block on an interactive runtime grant (ADR-0088).
+fn run<T>(
+    conn: &mut aegis_ipc_client::PersistentConnection,
+    timeout: Duration,
+    f: impl FnOnce(&mut Client) -> Result<T, PlatformError>,
+) -> Result<T, PlatformError> {
+    conn.set_post_timeout(timeout).map_err(PlatformError::Ipc)?;
+    match conn.run(f) {
+        Ok(value) => Ok(value),
+        Err(aegis_ipc_client::PersistentError::Connect(error)) => Err(connect_error(error)),
+        Err(aegis_ipc_client::PersistentError::Call(error)) => Err(error),
+    }
+}
+
+fn connect_error(error: aegis_ipc_client::ConnectError) -> PlatformError {
     match error {
-        aegis_agent::ConnectError::Ipc {
+        aegis_ipc_client::ConnectError::Ipc {
             socket,
             label,
             source,
@@ -1093,7 +1122,11 @@ fn connect_error(error: aegis_agent::ConnectError) -> PlatformError {
             label,
             source,
         },
-        aegis_agent::ConnectError::MissingIdentity => PlatformError::MissingAuthenticatedIdentity,
-        aegis_agent::ConnectError::Identity(error) => PlatformError::Identity(error.to_string()),
+        aegis_ipc_client::ConnectError::MissingIdentity => {
+            PlatformError::MissingAuthenticatedIdentity
+        }
+        aegis_ipc_client::ConnectError::Identity(error) => {
+            PlatformError::Identity(error.to_string())
+        }
     }
 }

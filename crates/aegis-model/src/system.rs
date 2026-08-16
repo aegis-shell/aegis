@@ -89,6 +89,12 @@ pub struct SystemStatus {
     /// Unlike the connection-scoped IPC inhibitors it survives client
     /// disconnects; the runtime owns and reconciles it.
     pub idle_inhibited: bool,
+    /// Live compositor-owned capture streams (`StreamOutputStart`,
+    /// ADR-0052). Chrome shows a persistent, non-interactive recording
+    /// indicator while this is non-zero (ADR-0128). Compositor-owned like
+    /// `idle_inhibited`: the host status poller must not clear it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub capture_streams: u32,
 }
 
 /// Machine form factor, for chrome that adapts its presentation.

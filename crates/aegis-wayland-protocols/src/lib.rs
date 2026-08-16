@@ -156,4 +156,15 @@ unsafe extern "C" {
     // xdg-activation-v1
     pub static xdg_activation_v1_interface: wl_interface;
     pub static xdg_activation_token_v1_interface: wl_interface;
+
+    // color-management-v1
+    pub static wp_color_manager_v1_interface: wl_interface;
+    pub static wp_color_management_output_v1_interface: wl_interface;
+    pub static wp_color_management_surface_v1_interface: wl_interface;
+    pub static wp_color_management_surface_feedback_v1_interface: wl_interface;
+    pub static wp_image_description_creator_icc_v1_interface: wl_interface;
+    pub static wp_image_description_creator_params_v1_interface: wl_interface;
+    pub static wp_image_description_v1_interface: wl_interface;
+    pub static wp_image_description_info_v1_interface: wl_interface;
+    pub static wp_image_description_reference_v1_interface: wl_interface;
 }

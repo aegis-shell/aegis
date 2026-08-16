@@ -28,6 +28,10 @@ fn bare_server() -> Server {
 }
 
 fn add_lane(server: &Server, stream_id: u64, tx: SyncSender<Outbound>) {
+    add_lane_at_version(server, stream_id, tx, PROTOCOL_VERSION);
+}
+
+fn add_lane_at_version(server: &Server, stream_id: u64, tx: SyncSender<Outbound>, version: u32) {
     server.streams.lock().unwrap().insert(
         stream_id,
         StreamLane {
@@ -40,7 +44,8 @@ fn add_lane(server: &Server, stream_id: u64, tx: SyncSender<Outbound>) {
                 principal: None,
                 fallback: Scope::unscoped(),
             },
-            target: crate::schema::StreamTarget::Output,
+            target: crate::schema::StreamTarget::Output { output: None },
+            version,
             lease_deadline: Arc::new(Mutex::new(std::time::Instant::now())),
             queued: Arc::new(AtomicU32::new(0)),
         },
@@ -194,6 +199,38 @@ fn end_stream_unregisters_and_notifies_the_client() {
 }
 
 #[test]
+fn stream_geometry_changed_keeps_the_lane_and_gates_on_version() {
+    let server = bare_server();
+    // A version-29 lane is notified and stays registered: the stream is
+    // frozen, not ended.
+    let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE_DEPTH);
+    add_lane_at_version(&server, 3, tx, 29);
+    assert!(server.stream_geometry_changed(3, 2560, 1440));
+    match rx.recv().unwrap() {
+        Outbound::Event(Event::StreamGeometryChanged {
+            stream_id,
+            width,
+            height,
+        }) => {
+            assert_eq!((stream_id, width, height), (3, 2560, 1440));
+        }
+        other => panic!("expected StreamGeometryChanged, got {other:?}"),
+    }
+    assert!(server.streams.lock().unwrap().contains_key(&3));
+
+    // A pre-29 lane cannot decode the event: nothing is sent, and the
+    // client simply observes frames stop.
+    let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE_DEPTH);
+    add_lane_at_version(&server, 4, tx, 28);
+    assert!(server.stream_geometry_changed(4, 2560, 1440));
+    assert!(rx.try_recv().is_err());
+    assert!(server.streams.lock().unwrap().contains_key(&4));
+
+    // Unknown streams report false.
+    assert!(!server.stream_geometry_changed(99, 1, 1));
+}
+
+#[test]
 fn authenticated_subject_cannot_cross_agent_interaction_domain_ownership() {
     let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
     let own = model.create_agent_interaction_domain_for_subject(
@@ -241,6 +278,8 @@ fn authenticated_subject_cannot_cross_agent_interaction_domain_ownership() {
 struct StreamHandler {
     starts: Mutex<Vec<bool>>,
     releases: Mutex<Vec<(u64, u32)>>,
+    targets: Mutex<Vec<crate::schema::StreamTarget>>,
+    cursors: Mutex<Vec<crate::schema::StreamCursorMode>>,
 }
 
 impl StreamHandler {
@@ -248,6 +287,8 @@ impl StreamHandler {
         Self {
             starts: Mutex::new(Vec::new()),
             releases: Mutex::new(Vec::new()),
+            targets: Mutex::new(Vec::new()),
+            cursors: Mutex::new(Vec::new()),
         }
     }
 }
@@ -289,6 +330,24 @@ impl Handler for StreamHandler {
     fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
         Vec::new()
     }
+    fn enumerate_outputs(&self) -> Vec<crate::schema::OutputInfo> {
+        vec![
+            crate::schema::OutputInfo {
+                connector: "HDMI-A-1".into(),
+                primary: true,
+                rect: aegis_model::Rect::new(0, 0, 1920, 1080),
+                geometry: Some(aegis_model::output::OutputGeometry::default()),
+                available_modes: Some(Vec::new()),
+            },
+            crate::schema::OutputInfo {
+                connector: "DP-1".into(),
+                primary: false,
+                rect: aegis_model::Rect::new(1920, 0, 2560, 1440),
+                geometry: Some(aegis_model::output::OutputGeometry::default()),
+                available_modes: Some(Vec::new()),
+            },
+        ]
+    }
     fn journal_since(&self, _since: u64) -> crate::journal::JournalSnapshot {
         crate::journal::JournalSnapshot {
             entries: Vec::new(),
@@ -306,10 +365,13 @@ impl Handler for StreamHandler {
         &self,
         _conn_id: u64,
         _max_fps: Option<u32>,
-        _target: crate::schema::StreamTarget,
+        target: crate::schema::StreamTarget,
         allow_dmabuf: bool,
+        cursor: crate::schema::StreamCursorMode,
     ) -> Result<StreamInfo, String> {
         self.starts.lock().unwrap().push(allow_dmabuf);
+        self.targets.lock().unwrap().push(target);
+        self.cursors.lock().unwrap().push(cursor);
         let (format, slots) = if allow_dmabuf {
             (
                 StreamPixelFormat::Dmabuf {
@@ -357,6 +419,9 @@ fn stream_hello(version: u32) -> Request {
 
 /// Drive one connection on a scoped thread; returns its client end and the
 /// writer-channel receiver. The loop exits when the client end drops.
+/// `peer_pid` stands in for the accept-time SO_PEERCRED pid; the identity
+/// hooks on the handler decide what it resolves to.
+#[allow(clippy::too_many_arguments)]
 fn spawn_connection<'scope, 'env>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     handler: &'env StreamHandler,
@@ -387,6 +452,7 @@ where
             &next_lease,
             &shutdown,
             conn_id,
+            std::process::id(),
         )
     });
     write_msg(&mut client, &stream_hello(version)).unwrap();
@@ -417,8 +483,9 @@ fn dmabuf_stream_start_requires_opt_in_and_protocol_25() {
             &mut client24,
             &Request::StreamOutputStart {
                 max_fps: None,
-                target: crate::schema::StreamTarget::Output,
+                target: crate::schema::StreamTarget::Output { output: None },
                 dmabuf: Some(true),
+                cursor: None,
             },
         )
         .unwrap();
@@ -443,8 +510,9 @@ fn dmabuf_stream_start_requires_opt_in_and_protocol_25() {
             &mut client25,
             &Request::StreamOutputStart {
                 max_fps: None,
-                target: crate::schema::StreamTarget::Output,
+                target: crate::schema::StreamTarget::Output { output: None },
                 dmabuf: None,
+                cursor: None,
             },
         )
         .unwrap();
@@ -464,8 +532,9 @@ fn dmabuf_stream_start_requires_opt_in_and_protocol_25() {
             &mut client25,
             &Request::StreamOutputStart {
                 max_fps: None,
-                target: crate::schema::StreamTarget::Output,
+                target: crate::schema::StreamTarget::Output { output: None },
                 dmabuf: Some(true),
+                cursor: None,
             },
         )
         .unwrap();
@@ -590,7 +659,7 @@ fn slot_frames_cross_the_wire_without_a_blob() {
         payload,
         &handler,
         &scope,
-        crate::schema::StreamTarget::Output,
+        crate::schema::StreamTarget::Output { output: None },
         &lease_deadline,
         &streams,
     )
@@ -625,8 +694,9 @@ fn stream_buffer_release_is_forwarded_only_for_the_owning_connection() {
             &mut client,
             &Request::StreamOutputStart {
                 max_fps: None,
-                target: crate::schema::StreamTarget::Output,
+                target: crate::schema::StreamTarget::Output { output: None },
                 dmabuf: Some(true),
+                cursor: None,
             },
         )
         .unwrap();
@@ -682,4 +752,459 @@ fn stream_buffer_release_is_forwarded_only_for_the_owning_connection() {
         drop(client);
     });
     assert_eq!(handler.releases.lock().unwrap().as_slice(), &[(1, 2)]);
+}
+
+#[test]
+fn enumerate_outputs_is_query_gated_and_strips_the_rich_fields() {
+    let handler = StreamHandler::new();
+    let streams = Mutex::new(HashMap::new());
+    std::thread::scope(|scope| {
+        let (mut client, rx) = spawn_connection(scope, &handler, &streams, 1, 29);
+        // GetOutputs keeps the rich geometry/mode fields.
+        write_msg(&mut client, &Request::GetOutputs).unwrap();
+        match recv_response(&rx) {
+            Response::Outputs { outputs } => {
+                assert_eq!(outputs.len(), 2);
+                assert!(outputs.iter().all(|output| output.geometry.is_some()));
+                assert_eq!(outputs[0].connector, "HDMI-A-1");
+                assert!(outputs[0].primary);
+                assert_eq!(outputs[0].rect, aegis_model::Rect::new(0, 0, 1920, 1080));
+            }
+            other => panic!("expected Outputs, got {other:?}"),
+        }
+        // EnumerateOutputs answers with the lean capture-addressing form.
+        write_msg(&mut client, &Request::EnumerateOutputs).unwrap();
+        match recv_response(&rx) {
+            Response::Outputs { outputs } => {
+                assert_eq!(outputs.len(), 2);
+                for output in &outputs {
+                    assert!(output.geometry.is_none(), "lean reply: {output:?}");
+                    assert!(output.available_modes.is_none(), "lean reply: {output:?}");
+                }
+                assert_eq!(outputs[0].connector, "HDMI-A-1");
+                assert!(outputs[0].primary);
+                assert_eq!(outputs[0].rect, aegis_model::Rect::new(0, 0, 1920, 1080));
+                assert_eq!(outputs[1].connector, "DP-1");
+                assert!(!outputs[1].primary);
+                assert_eq!(outputs[1].rect, aegis_model::Rect::new(1920, 0, 2560, 1440));
+            }
+            other => panic!("expected Outputs, got {other:?}"),
+        }
+        drop(client);
+    });
+}
+
+#[test]
+fn stream_start_forwards_the_output_selector_and_cursor_mode() {
+    let handler = StreamHandler::new();
+    let streams = Mutex::new(HashMap::new());
+    std::thread::scope(|scope| {
+        let (mut client, rx) = spawn_connection(scope, &handler, &streams, 1, 29);
+        write_msg(
+            &mut client,
+            &Request::StreamOutputStart {
+                max_fps: None,
+                target: crate::schema::StreamTarget::Output {
+                    output: Some("HDMI-A-1".into()),
+                },
+                dmabuf: None,
+                cursor: Some(crate::schema::StreamCursorMode::Embedded),
+            },
+        )
+        .unwrap();
+        match recv_response(&rx) {
+            Response::StreamOutputStarted { stream_id, .. } => assert_eq!(stream_id, 1),
+            other => panic!("expected StreamOutputStarted, got {other:?}"),
+        }
+        // An absent cursor resolves to Hidden before reaching the handler.
+        write_msg(
+            &mut client,
+            &Request::StreamOutputStart {
+                max_fps: None,
+                target: crate::schema::StreamTarget::Output { output: None },
+                dmabuf: None,
+                cursor: None,
+            },
+        )
+        .unwrap();
+        match recv_response(&rx) {
+            Response::StreamOutputStarted { .. } => {}
+            other => panic!("expected StreamOutputStarted, got {other:?}"),
+        }
+        drop(client);
+    });
+    assert_eq!(
+        handler.targets.lock().unwrap().as_slice(),
+        &[
+            crate::schema::StreamTarget::Output {
+                output: Some("HDMI-A-1".into()),
+            },
+            crate::schema::StreamTarget::Output { output: None },
+        ]
+    );
+    assert_eq!(
+        handler.cursors.lock().unwrap().as_slice(),
+        &[
+            crate::schema::StreamCursorMode::Embedded,
+            crate::schema::StreamCursorMode::Hidden,
+        ]
+    );
+}
+
+#[test]
+fn window_target_may_opt_into_dmabuf_at_version_29() {
+    let handler = StreamHandler::new();
+    let streams = Mutex::new(HashMap::new());
+    std::thread::scope(|scope| {
+        let (mut client, rx) = spawn_connection(scope, &handler, &streams, 1, 29);
+        write_msg(
+            &mut client,
+            &Request::StreamOutputStart {
+                max_fps: None,
+                target: crate::schema::StreamTarget::Window {
+                    window: aegis_model::window::WindowId(7),
+                },
+                dmabuf: Some(true),
+                cursor: None,
+            },
+        )
+        .unwrap();
+        // The dispatcher accepts the combination and forwards the opt-in;
+        // falling back to SHM is the runtime's honesty, not the protocol's.
+        match rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap() {
+            Outbound::StreamStarted { .. } => {}
+            other => panic!("expected the started-with-fds reply, got {other:?}"),
+        }
+        drop(client);
+    });
+    assert_eq!(handler.starts.lock().unwrap().as_slice(), &[true]);
+    assert_eq!(
+        handler.targets.lock().unwrap().as_slice(),
+        &[crate::schema::StreamTarget::Window {
+            window: aegis_model::window::WindowId(7),
+        }]
+    );
+}
+
+#[test]
+fn peer_cred_reports_the_kernel_verified_peer_identity() {
+    let (server_end, _client) = UnixStream::pair().unwrap();
+    let cred = connection::peer_cred(&server_end).expect("SO_PEERCRED succeeds");
+    assert_eq!(cred.pid, std::process::id());
+    // SAFETY: geteuid cannot fail.
+    assert_eq!(cred.uid, unsafe { libc::geteuid() });
+}
+
+/// Minimal handler for the built-in scope identity gate (ADR-0128): the
+/// `aegis-portal` scope resolves by name, the peer's executable identity and
+/// the allowlist are injectable, and refusals are recorded like the
+/// production audit path does.
+struct ScopeHandler {
+    peer_exe: Mutex<Option<PathBuf>>,
+    allowed: Vec<PathBuf>,
+    refusals: Mutex<Vec<(u64, crate::journal::JournalMutation, String)>>,
+    lockdown: bool,
+}
+
+impl ScopeHandler {
+    fn new(lockdown: bool) -> Self {
+        Self {
+            peer_exe: Mutex::new(None),
+            allowed: Vec::new(),
+            refusals: Mutex::new(Vec::new()),
+            lockdown,
+        }
+    }
+
+    fn with_peer(self, peer_exe: Option<PathBuf>, allowed: Vec<PathBuf>) -> Self {
+        *self.peer_exe.lock().unwrap() = peer_exe;
+        ScopeHandler {
+            allowed,
+            peer_exe: self.peer_exe,
+            refusals: self.refusals,
+            lockdown: self.lockdown,
+        }
+    }
+}
+
+impl Handler for ScopeHandler {
+    fn policy_caps(&self) -> ConnectionCapabilities {
+        ConnectionCapabilities {
+            query: true,
+            control: true,
+            input: true,
+            session: true,
+            interaction_domain: true,
+        }
+    }
+    fn windows(&self) -> Vec<aegis_model::window::Window> {
+        Vec::new()
+    }
+    fn workspaces(&self) -> aegis_model::workspace::WorkspaceSnapshot {
+        aegis_model::workspace::WorkspaceSnapshot {
+            outputs: Vec::new(),
+        }
+    }
+    fn notifications(&self) -> Vec<aegis_model::notify::Notification> {
+        Vec::new()
+    }
+    fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
+        Vec::new()
+    }
+    fn journal_since(&self, _since: u64) -> crate::journal::JournalSnapshot {
+        crate::journal::JournalSnapshot {
+            entries: Vec::new(),
+            oldest_seq: 0,
+            latest_seq: 0,
+        }
+    }
+    fn resolve_scope(&self, name: &str) -> Option<Scope> {
+        (name == LOCAL_PORTAL_SCOPE).then(|| Scope {
+            ops: Some(vec![ActorCapability::StreamOutput]),
+            ..Scope::default()
+        })
+    }
+    fn peer_executable(&self, _pid: u32) -> Option<PathBuf> {
+        self.peer_exe.lock().unwrap().clone()
+    }
+    fn builtin_scope_permitted(&self, _name: &str, peer_exe: Option<&std::path::Path>) -> bool {
+        peer_exe.is_some_and(|peer_exe| self.allowed.iter().any(|entry| entry == peer_exe))
+    }
+    fn lockdown(&self) -> bool {
+        self.lockdown
+    }
+    fn audit_refusal(
+        &self,
+        conn_id: u64,
+        _subject: Option<&str>,
+        mutation: crate::journal::JournalMutation,
+        reason: String,
+    ) {
+        self.refusals
+            .lock()
+            .unwrap()
+            .push((conn_id, mutation, reason));
+    }
+    fn command(&self, _conn_id: u64, _subject: Option<&str>, _cmd: Command) {}
+}
+
+fn scope_hello(scope_name: Option<&str>) -> Request {
+    Request::Hello {
+        version: PROTOCOL_VERSION,
+        caps: ConnectionCapabilities {
+            query: true,
+            control: true,
+            input: true,
+            session: true,
+            interaction_domain: true,
+        },
+        scope: scope_name.map(str::to_owned),
+        lease: Some(crate::schema::LeaseRequest { ttl_ms: 60_000 }),
+        agent: None,
+    }
+}
+
+/// Drive one connection's handshake on a scoped thread and return the first
+/// protocol response it produced (Hello on success, Error on refusal).
+fn handshake<'scope, 'env, H: Handler>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    handler: &'env H,
+    conn_id: u64,
+    hello: Request,
+) -> Response
+where
+    'env: 'scope,
+{
+    let (server_end, mut client) = UnixStream::pair().unwrap();
+    let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE_DEPTH);
+    let subs = Mutex::new(HashMap::new());
+    let journal_subs = Mutex::new(HashMap::new());
+    let streams = Mutex::new(HashMap::new());
+    let next_sub = AtomicU64::new(0);
+    let next_lease = AtomicU64::new(1);
+    scope.spawn(move || {
+        let mut read = server_end.try_clone().unwrap();
+        let shutdown = Arc::new(server_end);
+        drive_read_loop(
+            &mut read,
+            &tx,
+            handler,
+            &subs,
+            &journal_subs,
+            &streams,
+            &next_sub,
+            &next_lease,
+            &shutdown,
+            conn_id,
+            std::process::id(),
+        )
+    });
+    write_msg(&mut client, &hello).unwrap();
+    recv_response(&rx)
+}
+
+#[test]
+fn builtin_scope_resolves_for_an_allowlisted_peer_executable() {
+    let portal = PathBuf::from("/usr/bin/xdg-desktop-portal-aegis");
+    let handler = ScopeHandler::new(false).with_peer(Some(portal.clone()), vec![portal]);
+    std::thread::scope(|scope| {
+        match handshake(scope, &handler, 1, scope_hello(Some(LOCAL_PORTAL_SCOPE))) {
+            Response::Hello { caps, scope, .. } => {
+                assert!(caps.control);
+                assert!(
+                    scope
+                        .ops
+                        .as_ref()
+                        .is_some_and(|ops| ops.contains(&ActorCapability::StreamOutput))
+                );
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    });
+    assert!(handler.refusals.lock().unwrap().is_empty());
+}
+
+#[test]
+fn builtin_scope_claim_is_refused_for_a_foreign_executable() {
+    let handler = ScopeHandler::new(false).with_peer(
+        Some(PathBuf::from("/usr/bin/not-the-portal")),
+        vec![PathBuf::from("/usr/bin/xdg-desktop-portal-aegis")],
+    );
+    std::thread::scope(|scope| {
+        match handshake(scope, &handler, 7, scope_hello(Some(LOCAL_PORTAL_SCOPE))) {
+            Response::Error { message } => assert_eq!(
+                message,
+                "scope 'aegis-portal' is not available to this process"
+            ),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    });
+    let refusals = handler.refusals.lock().unwrap();
+    assert_eq!(refusals.len(), 1);
+    match &refusals[0] {
+        (7, crate::journal::JournalMutation::ScopeClaim { scope }, reason) => {
+            assert_eq!(scope, "aegis-portal");
+            assert_eq!(
+                reason,
+                "scope 'aegis-portal' is not available to this process"
+            );
+        }
+        other => panic!("expected a ScopeClaim refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn builtin_scope_claim_fails_closed_when_the_peer_is_unidentifiable() {
+    let handler = ScopeHandler::new(false).with_peer(
+        None,
+        vec![PathBuf::from("/usr/bin/xdg-desktop-portal-aegis")],
+    );
+    std::thread::scope(|scope| {
+        match handshake(scope, &handler, 1, scope_hello(Some(LOCAL_PORTAL_SCOPE))) {
+            Response::Error { message } => {
+                assert!(
+                    message.contains("is not available to this process"),
+                    "{message}"
+                )
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    });
+    assert_eq!(handler.refusals.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn lockdown_exemption_requires_peer_identity_not_just_the_scope_name() {
+    // Under lockdown, a built-in scope claim from a foreign executable is
+    // refused outright: the name alone no longer buys the exemption (nor
+    // anything else).
+    let foreign = ScopeHandler::new(true).with_peer(
+        Some(PathBuf::from("/tmp/claimant")),
+        vec![PathBuf::from("/usr/bin/xdg-desktop-portal-aegis")],
+    );
+    std::thread::scope(|scope| {
+        match handshake(scope, &foreign, 1, scope_hello(Some(LOCAL_PORTAL_SCOPE))) {
+            Response::Error { message } => {
+                assert!(
+                    message.contains("is not available to this process"),
+                    "{message}"
+                )
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    });
+
+    // The real platform component keeps its privileged capabilities under
+    // lockdown: the exemption rides on the verified identity.
+    let portal = PathBuf::from("/usr/bin/xdg-desktop-portal-aegis");
+    let genuine = ScopeHandler::new(true).with_peer(Some(portal.clone()), vec![portal]);
+    std::thread::scope(|scope| {
+        match handshake(scope, &genuine, 1, scope_hello(Some(LOCAL_PORTAL_SCOPE))) {
+            Response::Hello { caps, .. } => {
+                assert!(caps.control);
+                assert!(caps.session);
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    });
+
+    // An anonymous connection under lockdown is still stripped, unchanged.
+    let anonymous = ScopeHandler::new(true);
+    std::thread::scope(
+        |scope| match handshake(scope, &anonymous, 1, scope_hello(None)) {
+            Response::Hello { caps, .. } => {
+                assert!(caps.query);
+                assert!(!caps.control);
+                assert!(!caps.input);
+                assert!(!caps.session);
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        },
+    );
+    assert!(anonymous.refusals.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_default_identity_hooks_keep_scope_resolution_name_only() {
+    // Embedders that do not override the hooks (the Handler default
+    // permits every peer) keep the pre-ADR-0128 name-only behavior; the
+    // compositor overrides both.
+    struct NameOnlyHandler;
+    impl Handler for NameOnlyHandler {
+        fn windows(&self) -> Vec<aegis_model::window::Window> {
+            Vec::new()
+        }
+        fn workspaces(&self) -> aegis_model::workspace::WorkspaceSnapshot {
+            aegis_model::workspace::WorkspaceSnapshot {
+                outputs: Vec::new(),
+            }
+        }
+        fn notifications(&self) -> Vec<aegis_model::notify::Notification> {
+            Vec::new()
+        }
+        fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
+            Vec::new()
+        }
+        fn journal_since(&self, _since: u64) -> crate::journal::JournalSnapshot {
+            crate::journal::JournalSnapshot {
+                entries: Vec::new(),
+                oldest_seq: 0,
+                latest_seq: 0,
+            }
+        }
+        fn resolve_scope(&self, name: &str) -> Option<Scope> {
+            (name == LOCAL_PORTAL_SCOPE).then(|| Scope {
+                ops: Some(vec![ActorCapability::StreamOutput]),
+                ..Scope::default()
+            })
+        }
+        fn command(&self, _conn_id: u64, _subject: Option<&str>, _cmd: Command) {}
+    }
+    let handler = NameOnlyHandler;
+    std::thread::scope(|scope| {
+        match handshake(scope, &handler, 1, scope_hello(Some(LOCAL_PORTAL_SCOPE))) {
+            Response::Hello { .. } => {}
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    });
 }

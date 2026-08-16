@@ -324,6 +324,30 @@ descending (duplicates are rejected).
 warn_at = [20, 5]
 ```
 
+## Night Light
+
+The `[night_light]` table schedules a display color-temperature shift
+(ADR-0129). While active, the compositor programs a per-channel gain ramp
+into each CRTC's gamma table — a KMS-level adjustment with zero
+render-pipeline cost, applied live on a one-second cadence with a gradual
+fade. Changes apply on live reload.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enable` | boolean | `false` | Master switch. Without a schedule, enabling warms the outputs permanently. |
+| `temperature` | integer | `4000` | Color temperature in Kelvin while active, 1000–10000. Lower is warmer; 6500 is neutral daylight. |
+| `start` | string | unset | Fade-in start, local `"HH:MM"` (24-hour). Requires `end`. |
+| `end` | string | unset | Fade-out start (return to neutral), local `"HH:MM"`. An overnight window (`start` later than `end`) is honored. |
+| `fade_seconds` | integer | `1200` | Duration of the temperature fade in seconds. |
+
+```toml
+[night_light]
+enable = true
+temperature = 3400
+start = "19:00"
+end = "07:00"
+```
+
 ## Screenshots
 
 The `[screenshot]` table controls where the interactive screenshot selector
@@ -399,6 +423,9 @@ Nested sessions retain the scale reported by the outer compositor.
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
 | `transform` | string | `normal` | Output transform: `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`, `flipped-270` (the `wl_output` underscore spellings are also accepted). Parsed and validated now, but not yet applied: until renderer output-transform support lands, a configured transform logs a warning and the output renders untransformed. |
 | `primary` | boolean | `false` | Whether this output is the primary (focused) one. When several entries claim primary, the first in the backend's output order wins. Applied live on reload. |
+| `hdr` | boolean | `false` | Allow HDR (BT.2020 PQ) output on this connector (ADR-0129). HDR engages only when *every* active output opts in here and advertises ST 2084 through its EDID — the compositor renders one shared framebuffer — and its plane supports 10-bit scanout; anything less stays SDR. HDR commits program the connector `Colorspace`/`HDR_OUTPUT_METADATA`/`max bpc` properties. |
+| `deep_color` | boolean | `false` | Allow a 10-bit deep-color (RGB10A2-class) framebuffer in SDR for reduced banding. Engages when every active output opts in and every primary plane supports the format. |
+| `icc_profile` | string | unset | Path to this output's ICC display profile (matrix+TRC profiles). The framebuffer is then written in the display's actual color space — exact for a single-output session, an approximation across mixed displays. LUT-only profiles and HDR mode are ignored with a log warning. |
 
 ```toml
 [[output]]
@@ -604,6 +631,36 @@ lockdown = true
 Pairing prompts, capability ceilings, and runtime grants are enforced per
 request by the IPC server. See the [aegis-mcp Bridge
 Reference](aegis-mcp.md) for the agent-side contract.
+
+## IPC
+
+The `[ipc]` table holds process-identity policy for the built-in IPC
+scopes
+([ADR-0128](../adr/0128-peer-identity-bound-built-in-scopes-and-capture-indicator.md)).
+Every built-in scope has a compiled-in executable allowlist: a connection
+naming the scope resolves only when the peer's canonicalized
+`/proc/<pid>/exe` appears in the list. The compiled-in defaults are:
+
+| Scope | Executables |
+|-------|-------------|
+| `aegis-portal` | `xdg-desktop-portal-aegis` in `/usr/bin`, `/usr/libexec`, `/usr/lib`, `/usr/local/bin` |
+| `aegis-owner-admin` | `aegis` in `/usr/bin`, `/usr/local/bin` |
+| `aegis-agent-admin` | `aegis` in `/usr/bin`, `/usr/local/bin` |
+| `aegis-interaction-domain-admin` | `aegis` in `/usr/bin`, `/usr/local/bin` |
+
+The `[ipc.scope_executables]` sub-table replaces the compiled-in allowlist
+per scope: a scope named there admits exactly the listed paths — an empty
+list refuses every claim — and a scope absent from the table keeps its
+compiled-in defaults. Changes apply at the next connection handshake
+through the ordinary live reload. Entries match literally or through
+their own canonicalization, so a distribution symlink at either spelling
+satisfies an entry.
+
+```toml
+[ipc.scope_executables]
+aegis-portal = ["/opt/aegis/bin/xdg-desktop-portal-aegis"]
+aegis-owner-admin = ["/usr/bin/aegis"]
+```
 
 ## Development Options
 

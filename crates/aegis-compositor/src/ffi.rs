@@ -39,10 +39,15 @@ pub use aegis_wayland_protocols::{
     ext_foreign_toplevel_handle_v1_interface, ext_foreign_toplevel_list_v1_interface,
     ext_idle_notification_v1_interface, ext_idle_notifier_v1_interface,
     ext_session_lock_manager_v1_interface, ext_session_lock_surface_v1_interface,
-    ext_session_lock_v1_interface, wp_cursor_shape_device_v1_interface,
+    ext_session_lock_v1_interface, wp_color_management_output_v1_interface,
+    wp_color_management_surface_feedback_v1_interface, wp_color_management_surface_v1_interface,
+    wp_color_manager_v1_interface, wp_cursor_shape_device_v1_interface,
     wp_cursor_shape_manager_v1_interface, wp_fractional_scale_manager_v1_interface,
-    wp_fractional_scale_v1_interface, wp_presentation_feedback_interface,
-    wp_presentation_interface, xdg_activation_token_v1_interface, xdg_activation_v1_interface,
+    wp_fractional_scale_v1_interface, wp_image_description_creator_icc_v1_interface,
+    wp_image_description_creator_params_v1_interface, wp_image_description_info_v1_interface,
+    wp_image_description_reference_v1_interface, wp_image_description_v1_interface,
+    wp_presentation_feedback_interface, wp_presentation_interface,
+    xdg_activation_token_v1_interface, xdg_activation_v1_interface,
     zwp_confined_pointer_v1_interface, zwp_idle_inhibit_manager_v1_interface,
     zwp_idle_inhibitor_v1_interface, zwp_input_method_keyboard_grab_v2_interface,
     zwp_input_method_manager_v2_interface, zwp_input_method_v2_interface,
@@ -315,6 +320,40 @@ pub const ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_REPEAT_INFO: u32 = 3;
 
 // virtual-keyboard-unstable-v1
 pub const ZWP_VIRTUAL_KEYBOARD_V1_ERROR_NO_KEYMAP: u32 = 0;
+
+// color-management-v1 (staging). wp_color_manager_v1 event opcodes.
+pub const WP_COLOR_MANAGER_V1_SUPPORTED_INTENT: u32 = 0;
+pub const WP_COLOR_MANAGER_V1_SUPPORTED_FEATURE: u32 = 1;
+pub const WP_COLOR_MANAGER_V1_SUPPORTED_TF_NAMED: u32 = 2;
+pub const WP_COLOR_MANAGER_V1_SUPPORTED_PRIMARIES_NAMED: u32 = 3;
+pub const WP_COLOR_MANAGER_V1_DONE: u32 = 4;
+
+// wp_color_management_output_v1 event opcodes.
+pub const WP_COLOR_MANAGEMENT_OUTPUT_V1_IMAGE_DESCRIPTION_CHANGED: u32 = 0;
+
+// wp_color_management_surface_feedback_v1 event opcodes. `preferred_changed2`
+// (since 2) replaces `preferred_changed`, widening the identity to 64 bits.
+pub const WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_PREFERRED_CHANGED: u32 = 0;
+pub const WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_PREFERRED_CHANGED2: u32 = 1;
+
+// wp_image_description_v1 event opcodes. `ready2` (since 2) replaces `ready`,
+// widening the identity to 64 bits.
+pub const WP_IMAGE_DESCRIPTION_V1_FAILED: u32 = 0;
+pub const WP_IMAGE_DESCRIPTION_V1_READY: u32 = 1;
+pub const WP_IMAGE_DESCRIPTION_V1_READY2: u32 = 2;
+
+// wp_image_description_info_v1 event opcodes. `done` destroys the object.
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_DONE: u32 = 0;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_ICC_FILE: u32 = 1;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_PRIMARIES: u32 = 2;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_PRIMARIES_NAMED: u32 = 3;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_TF_POWER: u32 = 4;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_TF_NAMED: u32 = 5;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_LUMINANCES: u32 = 6;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_PRIMARIES: u32 = 7;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_LUMINANCE: u32 = 8;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_MAX_CLL: u32 = 9;
+pub const WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_MAX_FALL: u32 = 10;
 
 /// Convert a compositor-space `f32` to a `wl_fixed_t` (24.8) for event posting.
 pub fn wl_fixed_from_f32(v: f32) -> i32 {
@@ -1175,6 +1214,127 @@ pub struct zwp_virtual_keyboard_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
+// ----- color-management-v1 (staging) --------------------------------------
+//
+// The generated interface tables carry the full XML v3 request set, and
+// libwayland indexes these structs by opcode, so every slot exists even
+// though the global is advertised at v1. Requests marked since=2/3 must not
+// be sent by clients bound at v1; those slots will be wired to stubs posting
+// `wp_color_manager_v1.error.unsupported_feature` when the
+// extensions/color_management module lands (mirroring how the codebase posts
+// protocol errors for feature-gated requests).
+
+/// `wp_color_manager_v1` requests (XML v3): destroy, get_output, get_surface,
+/// get_surface_feedback, create_icc_creator, create_parametric_creator,
+/// create_windows_scrgb, get_image_description (since 2),
+/// create_windows_bt2100 (since 3).
+#[repr(C)]
+pub struct wp_color_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_output: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub get_surface: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub get_surface_feedback:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub create_icc_creator: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub create_parametric_creator: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub create_windows_scrgb: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub get_image_description:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub create_windows_bt2100: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+/// `wp_color_management_output_v1`: destroy, get_image_description.
+#[repr(C)]
+pub struct wp_color_management_output_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_image_description: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+/// `wp_color_management_surface_v1`: destroy, set_image_description,
+/// unset_image_description.
+#[repr(C)]
+pub struct wp_color_management_surface_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_image_description:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+    pub unset_image_description: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `wp_color_management_surface_feedback_v1`: destroy, get_preferred,
+/// get_preferred_parametric.
+#[repr(C)]
+pub struct wp_color_management_surface_feedback_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_preferred: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub get_preferred_parametric: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+/// `wp_image_description_creator_icc_v1`: create (destructor), set_icc_file.
+/// set_icc_file takes an fd (int), a byte offset and a length.
+#[repr(C)]
+pub struct wp_image_description_creator_icc_v1_interface_impl {
+    pub create: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_icc_file: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, u32, u32),
+}
+
+/// `wp_image_description_creator_params_v1`: create (destructor),
+/// set_tf_named, set_tf_power, set_primaries_named, set_primaries,
+/// set_luminances, set_mastering_display_primaries, set_mastering_luminance,
+/// set_max_cll, set_max_fall. The two primaries requests take eight CIE 1931
+/// xy chromaticity coordinates (int, value * 1M) each.
+#[repr(C)]
+pub struct wp_image_description_creator_params_v1_interface_impl {
+    pub create: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_tf_named: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_tf_power: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_primaries_named: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_primaries: unsafe extern "C" fn(
+        *mut wl_client,
+        *mut wl_resource,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+    ),
+    pub set_luminances: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32, u32),
+    pub set_mastering_display_primaries: unsafe extern "C" fn(
+        *mut wl_client,
+        *mut wl_resource,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+    ),
+    pub set_mastering_luminance: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32),
+    pub set_max_cll: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_max_fall: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+/// `wp_image_description_v1`: destroy, get_information.
+#[repr(C)]
+pub struct wp_image_description_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_information: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+// `wp_image_description_info_v1` declares no requests (the server streams
+// events and the `done` event destroys the object), so there is no request
+// vtable — same situation as `wl_callback`.
+
+/// `wp_image_description_reference_v1`: destroy.
+#[repr(C)]
+pub struct wp_image_description_reference_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
 assert_impl_opcode_count!(zxdg_output_manager_v1_interface_impl, 2);
 assert_impl_opcode_count!(zxdg_output_v1_interface_impl, 1);
 assert_impl_opcode_count!(zxdg_decoration_manager_v1_interface_impl, 2);
@@ -1218,3 +1378,13 @@ assert_impl_opcode_count!(zwp_input_popup_surface_v2_interface_impl, 1);
 assert_impl_opcode_count!(zwp_input_method_keyboard_grab_v2_interface_impl, 1);
 assert_impl_opcode_count!(zwp_virtual_keyboard_manager_v1_interface_impl, 1);
 assert_impl_opcode_count!(zwp_virtual_keyboard_v1_interface_impl, 4);
+// color-management-v1: counts cover the full XML v3 request tables (including
+// since=2/3 requests), not just the v1 subset we advertise.
+assert_impl_opcode_count!(wp_color_manager_v1_interface_impl, 9);
+assert_impl_opcode_count!(wp_color_management_output_v1_interface_impl, 2);
+assert_impl_opcode_count!(wp_color_management_surface_v1_interface_impl, 3);
+assert_impl_opcode_count!(wp_color_management_surface_feedback_v1_interface_impl, 3);
+assert_impl_opcode_count!(wp_image_description_creator_icc_v1_interface_impl, 2);
+assert_impl_opcode_count!(wp_image_description_creator_params_v1_interface_impl, 10);
+assert_impl_opcode_count!(wp_image_description_v1_interface_impl, 2);
+assert_impl_opcode_count!(wp_image_description_reference_v1_interface_impl, 1);

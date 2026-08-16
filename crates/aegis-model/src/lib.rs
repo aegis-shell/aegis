@@ -6,14 +6,17 @@
 //! grow the semantic introspection surface the AI-adaptation phase needs.
 
 pub mod app;
+pub mod color;
 pub mod dmabuf;
 pub mod dock;
+pub mod edid;
 pub mod gesture;
 pub mod input;
 pub mod interaction_domain;
 pub mod keybind;
 pub mod launcher;
 pub mod layout;
+pub mod night_light;
 pub mod notify;
 pub mod output;
 pub mod overview;
@@ -546,6 +549,9 @@ pub struct SurfacePixels<'a> {
     /// framebuffer readback) even for ARGB buffers, matching the occlusion
     /// pass's notion of opaqueness. Empty slice == no opaque region.
     pub opaque_region: Option<&'a [Rect]>,
+    /// The buffer's color-space tag (`wp_color_management_v1`); `None` is
+    /// the protocol default sRGB. Read when the texture is (re)created.
+    pub color: Option<crate::color::ContentColor>,
 }
 
 /// A rendered view of one closing-window ghost frame (ADR-0029 close
@@ -574,6 +580,9 @@ pub struct ClosingGhostView<'a> {
     pub offset: u32,
     /// Fade-out opacity at this frame (`1.0 → 0.0`).
     pub opacity: f32,
+    /// The surface's committed image description at close time
+    /// (`wp_color_management_v1` tag); `None` = sRGB.
+    pub color: Option<crate::color::ContentColor>,
 }
 
 /// A single-plane dma-buf-backed surface, handed from the server to the
@@ -614,4 +623,7 @@ pub struct SurfaceDmabuf {
     /// server borrow. Lets the renderer split the blit into SRC-replace opaque
     /// sub-rects and source-over remainder, matching the occlusion pass.
     pub opaque_region: Option<Vec<Rect>>,
+    /// The buffer's color-space tag (`wp_color_management_v1`); `None` is
+    /// the protocol default sRGB. Read when the texture is (re)created.
+    pub color: Option<crate::color::ContentColor>,
 }

@@ -34,8 +34,8 @@ pub use chrome::{
     AgentFeedback, AppMenu, AppPickParams, AppPicker, BatteryAlert, BatteryAlertParams,
     CapabilityFamily, CapabilityGroup, CapabilityPickParams, CapabilityPickResult,
     CapabilityPrompt, ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt,
-    ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector,
-    SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
+    ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction, RecordingIndicator,
+    ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use popup::{POPUP_GAP, POPUP_MARGIN, PopupSide, place_popup, place_popup_side};
@@ -476,6 +476,10 @@ pub struct ChromeEvents {
     /// The window-picker user chose the whole output instead of a window:
     /// Enter/Space, or a click on empty desktop (ADR-0054).
     pub pick_output: bool,
+    /// Connector the output picker was clicked on this frame (version 29,
+    /// ADR-0128). The main loop answers the waiting `PickTarget` request
+    /// with it.
+    pub picked_output: Option<String>,
     /// The user dismissed an IPC picker session without picking (Escape, or
     /// a confirm with no staged region). The main loop answers the waiting
     /// request with a cancellation.
@@ -1430,6 +1434,12 @@ impl Shell {
     /// Whether the window-picker user chose the whole output this frame.
     pub fn take_pick_output(&mut self) -> bool {
         std::mem::take(&mut self.events.pick_output)
+    }
+
+    /// Drain the connector the output picker was clicked on this frame, if
+    /// any (version 29, ADR-0128).
+    pub fn take_picked_output(&mut self) -> Option<String> {
+        self.events.picked_output.take()
     }
 
     /// Whether an IPC picker session was dismissed without a pick this frame.

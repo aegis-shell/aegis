@@ -55,6 +55,7 @@ pub trait Backend {
                 logical_origin: aegis_model::Point::default(),
             },
             available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         }]
     }
 
@@ -67,6 +68,34 @@ pub trait Backend {
         _modes: std::collections::HashMap<String, aegis_model::output::ModeSpec>,
     ) {
     }
+
+    /// Install the per-connector color policy (the `hdr` / `deep_color`
+    /// fields of `[[output]]` entries), keyed by connector name. Only the
+    /// DRM backend can act on it; the default is a no-op.
+    fn set_configured_color_policies(
+        &mut self,
+        _policies: std::collections::HashMap<String, aegis_model::output::ColorPolicy>,
+    ) {
+    }
+
+    /// Install per-connector ICC profile paths (the `icc_profile` field of
+    /// `[[output]]` entries). Only the DRM backend can act on them.
+    fn set_configured_icc_profiles(
+        &mut self,
+        _profiles: std::collections::HashMap<String, String>,
+    ) {
+    }
+
+    /// The session color pipeline currently in effect. Backends without
+    /// color negotiation report SDR.
+    fn color_pipeline(&self) -> aegis_model::output::ColorPipeline {
+        aegis_model::output::ColorPipeline::Sdr
+    }
+
+    /// Program per-channel output gains through the CRTC `GAMMA_LUT`
+    /// (night light). `None` restores the driver's default ramp. Backends
+    /// without gamma tables ignore the call.
+    fn set_gamma_gains(&mut self, _gains: Option<[f32; 3]>) {}
 
     /// Install the touchpad profile and return the resulting live status.
     fn set_touchpad_config(&mut self, config: TouchpadConfig) -> TouchpadStatus {

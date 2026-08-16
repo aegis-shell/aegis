@@ -1358,9 +1358,8 @@ impl Dock {
         let pinned_count = tiles.iter().filter(|tile| tile.pinned).count();
         let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP
             + Self::section_extra(pinned_count, tiles.len());
-        let max_len = tiles.len() as f32 * (DOCK_TILE_MAX * SPRING_OVERSHOOT_MARGIN)
-            + gaps
-            + 2.0 * DOCK_PAD;
+        let max_len =
+            tiles.len() as f32 * (DOCK_TILE_MAX * SPRING_OVERSHOOT_MARGIN) + gaps + 2.0 * DOCK_PAD;
         Self::panel_rect_for(self.position, max_len, display)
     }
 }

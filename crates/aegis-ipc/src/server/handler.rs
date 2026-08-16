@@ -24,6 +24,14 @@ pub trait Handler: Send + Sync {
     fn notifications(&self) -> Vec<aegis_model::notify::Notification>;
     /// Snapshot of the live outputs (connector + geometry).
     fn outputs(&self) -> Vec<aegis_model::output::OutputInfo>;
+    /// The live outputs projected into the IPC capture-addressing shape
+    /// (connector, primary flag, physical desktop rectangle; version 29).
+    /// The default projects [`Handler::outputs`], treating the first entry
+    /// as the primary output and its scale as the desktop render scale —
+    /// the convention the compositor's model already follows.
+    fn enumerate_outputs(&self) -> Vec<crate::schema::OutputInfo> {
+        crate::schema::OutputInfo::project(&self.outputs())
+    }
     /// Snapshot of journal entries with `seq > since` (ADR-0033).
     fn journal_since(&self, since: u64) -> crate::journal::JournalSnapshot;
     /// Complete Interaction Domain authority snapshot.
@@ -42,6 +50,36 @@ pub trait Handler: Send + Sync {
     /// if the name is unknown; an explicitly named connection is refused.
     fn resolve_scope(&self, _name: &str) -> Option<Scope> {
         None
+    }
+    /// Kernel-verified executable identity of the peer process behind one
+    /// connection: `/proc/<pid>/exe` read at scope-resolution time — the
+    /// kernel resolves every symlink, so the result is canonical — with any
+    /// ` (deleted)` suffix stripped so a package upgrade mid-run does not
+    /// sever a platform component's binding (ADR-0128). `None` means the
+    /// peer's executable could not be determined; built-in scope claims
+    /// must then fail closed. The default reads the host `/proc`; tests
+    /// override it to exercise built-in-scope policy without the platform
+    /// binaries.
+    fn peer_executable(&self, pid: u32) -> Option<std::path::PathBuf> {
+        let link = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+        let text = link.to_str()?;
+        Some(std::path::PathBuf::from(
+            text.strip_suffix(" (deleted)").unwrap_or(text),
+        ))
+    }
+    /// Whether the peer claiming the built-in scope `name` may hold it
+    /// (ADR-0128): production compositors allow only the canonicalized
+    /// executable paths of the platform component the scope belongs to —
+    /// configured per scope or compiled in. Called at Hello, only for the
+    /// built-in scope names, before the scope resolves; the lockdown
+    /// exemption rides on the same check, so it can never stay name-only.
+    /// `peer_exe` is `None` when the peer's executable could not be
+    /// determined, which must refuse (fail closed). The default permits
+    /// every peer, keeping name-only scope resolution for embedders
+    /// without platform components.
+    fn builtin_scope_permitted(&self, name: &str, peer_exe: Option<&std::path::Path>) -> bool {
+        let _ = (name, peer_exe);
+        true
     }
     /// Look up a previously paired agent by the credential it presents
     /// (ADR-0088). The default recognizes nothing, so every agenting
@@ -378,6 +416,7 @@ pub trait Handler: Send + Sync {
         _conn_id: u64,
         _subject: Option<&str>,
         _expected_journal_seq: Option<u64>,
+        _expected_interaction_domain_revision: Option<u64>,
         _ops: Vec<Command>,
     ) -> Result<crate::schema::TransactResult, String> {
         Err("transactions unsupported".into())
@@ -480,16 +519,21 @@ pub trait Handler: Send + Sync {
     /// briefly for the reply. Frames are pushed back through
     /// [`Server::push_stream_frame`]. `target` (version 6) selects the whole
     /// output or one window's visible region (ADR-0054); an unknown window
-    /// id is an error. `allow_dmabuf` (version 25) is the client's explicit
+    /// id is an error, as is an unknown output connector on
+    /// [`crate::schema::StreamTarget::Output`] (version 29). `allow_dmabuf`
+    /// (version 25) is the client's explicit
     /// zero-copy opt-in: only then may the reply announce
     /// [`StreamPixelFormat::Dmabuf`] and carry a slot table; any reason the
     /// transport is unavailable falls back to SHM pixels instead of failing.
+    /// `cursor` (version 29) is the negotiated cursor mode, already
+    /// defaulted to `Hidden` by the dispatcher.
     fn stream_output_start(
         &self,
         _conn_id: u64,
         _max_fps: Option<u32>,
         _target: crate::schema::StreamTarget,
         _allow_dmabuf: bool,
+        _cursor: crate::schema::StreamCursorMode,
     ) -> Result<StreamInfo, String> {
         Err("streaming unsupported".into())
     }

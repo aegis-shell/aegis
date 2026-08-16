@@ -137,6 +137,7 @@ impl Handler for TestHandler {
         conn_id: u64,
         subject: Option<&str>,
         expected_journal_seq: Option<u64>,
+        _expected_interaction_domain_revision: Option<u64>,
         ops: Vec<aegis_ipc::Command>,
     ) -> Result<aegis_ipc::TransactResult, String> {
         let mut journal = self.journal.lock().expect("journal lock");
@@ -145,6 +146,7 @@ impl Handler for TestHandler {
             && expected != before_seq
         {
             return Ok(aegis_ipc::TransactResult::PreconditionConflict {
+                precondition: aegis_ipc::TransactPrecondition::JournalSeq,
                 expected,
                 actual: before_seq,
             });

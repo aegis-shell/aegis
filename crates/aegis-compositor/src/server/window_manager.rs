@@ -536,6 +536,7 @@ impl Server {
                     stride: dmabuf.map_or(0, |db| db.stride),
                     offset: dmabuf.map_or(0, |db| db.offset),
                     opacity,
+                    color: frame.color.clone(),
                 })
             })
             .collect()
@@ -655,6 +656,19 @@ impl Server {
         self.state.output_infos = outputs;
         self.state.outputs_revision = self.state.outputs_revision.wrapping_add(1);
         self.set_output_geometry(primary.geometry);
+    }
+
+    /// Install the session color pipeline reported by the backend (ADR-0001
+    /// boundary: the pixel encoding is a flux capability; this server only
+    /// advertises it). On change, broadcast
+    /// `wp_color_management_output_v1.image_description_changed` and
+    /// `wp_color_management_surface_feedback_v1.preferred_changed`.
+    pub fn set_color_pipeline(&mut self, pipeline: aegis_model::output::ColorPipeline) {
+        if self.state.color_pipeline == pipeline {
+            return;
+        }
+        self.state.color_pipeline = pipeline;
+        unsafe { crate::extensions::resend_color_pipeline(self.state.as_mut()) };
     }
 
     /// Set per-connector output policies from the config's `[[output]]`

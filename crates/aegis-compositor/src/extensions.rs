@@ -22,6 +22,7 @@ use std::os::raw::c_int;
 use crate::{State, SurfaceRec, ffi};
 
 mod activation;
+mod color_management;
 mod cursor_shape;
 mod decoration;
 mod explicit_sync;
@@ -41,6 +42,7 @@ mod text_input;
 mod xdg_foreign;
 
 pub(crate) use activation::*;
+pub(crate) use color_management::*;
 pub(crate) use cursor_shape::*;
 pub(crate) use decoration::*;
 pub(crate) use explicit_sync::*;

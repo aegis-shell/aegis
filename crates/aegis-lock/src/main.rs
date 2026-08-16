@@ -729,30 +729,27 @@ impl Dispatch<WpFractionalScaleV1, wl_surface::WlSurface> for AppData {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            wp_fractional_scale_v1::Event::PreferredScale { scale } => {
-                let scale_120 = scale.max(1);
-                let Some(entry) = state
-                    .outputs
-                    .iter_mut()
-                    .find(|entry| entry.lock.wl_surface() == surface)
-                else {
-                    return;
-                };
-                if entry.scale_120 == scale_120 {
-                    return;
-                }
-                entry.scale_120 = scale_120;
-                let scale = entry.scale_factor();
-                if let Some(render) = &mut entry.render
-                    && let Err(error) = render.resize(entry.logical_size, scale)
-                {
-                    state.fail(error.to_string());
-                    return;
-                }
-                state.dirty = true;
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            let scale_120 = scale.max(1);
+            let Some(entry) = state
+                .outputs
+                .iter_mut()
+                .find(|entry| entry.lock.wl_surface() == surface)
+            else {
+                return;
+            };
+            if entry.scale_120 == scale_120 {
+                return;
             }
-            _ => {}
+            entry.scale_120 = scale_120;
+            let scale = entry.scale_factor();
+            if let Some(render) = &mut entry.render
+                && let Err(error) = render.resize(entry.logical_size, scale)
+            {
+                state.fail(error.to_string());
+                return;
+            }
+            state.dirty = true;
         }
     }
 }

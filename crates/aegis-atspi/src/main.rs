@@ -55,28 +55,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "aegis-atspi must be launched by the compositor with --credential-stdin".into(),
         );
     }
-    let credential = aegis_agent::read_credential_from_stdin()?;
+    let credential = aegis_ipc_client::read_credential_from_stdin()?;
     let requested = vec![
         ActorCapability::ObserveWindows,
         ActorCapability::PublishAccessibilityTree,
         ActorCapability::DispatchAccessibilityAction,
     ];
-    let connected = aegis_agent::connect(&aegis_agent::ConnectParams {
-        socket,
-        capabilities: ConnectionCapabilities {
-            query: true,
-            control: true,
-            input: false,
-            session: false,
-            interaction_domain: false,
-        },
-        label: "Aegis AT-SPI adapter".into(),
-        requested,
-        credential: aegis_agent::CredentialSource::Injected(&credential),
-        handshake_timeout: Duration::from_secs(120),
-        post_timeout: Duration::from_secs(40),
-    })?;
-    let mut client = connected.client;
+    let mut conn =
+        aegis_ipc_client::PersistentConnection::connect(aegis_ipc_client::ConnectParams {
+            socket,
+            capabilities: ConnectionCapabilities {
+                query: true,
+                control: true,
+                input: false,
+                session: false,
+                interaction_domain: false,
+            },
+            label: "Aegis AT-SPI adapter".into(),
+            requested,
+            credential: aegis_ipc_client::CredentialSource::Injected(credential),
+            handshake_timeout: Duration::from_secs(120),
+            post_timeout: Duration::from_secs(40),
+        })?;
     let accessibility = async_io::block_on(atspi::AccessibilityConnection::new())?;
     let mut state = AdapterState {
         objects: BTreeMap::new(),
@@ -86,26 +86,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         if Instant::now() >= next_scan {
-            match client.accessibility_windows() {
-                Ok(windows) => match async_io::block_on(scan(&accessibility, &windows, &mut state))
-                {
-                    Ok(updates) => {
-                        for update in updates {
-                            if let Err(error) = client.publish_accessibility_tree(update) {
-                                log::warn!("publish accessibility tree: {error}");
+            match conn.run(|client| client.accessibility_windows()) {
+                Ok(windows) => {
+                    match async_io::block_on(scan(&accessibility, &windows, &mut state)) {
+                        Ok(updates) => {
+                            for update in updates {
+                                if let Err(error) =
+                                    conn.run(|client| client.publish_accessibility_tree(update))
+                                {
+                                    log::warn!("publish accessibility tree: {error}");
+                                }
                             }
                         }
+                        Err(error) => log::warn!("scan AT-SPI tree: {error}"),
                     }
-                    Err(error) => log::warn!("scan AT-SPI tree: {error}"),
-                },
+                }
                 Err(error) => log::warn!("query Aegis windows: {error}"),
             }
             next_scan = Instant::now() + SCAN_INTERVAL;
         }
 
-        if let Some(request) = client.next_accessibility_action(ACTION_POLL)? {
-            let result = async_io::block_on(execute(&accessibility, &state, &request));
-            client.complete_accessibility_action(request.request_id, result)?;
+        // The persistent connection renews the privileged lease lazily and
+        // re-pairs after a wedge, so a transient failure is logged and the
+        // loop continues instead of dying for the supervisor to restart.
+        match conn.run(|client| client.next_accessibility_action(ACTION_POLL)) {
+            Ok(Some(request)) => {
+                let result = async_io::block_on(execute(&accessibility, &state, &request));
+                if let Err(error) = conn
+                    .run(|client| client.complete_accessibility_action(request.request_id, result))
+                {
+                    log::warn!("complete accessibility action: {error}");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!("poll accessibility action: {error}");
+                // A fast-failing poll must not spin: keep the same cadence
+                // the long-poll would have provided.
+                std::thread::sleep(ACTION_POLL);
+            }
         }
     }
 }

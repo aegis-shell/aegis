@@ -9,22 +9,97 @@ project cuts a tagged release.
 
 ### Added
 
-- Agent primitive families and the shared agent client layer (ADR-0125,
-  IPC protocol 28). The agent-facing protocol now classifies into four
-  primitive families. `Observe` reads windows, workspaces, outputs,
-  notifications, Interaction Domains, and the journal cursor in one
-  consistent, scope-gated round trip. `Transact` atomically preflights an
-  ordered batch of window/workspace/tiling/notification ops with an
-  optional journal-cursor precondition and returns the main loop's
-  authoritative per-op receipt — agents no longer poll the journal to
-  verify queued commands. Principal-bound agent connections may now
-  `Subscribe` and `SubscribeJournal`; delivery is filtered per event by
-  the lane's live scope and fails closed on scope narrowing. The new
-  `aegis-agent` crate owns the shared client discipline (pairing,
-  credentials, state recovery, observation leases) for every
-  out-of-process agent; `aegis-mcp` and `aegis-atspi` build on it, and
-  the MCP bridge's window, workspace, tiling, and notification tools now
-  return committed, verified receipts.
+- Color management (ADR-0129). The compositor now implements
+  `wp_color_management_v1` (v1): clients tag buffers with parametric
+  (primaries + transfer) or ICC image descriptions, applied at commit and
+  honored by the renderer through flux image color tags on both the shm
+  and zero-copy dma-buf paths. Ten-bit client formats
+  (XBGR/ABGR2101010) are advertised and imported. On the output side, the
+  DRM backend negotiates the framebuffer encoding per session: 8-bit sRGB
+  by default, 10-bit deep color when every output opts in
+  (`[[output]] deep_color`), and BT.2020 PQ HDR when every output opts in
+  (`hdr`) and proves ST 2084 through EDID — with the connector
+  `Colorspace`/`HDR_OUTPUT_METADATA`/`max bpc` properties programmed (and
+  reset on SDR transitions). A per-output `icc_profile` entry renders the
+  framebuffer in that display's actual color space. Per-output EDID color
+  capabilities surface through `OutputInfo`/IPC. `[night_light]` schedules
+  a gamma-table color-temperature fade (enable/temperature/start/end/
+  fade_seconds).
+- Occlusion-safe window streams (ADR-0127, IPC protocol 29). A
+  `StreamTarget::Window` stream now renders the window's complete surface
+  tree into its own cached offscreen target, independent of presentation,
+  instead of cropping the shared desktop frame: an occluded, minimized, or
+  foreign-workspace window keeps streaming its real content, and no
+  foreign pixels can leak into the capture. The stream renders when the
+  window's surface tree committed and its `max_fps` interval elapsed, and
+  re-renders the clean tree at the one-second liveness tick; a closed
+  window ends the stream, a size change (including a scale change of the
+  output under the window) freezes it with `Event::StreamGeometryChanged`,
+  and pure position moves are followed silently. Window targets may now
+  genuinely opt into the zero-copy dmabuf transport: the same slot ring,
+  explicit fences, and consumer-ownership rules as output streams, with
+  the SHM fallback (and its warning) where an exportable capture surface
+  is unavailable.
+- Embedded cursor compositing for streams (ADR-0127, IPC protocol 29). A
+  stream started with `cursor: "embedded"` now contains the theme cursor
+  wherever its position falls inside the captured region — drawn into the
+  capture target on the GPU for dmabuf and window streams, blended into a
+  second copy of the frame on the capture worker for SHM output streams
+  (per-stream modes make a shared pre-blend incorrect). Only the theme
+  cursor is embedded: client-provided cursor surfaces are scene content
+  and appear in output streams regardless of mode. On the software-cursor
+  fallback (nested or degraded direct display) the presented frame already
+  contains the cursor, so `embedded` adds nothing and `hidden` cannot
+  subtract it there. `hidden` stays the default and is unchanged.
+- Real per-frame damage on stream frames (ADR-0127). Every presented
+  frame's damage folds into a per-stream accumulator that is delivered,
+  translated into the stream's coordinate space (whole-desktop as
+  computed; connector and window targets clipped and shifted), with the
+  next frame the consumer receives — including damage from direct-scanout
+  frames streams could not capture. Dropped frames fold their regions back
+  so nothing is lost to backpressure. The contract stays conservative: a
+  forced liveness frame, a moved crop origin, or damage that never
+  intersected the target reports one full-frame rectangle, and an empty
+  damage list is never sent.
+- Output-addressed and renegotiable frame streams (ADR-0126, IPC protocol
+  29). `EnumerateOutputs` reports every connector's primary flag and
+  physical-pixel rectangle in desktop coordinates, and
+  `StreamTarget::Output` accepts an optional connector selector that
+  streams just that output's region of the desktop frame — SHM streams
+  crop the shared readback, dmabuf streams blit the output's sub-region of
+  the presented frame; an unknown connector is refused at start and a
+  connector that disappears mid-stream ends the stream. The selector's
+  wire shape is backward compatible: `{"type":"Output"}` still means the
+  whole desktop. The `max_fps` clamp
+  rises from 60 to 240 (default stays 30).
+- `Event::StreamGeometryChanged { stream_id, width, height }` (IPC
+  protocol 29) freezes a stream whose target geometry changed — a desktop
+  resize, a mode change on the streamed connector, or a window resize —
+  instead of ending it or silently delivering mismatched frames. A frozen
+  stream stays registered but produces no further frames until the client
+  restarts it with `StreamOutputStop` plus a fresh `StreamOutputStart`,
+  which re-negotiates at the new geometry, dmabuf slot table included.
+  The event goes only to connections that negotiated protocol 29; older
+  clients simply observe frames stop.
+- IPC primitive families and the shared IPC client library (ADR-0125,
+  IPC protocol 28). The broker's client-facing protocol now classifies
+  into four primitive families. `Observe` reads windows, workspaces,
+  outputs, notifications, Interaction Domains, and the journal cursor in
+  a single, scope-gated round trip. `Transact` atomically preflights an
+  ordered batch of window/workspace/tiling/notification ops with
+  optional journal-cursor and Interaction Domain revision preconditions
+  and returns the main loop's authoritative per-op receipt — agents no
+  longer poll the journal to verify queued commands. Principal-bound
+  connections may now `Subscribe` and `SubscribeJournal`; delivery is
+  filtered per event by the lane's live scope and fails closed on scope
+  narrowing. `GetConnectionState` returns a connection's live grant with
+  the scope re-resolved. The new `aegis-ipc-client` crate owns the
+  shared client discipline (pairing, credentials, state recovery,
+  observation leases) plus a persistent, self-healing connection policy
+  with lazy lease renewal and transparent re-pairing; `aegis-mcp` and
+  `aegis-atspi` now run on a single persistent connection, and the MCP
+  bridge's window, workspace, tiling, and notification tools return
+  committed, verified receipts.
 - Window open/close transitions (ADR-0124). Windows fade in over 200 ms on
   first map (growing from a one-sixteenth inset rect) and, when closed,
   leave a 180 ms compositor-owned ghost of their last frame that shrinks
@@ -49,9 +124,68 @@ project cuts a tagged release.
   flow again; previously every ring-full drop was silent, and the drop
   counter only reached the consumer attached to a delivered frame, so a
   wedged consumer was invisible in the journal from both sides.
+- Built-in IPC scopes now bind to kernel-verified process identity
+  (ADR-0128). The IPC server reads `SO_PEERCRED` at accept and refuses any
+  peer whose uid differs from the compositor's (defense in depth behind
+  the owner-only socket), and a `Hello` naming a built-in scope
+  (`aegis-portal`, `aegis-owner-admin`, `aegis-agent-admin`,
+  `aegis-interaction-domain-admin`) resolves only when the peer's
+  canonicalized `/proc/<pid>/exe` appears in that scope's executable
+  allowlist — previously any same-uid process could claim the portal scope
+  by name and stream the screen with no consent. Identity read failures
+  fail closed, refusals answer
+  `scope 'X' is not available to this process` and are journaled as
+  privacy-minimized `ScopeClaim` entries, and the `[agent] lockdown`
+  exemption now requires the same identity match instead of the name
+  alone. Compiled-in allowlists map `aegis-portal` to
+  `xdg-desktop-portal-aegis` and the admin scopes to the `aegis` CLI in
+  the usual prefixes; the new additive `[ipc.scope_executables]` config
+  table replaces them per scope (absent scopes keep the compiled-in
+  defaults, an empty list refuses every claim) and follows live reload.
+  Anonymous connections and paired agents are unaffected.
+- A persistent, non-interactive recording indicator (ADR-0128). While at
+  least one capture stream is live, trusted shell chrome shows a pill with
+  a recording marker and the localized live stream count — above
+  fullscreen windows too, where the status HUD steps aside — and it
+  renders into the ordinary desktop composite, so it is visible inside
+  the recording itself, matching GNOME. The count mirrors the runtime
+  stream registry into `SystemStatus.capture_streams` on every start,
+  stop, disconnect, and stream ending.
+- `PickKind::Output` and connector-carrying output picks (ADR-0128, IPC
+  protocol 29). `PickTarget { kind: Output }` drives the picker chrome in
+  an output mode: the output under the cursor is highlighted and a click
+  or Enter answers `PickResult::Output { connector: Some(..) }` with the
+  clicked connector, hit-tested against the model's output rects; Escape
+  cancels as usual. `PickResult::Output` gains an additive optional
+  `connector` field, so the window-mode whole-output answer (Enter, or a
+  click on empty desktop) keeps its exact legacy `{"type":"Output"}`
+  wire shape in both directions.
+
+### Changed
+
+- Window streams no longer crop the desktop frame (ADR-0127). What a
+  `StreamTarget::Window` stream delivers changed semantics: previously the
+  window's rectangle of the composited frame (foreign pixels included
+  whenever the window was occluded, minimized, or on another workspace,
+  and nothing at all when the window left the visible set), now the
+  window's own offscreen-rendered content in every one of those states.
+  Wire shape, pacing throttle, geometry-renegotiation contract, and
+  per-window one-shot `CaptureWindow` behavior are unchanged.
+- Stream pacing is now damage-driven with a one-second liveness tick
+  (ADR-0126), replacing the forced max-fps cadence of ADR-0052. A stream
+  captures from every real damage-driven composite whose interval has
+  elapsed but never forces a frame at its cadence; on a static desktop it
+  forces at most one presentation per second (plus one immediately after
+  start), so recording an idle screen costs roughly 1/60th of the former
+  rendering while consumers such as OBS simply see a sparse frame stream.
 
 ### Fixed
 
+- A hotplug or a config-driven mode change no longer leaves live streams
+  delivering frames at the stale geometry: the `take_resize` path now
+  runs the same per-stream geometry reconciliation as the swapchain
+  rebuild path, freezing affected streams with `StreamGeometryChanged`
+  and ending streams whose connector disappeared.
 - Pointer movement stuttered badly while the dock popped up or its
   magnification wave ran. The panel's live-animated glass bounds fed the
   backdrop capture cache key, so every animation frame invalidated the

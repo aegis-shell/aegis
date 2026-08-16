@@ -424,6 +424,14 @@ pub enum JournalMutation {
         capability: ActorCapability,
         action: CapabilityUseAction,
     },
+    /// A built-in scope claim decided at the connection handshake
+    /// (ADR-0128). Only the claimed scope name is retained — never the
+    /// peer's executable path or pid — so the journal proves the decision
+    /// without holding process-identifying data. Recorded for refusals; a
+    /// successful claim is implicit in the session that follows.
+    ScopeClaim {
+        scope: String,
+    },
 }
 
 impl JournalMutation {
@@ -448,6 +456,7 @@ impl JournalMutation {
                 "resource grant operation refused"
             }
             Self::CapabilityUse { .. } => "capability use refused",
+            Self::ScopeClaim { .. } => "scope claim refused",
         }
         .into();
         effect

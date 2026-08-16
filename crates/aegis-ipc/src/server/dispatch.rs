@@ -1,7 +1,50 @@
 use super::*;
 
+/// The four compositor-owned built-in scope names (ADR-0090). Claims of
+/// these scopes are bound to kernel-verified peer process identity
+/// (ADR-0128) before they may resolve.
+fn is_builtin_scope_name(name: &str) -> bool {
+    matches!(
+        name,
+        LOCAL_AGENT_ADMIN_SCOPE
+            | LOCAL_OWNER_ADMIN_SCOPE
+            | LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE
+            | LOCAL_PORTAL_SCOPE
+    )
+}
+
+/// The query-gated, scope-filtered output list shared by `GetOutputs`,
+/// `EnumerateOutputs`, and the `Observe` outputs class (ADR-0126). `None`
+/// means the connection may not observe outputs.
+fn permitted_outputs<H: Handler>(
+    handler: &H,
+    scope_name: Option<&str>,
+    granted_scope: &Scope,
+    principal: Option<&str>,
+) -> Option<Vec<crate::schema::OutputInfo>> {
+    let scope = effective_scope(handler, scope_name, granted_scope, principal)?;
+    if !scope.permits_actor_observation(principal.is_some(), ActorCapability::ObserveOutputs) {
+        return None;
+    }
+    let mut outputs = handler.enumerate_outputs();
+    if scope.outputs.is_some() {
+        let allowed_connectors = handler
+            .workspaces()
+            .outputs
+            .into_iter()
+            .filter(|output| scope.permits_output(output.id))
+            .map(|output| output.connector)
+            .collect::<std::collections::HashSet<_>>();
+        outputs.retain(|output| allowed_connectors.contains(&output.connector));
+    }
+    Some(outputs)
+}
+
 /// Drive the protocol on the read half. Returns `(coarse_sub_id,
 /// journal_sub_id, idle_inhibited)` for cleanup; any may be absent/false.
+/// `peer_pid` is the kernel-verified process id of the connection's peer
+/// (SO_PEERCRED at accept), used to bind built-in scope claims to process
+/// identity (ADR-0128).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drive_read_loop<H: Handler>(
     read: &mut UnixStream,
@@ -14,6 +57,7 @@ pub(super) fn drive_read_loop<H: Handler>(
     next_lease: &AtomicU64,
     shutdown: &Arc<UnixStream>,
     conn_id: u64,
+    peer_pid: u32,
 ) -> (Option<SubId>, Option<SubId>, bool) {
     const MIN_LEASE_MS: u64 = 1_000;
     const MAX_LEASE_MS: u64 = 86_400_000;
@@ -47,31 +91,54 @@ pub(super) fn drive_read_loop<H: Handler>(
                     return (None, None, false);
                 }
                 // Resolve a declared scope first: an explicitly named but
-                // unknown scope is refused before any pairing happens.
+                // unknown scope is refused before any pairing happens. A
+                // built-in scope additionally binds to the peer's
+                // kernel-verified process identity (ADR-0128): the name
+                // alone grants nothing, an unidentifiable peer fails
+                // closed, and the check runs before resolution so a refused
+                // claim never reaches a session — the refusal is journaled
+                // like every other security decision.
                 let declared = match scope.as_deref() {
-                    Some(name) => match handler.resolve_scope(name) {
-                        Some(scope) => Some(scope),
-                        None => {
-                            let _ = tx.send(Outbound::Response(Response::Error {
-                                message: format!("unknown scope '{name}'"),
-                            }));
-                            return (None, None, false);
+                    Some(name) => {
+                        if is_builtin_scope_name(name) {
+                            let peer_exe = handler.peer_executable(peer_pid);
+                            if !handler.builtin_scope_permitted(name, peer_exe.as_deref()) {
+                                handler.audit_refusal(
+                                    conn_id,
+                                    None,
+                                    JournalMutation::ScopeClaim {
+                                        scope: name.to_owned(),
+                                    },
+                                    format!("scope '{name}' is not available to this process"),
+                                );
+                                let _ = tx.send(Outbound::Response(Response::Error {
+                                    message: format!(
+                                        "scope '{name}' is not available to this process"
+                                    ),
+                                }));
+                                return (None, None, false);
+                            }
                         }
-                    },
+                        match handler.resolve_scope(name) {
+                            Some(scope) => Some(scope),
+                            None => {
+                                let _ = tx.send(Outbound::Response(Response::Error {
+                                    message: format!("unknown scope '{name}'"),
+                                }));
+                                return (None, None, false);
+                            }
+                        }
+                    }
                     None => None,
                 };
                 // Pairing (ADR-0088): an agent self-declaration is bound to a
                 // principal before any request runs. Built-in scopes are
-                // platform components and never pair.
-                let builtin = matches!(
-                    scope.as_deref(),
-                    Some(
-                        LOCAL_AGENT_ADMIN_SCOPE
-                            | LOCAL_OWNER_ADMIN_SCOPE
-                            | LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE
-                            | LOCAL_PORTAL_SCOPE
-                    )
-                );
+                // platform components and never pair. `builtin` doubles as
+                // the lockdown exemption below; the identity gate above
+                // already refused the connection when the claim did not
+                // match the peer's verified executable, so a true value here
+                // always means name *and* identity matched (ADR-0128).
+                let builtin = scope.as_deref().is_some_and(is_builtin_scope_name);
                 let mut principal = None;
                 let mut agent_reply = None;
                 let mut registry_ceiling = None;
@@ -625,37 +692,50 @@ pub(super) fn drive_read_loop<H: Handler>(
                 }
             }
             Request::GetOutputs => {
-                let scope = effective_scope(
-                    handler,
-                    scope_name.as_deref(),
-                    &granted_scope,
-                    principal.as_deref(),
-                );
-                if granted.query
-                    && scope.as_ref().is_some_and(|scope| {
-                        scope.permits_actor_observation(
-                            principal.is_some(),
-                            ActorCapability::ObserveOutputs,
+                let outputs = granted
+                    .query
+                    .then(|| {
+                        permitted_outputs(
+                            handler,
+                            scope_name.as_deref(),
+                            &granted_scope,
+                            principal.as_deref(),
                         )
                     })
-                {
-                    let scope = scope.as_ref().expect("scope checked");
-                    let mut outputs = handler.outputs();
-                    if scope.outputs.is_some() {
-                        let allowed_connectors = handler
-                            .workspaces()
-                            .outputs
-                            .into_iter()
-                            .filter(|output| scope.permits_output(output.id))
-                            .map(|output| output.connector)
-                            .collect::<std::collections::HashSet<_>>();
-                        outputs.retain(|output| allowed_connectors.contains(&output.connector));
-                    }
-                    Response::Outputs { outputs }
-                } else {
-                    Response::Error {
+                    .flatten();
+                match outputs {
+                    Some(outputs) => Response::Outputs { outputs },
+                    None => Response::Error {
                         message: "GetOutputs requires the query capability".into(),
+                    },
+                }
+            }
+            Request::EnumerateOutputs => {
+                // Capture-addressing metadata (version 29, ADR-0126): gated
+                // like GetOutputs, but the reply carries only the lean
+                // connector/primary/physical-rect fields.
+                let outputs = granted
+                    .query
+                    .then(|| {
+                        permitted_outputs(
+                            handler,
+                            scope_name.as_deref(),
+                            &granted_scope,
+                            principal.as_deref(),
+                        )
+                    })
+                    .flatten();
+                match outputs {
+                    Some(mut outputs) => {
+                        for output in &mut outputs {
+                            output.geometry = None;
+                            output.available_modes = None;
+                        }
+                        Response::Outputs { outputs }
                     }
+                    None => Response::Error {
+                        message: "EnumerateOutputs requires the query capability".into(),
+                    },
                 }
             }
             Request::GetJournal { since } => {
@@ -743,20 +823,16 @@ pub(super) fn drive_read_loop<H: Handler>(
                         .then(|| filter_windows(handler.windows(), scope));
                     let workspaces = observe(ActorCapability::ObserveWorkspaces)
                         .then(|| filter_workspaces(handler.workspaces(), scope));
-                    let outputs = observe(ActorCapability::ObserveOutputs).then(|| {
-                        let mut outputs = handler.outputs();
-                        if scope.outputs.is_some() {
-                            let allowed_connectors = handler
-                                .workspaces()
-                                .outputs
-                                .into_iter()
-                                .filter(|output| scope.permits_output(output.id))
-                                .map(|output| output.connector)
-                                .collect::<std::collections::HashSet<_>>();
-                            outputs.retain(|output| allowed_connectors.contains(&output.connector));
-                        }
-                        outputs
-                    });
+                    let outputs = observe(ActorCapability::ObserveOutputs)
+                        .then(|| {
+                            permitted_outputs(
+                                handler,
+                                scope_name.as_deref(),
+                                &granted_scope,
+                                principal.as_deref(),
+                            )
+                        })
+                        .flatten();
                     let notifications = observe(ActorCapability::ObserveNotifications)
                         .then(|| handler.notifications());
                     let interaction_domains = observe(ActorCapability::ObserveInteractionDomains)
@@ -788,6 +864,23 @@ pub(super) fn drive_read_loop<H: Handler>(
                     Response::Error {
                         message: "Observe requires query and a live scope".into(),
                     }
+                }
+            }
+            Request::GetConnectionState => {
+                // The connection's own grant is never sensitive to itself;
+                // the scope is re-resolved so administrative ceiling changes
+                // are visible without reconnecting (ADR-0125).
+                Response::ConnectionState {
+                    caps: granted,
+                    scope: effective_scope(
+                        handler,
+                        scope_name.as_deref(),
+                        &granted_scope,
+                        principal.as_deref(),
+                    )
+                    .unwrap_or_default(),
+                    lease: active_lease.as_ref().map(|(grant, _)| *grant),
+                    session: Some(session.clone()),
                 }
             }
             Request::GetAgentGrants { principal: filter } => {
@@ -1173,6 +1266,7 @@ pub(super) fn drive_read_loop<H: Handler>(
             }
             Request::Transact {
                 expected_journal_seq,
+                expected_interaction_domain_revision,
                 ops,
             } => {
                 let commands: Vec<Command> = ops.iter().map(TransactOp::command).collect();
@@ -1260,6 +1354,7 @@ pub(super) fn drive_read_loop<H: Handler>(
                         conn_id,
                         principal.as_deref(),
                         expected_journal_seq,
+                        expected_interaction_domain_revision,
                         commands,
                     ) {
                         Ok(result) => Response::Transact { result },
@@ -1718,6 +1813,7 @@ pub(super) fn drive_read_loop<H: Handler>(
                 max_fps,
                 target,
                 dmabuf,
+                cursor,
             } => {
                 // Fail-closed exactly like CaptureOutput: `control`, a live
                 // lease, and an explicit StreamOutput op in the granted
@@ -1725,7 +1821,7 @@ pub(super) fn drive_read_loop<H: Handler>(
                 let current_scope = live_scope.resolve(handler);
                 let op_allowed = current_scope
                     .as_ref()
-                    .is_some_and(|scope| scope_permits_stream(scope, target));
+                    .is_some_and(|scope| scope_permits_stream(scope, &target));
                 let response = if !granted.control {
                     Response::Error {
                         message: "StreamOutputStart requires the control capability".into(),
@@ -1748,7 +1844,14 @@ pub(super) fn drive_read_loop<H: Handler>(
                     // never receive a dmabuf announcement, or its framing
                     // desynchronizes.
                     let allow_dmabuf = dmabuf == Some(true) && version >= 25;
-                    match handler.stream_output_start(conn_id, max_fps, target, allow_dmabuf) {
+                    let cursor = cursor.unwrap_or_default();
+                    match handler.stream_output_start(
+                        conn_id,
+                        max_fps,
+                        target.clone(),
+                        allow_dmabuf,
+                        cursor,
+                    ) {
                         Ok(info) => {
                             streams.lock().unwrap().insert(
                                 info.stream_id,
@@ -1757,6 +1860,7 @@ pub(super) fn drive_read_loop<H: Handler>(
                                     tx: tx.clone(),
                                     scope: live_scope.clone(),
                                     target,
+                                    version,
                                     lease_deadline: Arc::clone(&lease_deadline_shared),
                                     queued: Arc::new(AtomicU32::new(0)),
                                 },

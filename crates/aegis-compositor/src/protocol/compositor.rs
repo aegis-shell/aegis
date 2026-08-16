@@ -556,6 +556,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
             || (*rec).pending_opaque_region.is_some()
             || (*rec).pending_transform != (*rec).buffer_transform
             || (*rec).pending_scale != (*rec).buffer_scale
+            || (*rec).pending_image_description.is_some()
             || !(*rec).pending_damage.is_empty()
             || !(*rec).pending_buffer_damage.is_empty();
         let old_window_size = (*rec).window.size;
@@ -573,6 +574,11 @@ pub(crate) unsafe extern "C" fn surface_commit(
         }
         if let Some(destination) = (*rec).pending_viewport_dst.take() {
             (*rec).viewport_dst = destination;
+        }
+        // wp_color_management_v1: the tag applies at commit like every
+        // other double-buffered surface property.
+        if let Some(description) = (*rec).pending_image_description.take() {
+            (*rec).image_description = description;
         }
         (*rec).buffer_transform = (*rec).pending_transform;
         (*rec).buffer_scale = (*rec).pending_scale;
@@ -1492,6 +1498,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
             (*rec).viewport_resource = std::ptr::null_mut();
         }
         extensions::fractional_scale_surface_destroyed(rec);
+        extensions::color_management_surface_destroyed(rec);
         extensions::session_lock_surface_destroyed(rec);
         extensions::idle_inhibit_surface_destroyed(rec);
         extensions::explicit_sync_surface_destroyed(rec);

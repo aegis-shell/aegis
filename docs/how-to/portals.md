@@ -179,8 +179,9 @@ pw-link -o | grep xdg-desktop-portal-aegis-screencast
 ```
 
 The stream pauses while the session is locked or inactive and resumes after
-unlock. Window sharing captures the selected window's visible output region,
-including any occlusion.
+unlock. Window sharing renders the selected window itself, so the capture
+keeps the window's real content even when it is occluded, minimized, or on
+another workspace.
 
 ## Enable Secret Auto-Unlock Separately
 

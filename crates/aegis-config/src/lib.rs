@@ -114,6 +114,11 @@ pub struct Config {
     #[serde(default)]
     pub agent: AgentConfig,
 
+    /// IPC built-in scope process-identity policy (ADR-0128), written as an
+    /// `[ipc]` table. Additive and optional; it needs no schema-version bump.
+    #[serde(default)]
+    pub ipc: IpcConfig,
+
     /// Default-deny process sandbox policy for applications launched inside
     /// Interaction Domains. Per-desktop-entry overrides are applied only to new launches.
     #[serde(default)]
@@ -138,10 +143,60 @@ pub struct Config {
     #[serde(default)]
     pub battery: BatterySettings,
 
+    /// Night light (scheduled color temperature), written as `[night_light]`.
+    #[serde(default)]
+    pub night_light: NightLightConfig,
+
     /// Development-only escape hatches, written as a `[dev]` table.
     /// Development-only; will be removed before release. Do not rely on it.
     #[serde(default)]
     pub dev: DevConfig,
+}
+
+/// The `[night_light]` section: scheduled display color temperature. When
+/// active, the compositor warms the outputs by programming per-CRTC gamma
+/// tables — a pixel-free adjustment independent of the render pipeline.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NightLightConfig {
+    /// Master switch. With no `start`/`end` schedule, enabling warms the
+    /// outputs immediately and permanently.
+    #[serde(default)]
+    pub enable: bool,
+    /// Color temperature in Kelvin while active (1000..=10000). Lower is
+    /// warmer; 6500 is neutral daylight.
+    #[serde(default = "default_night_light_temperature")]
+    pub temperature: i32,
+    /// Fade-in start, local `"HH:MM"`. Requires `end`.
+    #[serde(default)]
+    pub start: Option<String>,
+    /// Fade-out start (return to neutral), local `"HH:MM"`. Requires
+    /// `start`. An overnight window (start > end) is honored.
+    #[serde(default)]
+    pub end: Option<String>,
+    /// Fade duration in seconds between neutral and `temperature`.
+    #[serde(default = "default_night_light_fade")]
+    pub fade_seconds: i32,
+}
+
+fn default_night_light_temperature() -> i32 {
+    4000
+}
+
+fn default_night_light_fade() -> i32 {
+    20 * 60
+}
+
+impl Default for NightLightConfig {
+    fn default() -> NightLightConfig {
+        NightLightConfig {
+            enable: false,
+            temperature: default_night_light_temperature(),
+            start: None,
+            end: None,
+            fade_seconds: default_night_light_fade(),
+        }
+    }
 }
 
 /// The `[dev]` section: development-only escape hatches.
@@ -274,6 +329,29 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self { lockdown: true }
     }
+}
+
+/// The `[ipc]` section (ADR-0128): process-identity policy for the built-in
+/// IPC scopes. Every field defaults so a partial table still loads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IpcConfig {
+    /// Executable allowlists for the built-in IPC scopes, written
+    /// `[ipc.scope_executables]`, e.g.
+    ///
+    /// ```toml
+    /// [ipc.scope_executables]
+    /// aegis-portal = ["/opt/aegis/bin/xdg-desktop-portal-aegis"]
+    /// aegis-owner-admin = ["/usr/bin/aegis"]
+    /// ```
+    ///
+    /// A scope named here REPLACES its compiled-in default allowlist: only
+    /// a peer whose canonicalized `/proc/<pid>/exe` appears in the list may
+    /// claim the scope. An empty list refuses every claim — the mapping is
+    /// fail-closed by construction. A scope absent from the table keeps its
+    /// compiled-in defaults.
+    #[serde(default)]
+    pub scope_executables: std::collections::HashMap<String, Vec<PathBuf>>,
 }
 
 fn default_true() -> bool {
@@ -599,6 +677,24 @@ pub struct OutputConfig {
     /// Whether this output is the primary (focused) one.
     #[serde(default)]
     pub primary: bool,
+    /// Allow HDR (BT.2020 PQ) output on this connector. HDR engages only
+    /// when *every* active output both opts in here and advertises ST 2084
+    /// support through EDID — the compositor renders one shared framebuffer
+    /// — otherwise the session stays SDR.
+    #[serde(default)]
+    pub hdr: bool,
+    /// Allow a 10-bit deep-color framebuffer (RGB10A2-class scanout) for
+    /// reduced banding in SDR. Engages when every active output opts in
+    /// and every primary plane supports the format.
+    #[serde(default)]
+    pub deep_color: bool,
+    /// Path to this output's ICC display profile. When a parametric
+    /// (matrix+TRC) profile is given, the compositor's framebuffer is
+    /// written in the display's actual color space — exact for the
+    /// single-output session, an approximation across mixed displays.
+    /// LUT-only profiles and HDR mode are out of scope and log a warning.
+    #[serde(default)]
+    pub icc_profile: Option<String>,
 }
 
 /// The `position` table of a `[[output]]` entry: logical-pixel coordinates
@@ -829,6 +925,7 @@ impl Config {
         }
         validate_wallpaper(&cfg.wallpaper, &mut diagnostics);
         validate_lock_screen(&cfg.lock_screen, &mut diagnostics);
+        validate_night_light(&cfg.night_light, &mut diagnostics);
         for (index, output) in cfg.outputs.iter().enumerate() {
             if output.connector.trim().is_empty() {
                 diagnostics.push(Diagnostic::new(
@@ -1151,10 +1248,46 @@ impl Config {
                         .as_deref()
                         .and_then(aegis_model::Transform::from_name),
                     primary: output.primary,
+                    hdr: output.hdr,
+                    deep_color: output.deep_color,
                 },
             );
         }
         policies
+    }
+}
+
+fn validate_night_light(config: &NightLightConfig, diagnostics: &mut Vec<Diagnostic>) {
+    if !(1000..=10000).contains(&config.temperature) {
+        diagnostics.push(Diagnostic::new(
+            Some("night_light.temperature".into()),
+            "must be between 1000 and 10000 (Kelvin)",
+        ));
+    }
+    if config.fade_seconds < 0 {
+        diagnostics.push(Diagnostic::new(
+            Some("night_light.fade_seconds".into()),
+            "must not be negative",
+        ));
+    }
+    match (&config.start, &config.end) {
+        (Some(start), Some(end)) => {
+            for (field, value) in [("start", start), ("end", end)] {
+                if aegis_model::night_light::ClockTime::from_hhmm(value).is_none() {
+                    diagnostics.push(Diagnostic::new(
+                        Some(format!("night_light.{field}")),
+                        "must be local \"HH:MM\" (24-hour)",
+                    ));
+                }
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            diagnostics.push(Diagnostic::new(
+                Some("night_light.start/end".into()),
+                "schedule needs both `start` and `end`",
+            ));
+        }
+        (None, None) => {}
     }
 }
 

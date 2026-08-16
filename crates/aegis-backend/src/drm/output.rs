@@ -36,7 +36,12 @@ impl DrmBackend {
 
     pub(super) fn reconfigure_outputs(&mut self) {
         self.hotplug_pending = false;
-        let selected = match select_outputs(self.card(), &self.configured_modes) {
+        let selected = match select_outputs(
+            self.card(),
+            &self.configured_modes,
+            &self.configured_color,
+            &self.configured_icc,
+        ) {
             Ok(displays) => displays,
             Err(DrmError::NoConnector) => {
                 log::info!("drm: all outputs disconnected; suspending rendering");
@@ -88,12 +93,15 @@ impl DrmBackend {
         for output in old.outputs {
             destroy_output_blobs(self.card(), &output);
         }
-        if self.displays.modifiers != self.surface_modifiers {
-            // The live Flux surface was created with the old intersection and
-            // resize cannot retcon its modifier; the main loop must recreate
-            // it (see Backend::surface_needs_recreate).
+        if self.displays.modifiers != self.surface_modifiers
+            || self.displays.color_mode != self.surface_color_mode
+            || self.displays.icc_profile != self.surface_icc
+        {
+            // The live Flux surface was created with the old intersection
+            // and pixel encoding; resize cannot retcon either — the main
+            // loop must recreate it (see Backend::surface_needs_recreate).
             log::info!(
-                "drm: modifier intersection changed; presentation surface must be recreated"
+                "drm: modifier intersection or color mode changed; presentation surface must be recreated"
             );
             self.surface_stale = true;
         }
@@ -224,6 +232,8 @@ pub(super) fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
 pub(super) fn open_card_and_outputs(
     seat: &Rc<RefCell<libseat::Seat>>,
     configured_modes: &HashMap<String, ModeSpec>,
+    configured_color: &HashMap<String, ColorPolicy>,
+    configured_icc: &HashMap<String, String>,
 ) -> Result<(Card, DisplaySet), DrmError> {
     let candidates = candidate_cards();
     let tried = candidates
@@ -239,7 +249,9 @@ pub(super) fn open_card_and_outputs(
                     .set_client_capability(drm::ClientCapability::UniversalPlanes, true)
                     .and_then(|()| card.set_client_capability(drm::ClientCapability::Atomic, true))
                     .map_err(DrmError::from)
-                    .and_then(|()| select_outputs(&card, configured_modes));
+                    .and_then(|()| {
+                        select_outputs(&card, configured_modes, configured_color, configured_icc)
+                    });
                 match result {
                     Ok(output) => return Ok((card, output)),
                     Err(error) => {
@@ -277,6 +289,7 @@ pub(super) struct OutputCandidate {
     pub(super) scale: Scale,
     pub(super) choices: Vec<OutputChoice>,
     pub(super) available_modes: Vec<OutputMode>,
+    pub(super) color_caps: aegis_model::edid::EdidColorCapabilities,
 }
 
 #[derive(Debug, Clone)]
@@ -289,6 +302,8 @@ pub(super) struct OutputChoice {
 pub(super) fn select_outputs(
     card: &Card,
     configured_modes: &HashMap<String, ModeSpec>,
+    configured_color: &HashMap<String, ColorPolicy>,
+    configured_icc: &HashMap<String, String>,
 ) -> Result<DisplaySet, DrmError> {
     let resources = card.resource_handles()?;
     let mut connectors = resources
@@ -302,12 +317,62 @@ pub(super) fn select_outputs(
         return Err(DrmError::NoConnector);
     }
 
+    // Session color-mode decision. One shared framebuffer means one pixel
+    // encoding across outputs, so HDR (and deep color) engage only when
+    // *every* active output both opts in via config and proves support
+    // (EDID ST 2084 for HDR; plane format support is checked by the
+    // candidate loop below). Anything less stays at the 8-bit SDR default.
+    let color_caps: Vec<aegis_model::edid::EdidColorCapabilities> = connectors
+        .iter()
+        .map(|info| connector_color_caps(card, info.handle()))
+        .collect();
+    let requested_mode = {
+        let all_hdr = connectors.iter().zip(&color_caps).all(|(info, caps)| {
+            configured_color
+                .get(&info.to_string())
+                .is_some_and(|policy| policy.hdr)
+                && caps.hdr_pq
+        });
+        let all_deep = connectors.iter().all(|info| {
+            configured_color
+                .get(&info.to_string())
+                .is_some_and(|policy| policy.deep_color)
+        });
+        if all_hdr {
+            DisplayColorMode::Hdr
+        } else if all_deep {
+            DisplayColorMode::SdrDeepColor
+        } else {
+            DisplayColorMode::Sdr
+        }
+    };
+    if requested_mode == DisplayColorMode::Hdr {
+        log::info!("drm: HDR mode requested (all outputs opt in and advertise ST 2084)");
+    }
+
+    // The ICC profile that drives the framebuffer's content space: the
+    // first connected connector with a configured profile. HDR mode
+    // ignores ICC (BT.2020 PQ is the encoding there).
+    let icc_profile = if requested_mode == DisplayColorMode::Hdr {
+        None
+    } else {
+        connectors
+            .iter()
+            .find_map(|info| configured_icc.get(info.to_string().as_str()).cloned())
+    };
+
     let plane_inventory = discover_plane_inventory(card, &resources)?;
 
     let mut assignment = None;
-    for format in [DrmFourcc::Xrgb8888, DrmFourcc::Argb8888] {
+    let mut attempted = requested_mode;
+    for (index, format) in requested_mode.fb_candidates().iter().enumerate() {
+        // Falling off the 10-bit candidates means the deep pipeline cannot
+        // be driven; degrade the session mode along with the format.
+        if index > 0 && matches!(*format, DrmFourcc::Xrgb8888 | DrmFourcc::Argb8888) {
+            attempted = DisplayColorMode::Sdr;
+        }
         let mut candidates = Vec::with_capacity(connectors.len());
-        for connector in &connectors {
+        for (connector, &caps) in connectors.iter().zip(&color_caps) {
             let name = connector.to_string();
             // (width, height, refresh_mhz, preferred) in connector order, so
             // an index returned by pick_mode addresses connector.modes()
@@ -382,11 +447,11 @@ pub(super) fn select_outputs(
             for crtc in crtcs {
                 for plane in &plane_inventory.primary {
                     if !plane.possible_crtcs.contains(&crtc)
-                        || !plane.formats.contains(&(format as u32))
+                        || !plane.formats.contains(&(*format as u32))
                     {
                         continue;
                     }
-                    let modifiers = plane_modifiers(card, plane.handle, format)?;
+                    let modifiers = plane_modifiers(card, plane.handle, *format)?;
                     if !modifiers.is_empty() {
                         choices.push(OutputChoice {
                             crtc,
@@ -406,6 +471,7 @@ pub(super) fn select_outputs(
                 scale,
                 choices,
                 available_modes: advertised_modes(connector),
+                color_caps: caps,
             });
         }
         if candidates
@@ -415,14 +481,19 @@ pub(super) fn select_outputs(
             continue;
         }
         if let Some((choices, modifiers)) = assign_outputs(&candidates) {
-            assignment = Some((format, candidates, choices, modifiers));
+            assignment = Some((*format, attempted, candidates, choices, modifiers));
             break;
         }
     }
 
-    let Some((format, candidates, choices, modifiers)) = assignment else {
+    let Some((format, color_mode, candidates, choices, modifiers)) = assignment else {
         return Err(DrmError::NoPlane);
     };
+    if requested_mode != DisplayColorMode::Sdr && color_mode == DisplayColorMode::Sdr {
+        log::warn!(
+            "drm: {requested_mode:?} requested but no 10-bit plane assignment exists; falling back to SDR"
+        );
+    }
     let mut desktop_width = 0_u32;
     let mut desktop_height = 0_u32;
     for candidate in &candidates {
@@ -517,6 +588,8 @@ pub(super) fn select_outputs(
             available: plane_inventory.overlay.len(),
             policy: OverlayPlanePolicy::CompositorOnly,
         },
+        color_mode,
+        icc_profile,
     })
 }
 
@@ -605,6 +678,8 @@ fn scanout_format_intersection(
         DrmFourcc::Xrgb8888,
         DrmFourcc::Abgr8888,
         DrmFourcc::Xbgr8888,
+        DrmFourcc::Abgr2101010,
+        DrmFourcc::Xbgr2101010,
     ] {
         let mut per_output = Vec::with_capacity(outputs.len());
         for output in outputs {
@@ -704,6 +779,10 @@ pub(super) fn build_output(
         crtc_mode_id: required_prop(&crtc_props, "MODE_ID")?,
         crtc_active: required_prop(&crtc_props, "ACTIVE")?,
         crtc_out_fence_ptr: optional_prop(&crtc_props, "OUT_FENCE_PTR"),
+        connector_colorspace: colorspace_prop(&connector_props),
+        connector_hdr_metadata: optional_prop(&connector_props, "HDR_OUTPUT_METADATA"),
+        connector_max_bpc: optional_prop(&connector_props, "max bpc"),
+        crtc_gamma_lut: gamma_lut_prop(card, choice.crtc, &crtc_props),
     };
     let primary_props = PrimaryPlaneProperties {
         fb_id: required_prop(&plane_props, "FB_ID")?,
@@ -769,6 +848,7 @@ pub(super) fn build_output(
         props,
         cursor: None,
         available_modes: candidate.available_modes,
+        color_caps: candidate.color_caps,
     })
 }
 
@@ -858,6 +938,8 @@ pub(super) fn display_signature(displays: &DisplaySet) -> DisplaySignature {
         displays.format,
         displays.modifiers.clone(),
         scanout_formats,
+        displays.color_mode,
+        displays.icc_profile.clone(),
         displays
             .outputs
             .iter()
@@ -908,6 +990,65 @@ pub(super) fn optional_prop(
     name: &str,
 ) -> Option<property::Handle> {
     props.get(name).map(property::Info::handle)
+}
+
+/// Harvest the connector `Colorspace` property handle plus its `Default`
+/// and `BT2020_RGB` enum values. `None` when the driver lacks the property
+/// or either value (older kernels expose it only on some connectors).
+fn colorspace_prop(
+    props: &HashMap<String, property::Info>,
+) -> Option<(property::Handle, u64, u64)> {
+    let info = props.get("Colorspace")?;
+    let property::ValueType::Enum(values) = info.value_type() else {
+        return None;
+    };
+    let (_, variants) = values.values();
+    let find = |name: &std::ffi::CStr| {
+        variants
+            .iter()
+            .find(|variant| variant.name() == name)
+            .map(property::EnumValue::value)
+    };
+    Some((info.handle(), find(c"Default")?, find(c"BT2020_RGB")?))
+}
+
+/// Harvest the CRTC's `GAMMA_LUT` handle and `GAMMA_LUT_SIZE` value (the
+/// driver's table entry count). `None` on drivers without gamma tables.
+fn gamma_lut_prop(
+    card: &Card,
+    crtc: crtc::Handle,
+    props: &HashMap<String, property::Info>,
+) -> Option<(property::Handle, u32)> {
+    let handle = optional_prop(props, "GAMMA_LUT")?;
+    let properties = card.get_properties(crtc).ok()?;
+    for (&id, &value) in properties.iter() {
+        let info = card.get_property(id).ok()?;
+        if info.name() == c"GAMMA_LUT_SIZE" {
+            return Some((handle, value as u32));
+        }
+    }
+    None
+}
+
+/// Read the connector's EDID blob and parse its HDR/wide-gamut
+/// capabilities. Missing or unreadable EDID yields all-false (SDR).
+fn connector_color_caps(
+    card: &Card,
+    handle: connector::Handle,
+) -> aegis_model::edid::EdidColorCapabilities {
+    let read = (|| {
+        let props = card.get_properties(handle).ok()?;
+        for (&id, &value) in props.iter() {
+            let info = card.get_property(id).ok()?;
+            // The raw value of a blob property is the blob id.
+            if info.name() == c"EDID" {
+                let blob = card.get_property_blob(value).ok()?;
+                return Some(aegis_model::edid::edid_color_capabilities(&blob));
+            }
+        }
+        None
+    })();
+    read.unwrap_or_default()
 }
 
 pub(super) fn plane_type(card: &Card, handle: plane::Handle) -> Option<control::PlaneType> {

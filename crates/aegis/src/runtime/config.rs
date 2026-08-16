@@ -273,6 +273,46 @@ pub(super) fn configured_output_modes(
         .collect()
 }
 
+/// `[[output]]` color policy as the backend's connector → `ColorPolicy`
+/// map: the `hdr` / `deep_color` opt-ins.
+pub(super) fn configured_color_policies(
+    config: Option<&aegis_config::Config>,
+) -> std::collections::HashMap<String, aegis_model::output::ColorPolicy> {
+    config
+        .map(|c| c.output_policies())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(connector, policy)| {
+            (
+                connector,
+                aegis_model::output::ColorPolicy {
+                    hdr: policy.hdr,
+                    deep_color: policy.deep_color,
+                },
+            )
+        })
+        .collect()
+}
+
+/// `[[output]]` ICC profile paths as the backend's connector → path map.
+pub(super) fn configured_icc_profiles(
+    config: Option<&aegis_config::Config>,
+) -> std::collections::HashMap<String, String> {
+    config
+        .map(|c| {
+            c.outputs
+                .iter()
+                .filter_map(|output| {
+                    output
+                        .icc_profile
+                        .clone()
+                        .map(|path| (output.connector.clone(), path))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Generate a timestamped screenshot filename inside `dir`, creating the
 /// directory if it does not exist.
 pub(super) fn screenshot_path(dir: &std::path::Path) -> String {
@@ -438,6 +478,9 @@ pub(super) fn apply_display_settings(
     // not apply the same edit again on the next frame.
     *reload = Some(aegis_config::ReloadWatcher::at(&path));
     host.set_configured_modes(configured_output_modes(config.as_ref()));
+    host.set_configured_color_policies(configured_color_policies(config.as_ref()));
+    host.set_configured_icc_profiles(configured_icc_profiles(config.as_ref()));
+    server.set_color_pipeline(host.color_pipeline());
     server.set_outputs(host.output_infos());
     let outputs = server.output_infos();
     live.set_outputs(outputs.clone());
@@ -703,6 +746,46 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
             },
         ),
     ])
+}
+
+/// The compiled-in executable allowlist of a built-in IPC scope (ADR-0128):
+/// the canonicalized `/proc/<pid>/exe` values that may claim it. `None` for
+/// names that are not built-in scopes. A `[ipc.scope_executables]` entry
+/// replaces these defaults for its scope.
+pub(super) fn builtin_scope_executables(name: &str) -> Option<Vec<std::path::PathBuf>> {
+    let executable = |dir: &str, file: &str| std::path::PathBuf::from(dir).join(file);
+    let paths: Vec<std::path::PathBuf> = match name {
+        aegis_ipc::LOCAL_PORTAL_SCOPE => ["/usr/bin", "/usr/libexec", "/usr/lib", "/usr/local/bin"]
+            .into_iter()
+            .map(|dir| executable(dir, "xdg-desktop-portal-aegis"))
+            .collect(),
+        aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE
+        | aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE
+        | aegis_ipc::LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE => ["/usr/bin", "/usr/local/bin"]
+            .into_iter()
+            .map(|dir| executable(dir, "aegis"))
+            .collect(),
+        _ => return None,
+    };
+    Some(paths)
+}
+
+/// Whether `peer_exe` — the peer's canonicalized `/proc/<pid>/exe` — appears
+/// in a scope allowlist. An entry matches literally, or through its own
+/// canonicalization so a distribution symlink (e.g. `/usr/bin/foo` →
+/// `/usr/libexec/foo`) satisfies an entry for either spelling; an entry that
+/// does not resolve (the component is not installed there) still compares
+/// literally.
+pub(super) fn scope_exe_permitted(
+    allowlist: &[std::path::PathBuf],
+    peer_exe: &std::path::Path,
+) -> bool {
+    allowlist.iter().any(|entry| {
+        entry == peer_exe
+            || std::fs::canonicalize(entry)
+                .as_deref()
+                .is_ok_and(|canonical| canonical == peer_exe)
+    })
 }
 
 pub(super) fn authorize_interaction_domain_action_against_snapshot(

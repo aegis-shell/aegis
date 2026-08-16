@@ -31,6 +31,43 @@ fn hud_defaults_to_enabled() {
 }
 
 #[test]
+fn night_light_defaults_off_and_parses_schedule() {
+    let defaults = Config::parse("schema_version = 2\n").unwrap();
+    assert!(!defaults.night_light.enable);
+    assert_eq!(defaults.night_light.temperature, 4000);
+
+    let configured = Config::parse(
+        "schema_version = 2\n\
+         [night_light]\n\
+         enable = true\n\
+         temperature = 3400\n\
+         start = \"19:00\"\n\
+         end = \"07:00\"\n",
+    )
+    .unwrap();
+    assert!(configured.night_light.enable);
+    assert_eq!(configured.night_light.temperature, 3400);
+    assert_eq!(configured.night_light.start.as_deref(), Some("19:00"));
+}
+
+#[test]
+fn night_light_rejects_bad_temperature_and_half_schedule() {
+    assert!(
+        Config::parse("schema_version = 2\n[night_light]\ntemperature = 100\n").is_err(),
+        "below the Kelvin floor is a diagnostic"
+    );
+    assert!(
+        Config::parse("schema_version = 2\n[night_light]\nstart = \"19:00\"\n").is_err(),
+        "a schedule needs both ends"
+    );
+    assert!(
+        Config::parse("schema_version = 2\n[night_light]\nstart = \"7pm\"\nend = \"07:00\"\n")
+            .is_err(),
+        "strict HH:MM only"
+    );
+}
+
+#[test]
 fn appearance_defaults_to_no_preference() {
     let cfg = Config::parse("schema_version = 2\n").unwrap();
     assert_eq!(cfg.appearance.color_scheme, ColorScheme::System);
@@ -600,6 +637,64 @@ fn unknown_fields_are_rejected_instead_of_silently_ignored() {
     let nested =
         Config::parse("schema_version = 2\n[layout]\ngaps = 8\nmaster_rato = 0.7\n").unwrap_err();
     assert!(nested[0].message.contains("master_rato"), "{nested:?}");
+}
+
+#[test]
+fn ipc_scope_executables_default_to_the_compiled_in_allowlists() {
+    // No `[ipc]` table: the overlay is empty and every built-in scope keeps
+    // its compiled-in executable defaults (ADR-0128).
+    let cfg = Config::parse("schema_version = 2\n").unwrap();
+    assert!(cfg.ipc.scope_executables.is_empty());
+}
+
+#[test]
+fn ipc_scope_executables_parse_as_a_per_scope_replacement() {
+    let cfg = Config::parse(
+        "schema_version = 2\n\
+         [ipc.scope_executables]\n\
+         aegis-portal = [\"/opt/aegis/bin/xdg-desktop-portal-aegis\"]\n\
+         aegis-owner-admin = [\"/usr/bin/aegis\", \"/usr/local/bin/aegis\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.ipc.scope_executables.get("aegis-portal"),
+        Some(&vec![PathBuf::from(
+            "/opt/aegis/bin/xdg-desktop-portal-aegis"
+        )])
+    );
+    assert_eq!(
+        cfg.ipc.scope_executables.get("aegis-owner-admin"),
+        Some(&vec![
+            PathBuf::from("/usr/bin/aegis"),
+            PathBuf::from("/usr/local/bin/aegis")
+        ])
+    );
+    // Scopes absent from the table are not in the overlay; they keep the
+    // compiled-in defaults instead of being refused.
+    assert!(!cfg.ipc.scope_executables.contains_key("aegis-agent-admin"));
+}
+
+#[test]
+fn ipc_scope_executables_accepts_an_empty_list_as_fail_closed() {
+    // An empty list is a deliberate "no executable may claim this scope",
+    // not a parse error.
+    let cfg = Config::parse(
+        "schema_version = 2\n\
+         [ipc.scope_executables]\n\
+         aegis-portal = []\n",
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.ipc.scope_executables.get("aegis-portal"),
+        Some(&Vec::new())
+    );
+}
+
+#[test]
+fn ipc_table_rejects_unknown_fields() {
+    let err = Config::parse("schema_version = 2\n[ipc]\nscope = \"aegis-portal\"\n").unwrap_err();
+    assert!(err[0].message.contains("unknown field"), "{err:?}");
+    assert!(err[0].message.contains("scope"), "{err:?}");
 }
 
 #[test]

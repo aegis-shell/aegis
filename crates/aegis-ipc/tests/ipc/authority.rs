@@ -306,7 +306,7 @@ fn stream_output_start_forwards_a_window_target() {
             aegis_ipc::StreamTarget::Window {
                 window: WindowId(2)
             },
-            aegis_ipc::StreamTarget::Output,
+            aegis_ipc::StreamTarget::Output { output: None },
         ]
     );
 

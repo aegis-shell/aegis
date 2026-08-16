@@ -227,7 +227,10 @@ mod tests {
     fn scratch() -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!("aegis-agent-identity-{}-{n}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "aegis-ipc-client-identity-{}-{n}",
+            std::process::id()
+        ))
     }
 
     #[test]

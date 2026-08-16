@@ -20,7 +20,7 @@ path = "src/bin/aegis-mcp.rs"
 # client layer (ADR-0125). Never an agent runtime.
 aegis-model = { workspace = true, features = ["serde"] }
 aegis-ipc = { workspace = true }
-aegis-agent = { workspace = true }
+aegis-ipc-client = { workspace = true }
 aegis-desktop-entries = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }

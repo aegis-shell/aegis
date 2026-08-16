@@ -3,8 +3,10 @@ use super::*;
 pub(super) struct FrameCapture {
     pub(super) crop: Option<aegis_model::Rect>,
     pub(super) target: CaptureTarget,
-    /// Cursor state sampled when a saved screenshot was requested. Output
-    /// capture, streams, and picker readbacks deliberately leave this empty.
+    /// Cursor state sampled when a saved screenshot was requested, or a
+    /// theme-cursor state for stream readbacks serving embedded-mode
+    /// streams (ADR-0127). Output one-shots and picker readbacks
+    /// deliberately leave this empty.
     pub(super) cursor: Option<CaptureCursorState>,
 }
 
@@ -83,28 +85,32 @@ impl CompositorRuntime {
                 });
             }
         }
-        // Stream fan-out (ADR-0052): when no one-shot capture claimed this
-        // frame's readback and the staging slot and worker lane are free,
-        // bind one readback shared by every due SHM stream. One-shots keep
-        // priority; a locked or inactive session simply produces no stream
-        // frames (the stream survives). Due dmabuf streams bind no readback:
-        // their present is forced separately and their frame is copied on
-        // the GPU (IPC protocol 25).
+        // Stream fan-out (ADR-0052, pacing per ADR-0126): a stream readback
+        // bound here FORCES this frame to present, so it may only happen
+        // when a SHM stream is liveness-starved — its first frame, or one
+        // full liveness tick without a frame on a static screen. Streams
+        // that are merely due at their max-fps cadence never force a frame;
+        // they piggyback on damage-driven composites via the opportunistic
+        // binding in `render_and_present`. One-shots keep priority; a
+        // locked or inactive session simply produces no stream frames (the
+        // stream survives). Due dmabuf streams bind no readback: their
+        // liveness-forced present is driven separately and their frame is
+        // copied on the GPU (IPC protocol 25). When any live SHM output
+        // stream negotiated the embedded cursor mode, the binding attaches
+        // a cursor snapshot so the worker produces a composited twin of the
+        // frame next to the pristine one (ADR-0127).
         if frame_capture.is_none()
             && self.pending_capture.is_none()
             && !self.stream_job_in_flight
             && !session_locked
             && self.host.is_active()
             && !self.capture_worker.is_busy()
-            && !self
-                .streams
-                .due_shm_ids(std::time::Instant::now())
-                .is_empty()
+            && self.streams.liveness_due_shm(std::time::Instant::now())
         {
             frame_capture = Some(FrameCapture {
                 crop: None,
                 target: CaptureTarget::Stream,
-                cursor: None,
+                cursor: self.stream_shm_cursor_state(),
             });
         }
         frame_capture

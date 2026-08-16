@@ -123,11 +123,17 @@ impl CompositorRuntime {
     }
 
     fn idle_wait(&self) -> std::time::Duration {
-        // A live output stream paces the loop like any other visual timer:
-        // its next due frame must wake the loop even on a static screen, or
-        // the stream's consumer starves between maintenance ticks. Streams
-        // are not served while the session is locked or the backend is
-        // inactive, so they must not keep the loop awake then either. While
+        // A live output stream paces the loop only at its liveness tick
+        // (ADR-0126): streams capture from damage-driven presentations up
+        // to their negotiated max-fps and never force a frame at that
+        // cadence, but on a static screen the loop still wakes at the next
+        // liveness deadline so the consumer observes ~1 fps instead of a
+        // frozen picture. Window streams (ADR-0127) render independently of
+        // presentation: the loop additionally wakes at a dirty window
+        // stream's max-fps deadline and polls briefly while one of its
+        // readbacks is in flight. Streams are not served while the session
+        // is locked or the backend is inactive, so they must not keep the
+        // loop awake then either. While
         // a frame is already traversing the SHM readback lane (readback
         // bound, or the worker converting it), delivery is in flight and
         // its completion wakes the loop; poll again after a short quantum
@@ -135,7 +141,7 @@ impl CompositorRuntime {
         let stream_wait = if !self.server.session_locked() && self.host.is_active() {
             let in_flight = self.pending_capture.is_some() || self.stream_job_in_flight;
             self.streams
-                .next_frame_in(std::time::Instant::now())
+                .next_stream_wake_in(std::time::Instant::now())
                 .map(|wait| {
                     if in_flight {
                         wait.max(STREAM_IN_FLIGHT_WAIT)

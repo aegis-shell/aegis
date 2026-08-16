@@ -45,11 +45,13 @@ fn backend_outputs_reconcile_workspace_connectors_and_geometry() {
             connector: "DP-1".into(),
             geometry: geometry(0, 1920),
             available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         },
         aegis_model::output::OutputInfo {
             connector: "HDMI-A-1".into(),
             geometry: geometry(1920, 2560),
             available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         },
     ]);
 
@@ -99,11 +101,13 @@ fn output_policies_apply_scale_position_and_primary() {
             connector: "DP-1".into(),
             geometry: geometry(0, 1920),
             available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         },
         aegis_model::output::OutputInfo {
             connector: "HDMI-A-1".into(),
             geometry: geometry(1920, 2560),
             available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         },
     ]);
 

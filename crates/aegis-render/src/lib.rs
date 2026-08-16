@@ -15,13 +15,59 @@ const DRM_FORMAT_ARGB8888: u32 = drm_fmt::DRM_FORMAT_ARGB8888;
 const DRM_FORMAT_XRGB8888: u32 = drm_fmt::DRM_FORMAT_XRGB8888;
 const DRM_FORMAT_ABGR8888: u32 = drm_fmt::DRM_FORMAT_ABGR8888;
 const DRM_FORMAT_XBGR8888: u32 = drm_fmt::DRM_FORMAT_XBGR8888;
+const DRM_FORMAT_ABGR2101010: u32 = drm_fmt::DRM_FORMAT_ABGR2101010;
+const DRM_FORMAT_XBGR2101010: u32 = drm_fmt::DRM_FORMAT_XBGR2101010;
 
 fn drm_format_to_flux(drm: u32) -> Option<flux::Format> {
     match drm {
         DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 => Some(flux::Format::FLUX_FORMAT_BGRA8_UNORM),
         DRM_FORMAT_ABGR8888 | DRM_FORMAT_XBGR8888 => Some(flux::Format::FLUX_FORMAT_RGBA8_UNORM),
+        DRM_FORMAT_ABGR2101010 | DRM_FORMAT_XBGR2101010 => {
+            Some(flux::Format::FLUX_FORMAT_RGB10A2_UNORM)
+        }
         _ => None,
     }
+}
+
+/// Map a `wp_color_management_v1` parametric image description onto a flux
+/// color space. `None` when the pair is not representable (flux validates:
+/// sane primaries, gamma > 0 for power curves).
+fn flux_color_space(color: &aegis_model::color::ParametricColor) -> Option<flux::ColorSpace> {
+    use aegis_model::color::{ContentPrimaries, ContentTransfer, NamedPrimaries, NamedTransfer};
+    let (transfer, gamma) = match color.transfer {
+        ContentTransfer::Named(NamedTransfer::Linear) => (flux::TransferFunction::Linear, 0.0),
+        ContentTransfer::Named(NamedTransfer::Gamma22) => (flux::TransferFunction::Gamma, 2.2),
+        ContentTransfer::Named(NamedTransfer::Srgb) => (flux::TransferFunction::Srgb, 0.0),
+        ContentTransfer::Named(NamedTransfer::Pq) => (flux::TransferFunction::Pq, 0.0),
+        ContentTransfer::Named(NamedTransfer::Hlg) => (flux::TransferFunction::Hlg, 0.0),
+        ContentTransfer::Gamma(g) => (flux::TransferFunction::Gamma, g),
+    };
+    let space = match color.primaries {
+        ContentPrimaries::Named(named) => {
+            let primaries = match named {
+                NamedPrimaries::Srgb => flux::ColorPrimaries::Bt709,
+                NamedPrimaries::Bt2020 => flux::ColorPrimaries::Bt2020,
+                NamedPrimaries::DisplayP3 => flux::ColorPrimaries::DisplayP3,
+                NamedPrimaries::AdobeRgb => flux::ColorPrimaries::AdobeRgb,
+            };
+            flux::ColorSpace::new(primaries, transfer).with_gamma(gamma)
+        }
+        ContentPrimaries::Custom(xy) => flux::ColorSpace::custom(
+            flux::PrimariesXy {
+                rx: xy.rx,
+                ry: xy.ry,
+                gx: xy.gx,
+                gy: xy.gy,
+                bx: xy.bx,
+                by: xy.by,
+                wx: xy.wx,
+                wy: xy.wy,
+            },
+            transfer,
+        )
+        .with_gamma(gamma),
+    };
+    space.is_valid().then_some(space)
 }
 
 fn prefer_native_modifiers(modifiers: &mut [u64]) {
@@ -67,7 +113,7 @@ pub fn formats_with_modifiers(device: &flux::Device) -> Vec<drm_fmt::DmabufForma
 
 /// The advertised fourccs in order, re-exported for callers that iterate the
 /// format table (e.g. to wire it into the compositor's modifier feedback).
-const ADVERTISED_FOURCCS: [u32; 4] = drm_fmt::ADVERTISED_FOURCCS;
+const ADVERTISED_FOURCCS: [u32; 6] = drm_fmt::ADVERTISED_FOURCCS;
 
 /// Apply a `wl_surface.set_buffer_transform` to tightly packed BGRA8/RGBA8
 /// pixels (4 bytes per pixel, no padding). Returns the transformed buffer
@@ -455,6 +501,12 @@ pub struct Renderer {
     gc_live: std::collections::HashSet<usize>,
     gc_dead_shm: Vec<usize>,
     gc_dead_dmabuf: Vec<(usize, u64)>,
+    /// Parsed ICC profiles (flux) keyed by a hash of the profile bytes, so a
+    /// color-tagged surface does not re-parse per texture creation.
+    icc_profiles: HashMap<u64, flux::IccProfile>,
+    /// ICC byte-hashes that failed to parse; suppresses per-frame retries
+    /// and log floods (the content falls back to sRGB interpretation).
+    icc_failed: std::collections::HashSet<u64>,
 }
 
 /// A cached texture. SHM entries are keyed by surface; dma-buf entries by
@@ -466,12 +518,15 @@ pub struct Renderer {
 /// client reuses the same wl_buffer, so it is useless for buffer-reuse
 /// detection. The `modifier`, `width`, and `height` pin the layout too, so a
 /// reallocation that changes the tile/compression mode forces a fresh import.
+/// `color` pins the color-space tag the texture was created with: a tag
+/// change on the same buffer forces a fresh upload/import.
 struct CachedImage {
     image: flux::Image,
     generation: u64,
     modifier: u64,
     width: u32,
     height: u32,
+    color: Option<aegis_model::color::ContentColor>,
     last_used_epoch: u64,
 }
 
@@ -639,6 +694,8 @@ impl Renderer {
             gc_live: std::collections::HashSet::new(),
             gc_dead_shm: Vec::new(),
             gc_dead_dmabuf: Vec::new(),
+            icc_profiles: HashMap::new(),
+            icc_failed: std::collections::HashSet::new(),
         }
     }
 
@@ -649,6 +706,54 @@ impl Renderer {
         let epoch = self.frame_epoch;
         self.retired
             .retain(|(_, retired_at)| epoch.wrapping_sub(*retired_at) <= 4);
+    }
+
+    /// Build the flux image color tag for a surface's content description
+    /// (`wp_color_management_v1`), parsing and caching ICC profiles on
+    /// demand. An empty/default tag selects the format-derived color space
+    /// (sRGB for 8-bit content).
+    fn image_color_tag(
+        &mut self,
+        color: Option<&aegis_model::color::ContentColor>,
+    ) -> flux::ImageColorSpace<'_> {
+        match color {
+            Some(aegis_model::color::ContentColor::Parametric(parametric)) => {
+                flux::ImageColorSpace {
+                    space: flux_color_space(parametric),
+                    icc: None,
+                }
+            }
+            Some(aegis_model::color::ContentColor::Icc(bytes)) => flux::ImageColorSpace {
+                space: None,
+                icc: self.icc_profile_for(bytes),
+            },
+            None => flux::ImageColorSpace::default(),
+        }
+    }
+
+    fn icc_profile_for(&mut self, bytes: &[u8]) -> Option<&flux::IccProfile> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        let key = hasher.finish();
+        if self.icc_failed.contains(&key) {
+            return None;
+        }
+        if !self.icc_profiles.contains_key(&key) {
+            match flux::IccProfile::new(bytes) {
+                Ok(profile) => {
+                    self.icc_profiles.insert(key, profile);
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[render] ICC profile parse failed ({error}); content renders as sRGB"
+                    );
+                    self.icc_failed.insert(key);
+                    return None;
+                }
+            }
+        }
+        self.icc_profiles.get(&key)
     }
 
     fn cache_image(&mut self, id: usize, entry: CachedImage) {
@@ -1009,7 +1114,8 @@ impl Renderer {
                     // SAFETY: the ghost's fd and layout describe the
                     // snapshotted dma-buf exactly as the live path did.
                     let imported = unsafe {
-                        flux::Image::import_dmabuf(
+                        let tag = self.image_color_tag(ghost.color.as_ref());
+                        flux::Image::import_dmabuf_with_color_space(
                             device,
                             ghost.buffer_width as u32,
                             ghost.buffer_height as u32,
@@ -1018,6 +1124,8 @@ impl Renderer {
                             ghost.dmabuf_fd,
                             ghost.offset,
                             ghost.stride,
+                            None,
+                            tag,
                         )
                     };
                     match imported {
@@ -1030,6 +1138,7 @@ impl Renderer {
                                     modifier: ghost.modifier,
                                     width: ghost.buffer_width as u32,
                                     height: ghost.buffer_height as u32,
+                                    color: ghost.color.clone(),
                                     last_used_epoch: self.frame_epoch,
                                 },
                             );
@@ -1051,27 +1160,32 @@ impl Renderer {
                         &paint,
                     );
                 }
-            } else if !ghost.pixels.is_empty()
-                && !self.cache.contains_key(&ghost.id)
-                && let Ok(img) = flux::Image::from_bytes(
-                    device,
-                    ghost.buffer_width as u32,
-                    ghost.buffer_height as u32,
-                    flux::Format::FLUX_FORMAT_BGRA8_UNORM,
-                    ghost.pixels,
-                )
-            {
-                self.cache_image(
-                    ghost.id,
-                    CachedImage {
-                        image: img,
-                        generation: 0,
-                        modifier: 0,
-                        width: ghost.buffer_width as u32,
-                        height: ghost.buffer_height as u32,
-                        last_used_epoch: self.frame_epoch,
-                    },
-                );
+            } else if !ghost.pixels.is_empty() && !self.cache.contains_key(&ghost.id) {
+                let uploaded = {
+                    let tag = self.image_color_tag(ghost.color.as_ref());
+                    flux::Image::from_bytes_with_color_space(
+                        device,
+                        ghost.buffer_width as u32,
+                        ghost.buffer_height as u32,
+                        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                        ghost.pixels,
+                        tag,
+                    )
+                };
+                if let Ok(img) = uploaded {
+                    self.cache_image(
+                        ghost.id,
+                        CachedImage {
+                            image: img,
+                            generation: 0,
+                            modifier: 0,
+                            width: ghost.buffer_width as u32,
+                            height: ghost.buffer_height as u32,
+                            color: ghost.color.clone(),
+                            last_used_epoch: self.frame_epoch,
+                        },
+                    );
+                }
             }
             if let Some(entry) = self.cache.get(&ghost.id) {
                 let img = &entry.image;
@@ -1119,10 +1233,14 @@ impl Renderer {
                 .cache
                 .get(&f.id)
                 .is_some_and(|c| c.image.size() == (tex_w as u32, tex_h as u32));
-            let new_contents = self
-                .cache
-                .get(&f.id)
-                .is_none_or(|c| c.generation != f.generation);
+            // A color-tag change leaves the pixels identical but requires a
+            // fresh, tagged texture — never the incremental path.
+            let tag_changed = self.cache.get(&f.id).is_some_and(|c| c.color != f.color);
+            let new_contents = tag_changed
+                || self
+                    .cache
+                    .get(&f.id)
+                    .is_none_or(|c| c.generation != f.generation);
             if !dims_match || new_contents {
                 // Incremental refresh is valid whenever the texture dims are
                 // unchanged, the buffer is upright (a rotated/reflected buffer
@@ -1133,8 +1251,10 @@ impl Renderer {
                 // logical coordinates at commit, so we only have to scale
                 // those coordinates into buffer pixels (buffer_scale, or the
                 // viewport-implied factor for fractional-scale clients).
-                let incremental =
-                    dims_match && f.geometry.transform == Transform::Normal && !f.damage.is_empty();
+                let incremental = dims_match
+                    && !tag_changed
+                    && f.geometry.transform == Transform::Normal
+                    && !f.damage.is_empty();
                 if incremental {
                     // Union of the damage rects mapped from surface-local
                     // logical coordinates to buffer pixels (rounded outward so
@@ -1236,13 +1356,18 @@ impl Renderer {
                         f.height as usize,
                         f.geometry.transform,
                     );
-                    if let Ok(img) = flux::Image::from_bytes(
-                        device,
-                        tex_w as u32,
-                        tex_h as u32,
-                        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
-                        &transformed,
-                    ) {
+                    let uploaded = {
+                        let tag = self.image_color_tag(f.color.as_ref());
+                        flux::Image::from_bytes_with_color_space(
+                            device,
+                            tex_w as u32,
+                            tex_h as u32,
+                            flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                            &transformed,
+                            tag,
+                        )
+                    };
+                    if let Ok(img) = uploaded {
                         self.cache_image(
                             f.id,
                             CachedImage {
@@ -1251,6 +1376,7 @@ impl Renderer {
                                 modifier: 0,
                                 width: f.width as u32,
                                 height: f.height as u32,
+                                color: f.color.clone(),
                                 last_used_epoch: self.frame_epoch,
                             },
                         );
@@ -1451,6 +1577,7 @@ impl Renderer {
                     cached.modifier == f.modifier
                         && cached.width == f.width as u32
                         && cached.height == f.height as u32
+                        && cached.color == f.color
                 });
 
             if reusable {
@@ -1531,30 +1658,19 @@ impl Renderer {
                         None
                     };
                     let img = unsafe {
-                        if let Some(acquire_fence) = acquire_fence {
-                            flux::Image::import_dmabuf_with_acquire_fence(
-                                device,
-                                f.width as u32,
-                                f.height as u32,
-                                fmt,
-                                f.modifier,
-                                import_fd,
-                                f.offset,
-                                f.stride,
-                                acquire_fence,
-                            )
-                        } else {
-                            flux::Image::import_dmabuf(
-                                device,
-                                f.width as u32,
-                                f.height as u32,
-                                fmt,
-                                f.modifier,
-                                import_fd,
-                                f.offset,
-                                f.stride,
-                            )
-                        }
+                        let tag = self.image_color_tag(f.color.as_ref());
+                        flux::Image::import_dmabuf_with_color_space(
+                            device,
+                            f.width as u32,
+                            f.height as u32,
+                            fmt,
+                            f.modifier,
+                            import_fd,
+                            f.offset,
+                            f.stride,
+                            acquire_fence,
+                            tag,
+                        )
                     };
                     match img {
                         Ok(img) => {
@@ -1583,6 +1699,7 @@ impl Renderer {
                                     modifier: f.modifier,
                                     width: f.width as u32,
                                     height: f.height as u32,
+                                    color: f.color.clone(),
                                     last_used_epoch: self.frame_epoch,
                                 },
                             );

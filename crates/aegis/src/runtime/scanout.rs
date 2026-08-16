@@ -432,6 +432,7 @@ mod tests {
                 ..Default::default()
             },
             opaque_region: None,
+            color: None,
         }
     }
 

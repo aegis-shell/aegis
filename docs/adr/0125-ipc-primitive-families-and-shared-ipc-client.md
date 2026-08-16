@@ -1,4 +1,4 @@
-# ADR-0125: Agent primitive families and the shared agent client layer
+# ADR-0125: IPC primitive families and the shared IPC client library
 
 - Status: Accepted
 - Date: 2026-08-16
@@ -40,33 +40,44 @@ is rejected as a direction.
 
 Adopt two complementary layers.
 
-First, factor the agent client plumbing into a shared crate,
-`aegis-agent`. It owns credential sources (a paired, on-disk identity
+First, factor the broker client plumbing into a shared library,
+`aegis-ipc-client`. It owns credential sources (a paired, on-disk identity
 store and a launcher-injected stdin credential), the pairing handshake
 discipline (generous handshake timeout for the interactive prompt,
 issued-credential persist-or-confirm, post-handshake I/O timeout),
 per-instance state stores with recovery locks, managed Interaction
 Domain lifecycle and crash recovery, and observation-lease retention.
-`aegis-mcp` and `aegis-atspi` consume it. Consumers keep their own
-surfaces: the MCP tool catalog and the AT-SPI scan/dispatch loop are
-unchanged contracts.
+It also owns the connection policies: one-shot connections for
+least-privilege-in-time consumers, and `PersistentConnection` for
+long-lived consumers — one multiplexed connection with lazy lease
+renewal and transparent re-pairing after a transport failure. A failed
+request is never retried automatically, because a mutation may have
+applied before the connection died; server-side `Response::Error`
+refusals never poison the connection, transport failures always do.
+`aegis-mcp` and `aegis-atspi` consume the persistent policy. Consumers
+keep their own surfaces: the MCP tool catalog and the AT-SPI
+scan/dispatch loop are unchanged contracts.
 
 Second, define four **primitive families** as the canonical
-classification of the agent-facing protocol, and close the two gaps
+classification of the broker's client-facing protocol, and close the two gaps
 that the classification exposes:
 
 - **Observe** covers queries and token-issuing observation. A new
-  `Observe` request returns a consistent multi-domain snapshot (windows,
-  workspaces, outputs, Interaction Domains, journal cursor) in one
-  round trip, replacing per-call fan-out.
+  `Observe` request returns a multi-domain snapshot (windows,
+  workspaces, outputs, Interaction Domains, journal cursor) in a single
+  round trip, replacing per-call fan-out. `GetConnectionState` returns
+  the connection's own grant with the scope re-resolved, so a paired
+  agent sees administrative ceiling changes without reconnecting.
 - **Transact** covers authorized state mutation. A new `Transact`
-  request carries an optional journal-cursor precondition plus an
-  ordered batch of mutation ops drawn from the existing `Command`
+  request carries optional preconditions in two currencies — the
+  journal cursor and the Interaction Domain authority revision — plus
+  an ordered batch of mutation ops drawn from the existing `Command`
   vocabulary (window, workspace, notification, and launch operations).
   The compositor preflights authorization and validation for every op
   before applying any, applies the batch in order on the main loop
   through the same chokepoint as `Do`, and returns a per-op receipt
-  with journal sequence numbers. `Do` remains for compatibility.
+  with journal sequence numbers. A conflict names the failed currency.
+  `Do` remains for compatibility.
 - **Inject** covers input delivery. The existing `InjectInput`
   (fire-and-forget, physical seat) and `ActInInteractionDomain`
   (observation-token precondition, domain seat) are the two inject
@@ -103,7 +114,7 @@ are not exposed to model clients as raw verbs.
 - **Expose the primitive families directly as MCP tools.** Rejected:
   named, well-described tools are the model-facing contract that makes
   agents reliable; the primitives are the layer beneath that contract.
-- **A shared agent daemon process multiplexing all agent surfaces.**
+- **A shared client daemon process multiplexing all agent surfaces.**
   Deferred: a shared crate delivers the same deduplication while
   keeping process isolation and the compositor's existing supervision;
   the crate leaves a daemon possible later.
@@ -115,8 +126,13 @@ are not exposed to model clients as raw verbs.
 - Most new agent capabilities become new `Transact` op variants or new
   `Observe` fields — one schema site, one authorization site, one
   main-loop application site — instead of new request pipelines.
-- Agents can verify mutations from `Transact` receipts and pushed
-  journal events instead of polling `GetJournal`.
+- Agents verify mutations from `Transact` receipts and pushed journal
+  events instead of polling `GetJournal`, and read their live ceiling
+  from `GetConnectionState` without reconnecting.
+- Long-lived consumers hold one persistent connection; the
+  accessibility adapter no longer dies when its 900-second lease
+  lapses, and the MCP bridge's observation-token lease map is gone
+  because tokens are always consumed on the issuing connection.
 - The protocol moves to version 28; older clients are unaffected.
 - `docs/reference/ipc.md` and the glossary gain the primitive-family
   vocabulary; `aegis-mcp` and `aegis-atspi` documentation must reflect

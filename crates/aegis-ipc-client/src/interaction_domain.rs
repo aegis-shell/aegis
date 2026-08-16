@@ -127,7 +127,10 @@ impl InteractionDomainSession {
     }
 
     /// Reuse the agent's live Interaction Domain or create it atomically on first use.
-    pub fn ensure(&mut self, client: &mut Client) -> Result<ManagedInteractionDomain, SessionError> {
+    pub fn ensure(
+        &mut self,
+        client: &mut Client,
+    ) -> Result<ManagedInteractionDomain, SessionError> {
         let (_, existing) = self.locate(client)?;
         if let Some(existing) = existing {
             return Ok(existing);

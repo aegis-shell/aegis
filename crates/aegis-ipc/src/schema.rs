@@ -18,7 +18,6 @@ use aegis_model::interaction_domain::{
     InteractionDomainWindowPlacement, SeatCapabilities, VirtualOutput,
 };
 use aegis_model::notify::Notification;
-use aegis_model::output::OutputInfo;
 #[cfg(test)]
 use aegis_model::semantic::{SemanticAction, SemanticRole, SemanticSnapshot, SemanticState};
 pub use aegis_model::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
@@ -37,12 +36,23 @@ pub use aegis_semantic::{
 
 /// The protocol major version this build speaks. A client offering a newer
 /// major version is refused at the [`Request::Hello`] handshake; an older
-/// client is answered at its own version. Version 28 adds the agent
-/// primitive families (ADR-0125): `Observe` (one consistent multi-class
-/// snapshot with the journal cursor), `Transact` (an authorized, ordered
-/// op batch with a journal-cursor precondition and an authoritative per-op
-/// receipt), and scope-filtered `Subscribe`/`SubscribeJournal` lanes for
-/// principal-bound agent connections. Version 27 adds workspace-directed
+/// client is answered at its own version. Version 29 makes output frame
+/// streams output-addressed and renegotiable (ADR-0126):
+/// `EnumerateOutputs` reports each connector's physical rectangle in
+/// desktop coordinates, `StreamTarget::Output` accepts an optional
+/// connector selector, `StreamOutputStart` accepts an optional cursor
+/// mode, window targets may opt into the dmabuf transport, and the new
+/// [`Event::StreamGeometryChanged`] freezes a stream whose target geometry
+/// changed instead of ending it. Stream pacing is now damage-driven with a
+/// one-second liveness tick in place of the forced max-fps cadence, and
+/// the `max_fps` clamp rises from 60 to 240. Version 28 adds the agent
+/// primitive families (ADR-0125): `Observe` (one multi-class
+/// snapshot with the journal cursor, in a single round trip),
+/// `GetConnectionState` (the connection's own grant with a re-resolved
+/// scope), `Transact` (an authorized, ordered
+/// op batch with journal-cursor and Interaction Domain revision preconditions
+/// and an authoritative per-op receipt), and scope-filtered `Subscribe`/
+/// `SubscribeJournal` lanes for principal-bound agent connections. Version 27 adds workspace-directed
 /// application launching (`LaunchApp` with an optional `LaunchPlacement` that
 /// never switches the user's view) and the additive `reveal` flag on `Focus`
 /// (ADR-0118). Version 26 adds per-window content
@@ -87,7 +97,7 @@ pub use aegis_semantic::{
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 /// Built-in owner-only scope used by native `aegis` commands for Interaction Domain
 /// recovery and administration. The Unix socket remains user-private; naming
 /// this scope opts the connection into the high-risk Interaction Domain operation allowlist
@@ -878,6 +888,18 @@ pub struct TransactOpResult {
     pub effect: crate::journal::Effect,
 }
 
+/// The precondition currency that failed at a [`Request::Transact`] commit
+/// boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum TransactPrecondition {
+    /// The journal's `latest_seq` moved since the caller's snapshot.
+    JournalSeq,
+    /// The Interaction Domain authority revision moved since the caller's
+    /// snapshot.
+    InteractionDomainRevision,
+}
+
 /// Authoritative main-loop receipt for a committed [`Request::Transact`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TransactReceipt {
@@ -896,9 +918,13 @@ pub struct TransactReceipt {
 pub enum TransactResult {
     /// The batch committed; the receipt reports each op's effect.
     Committed { receipt: TransactReceipt },
-    /// The journal moved between the caller's snapshot and the commit
-    /// boundary; no op was applied and nothing was journaled.
-    PreconditionConflict { expected: u64, actual: u64 },
+    /// A precondition failed at the commit boundary; no op was applied and
+    /// nothing was journaled.
+    PreconditionConflict {
+        precondition: TransactPrecondition,
+        expected: u64,
+        actual: u64,
+    },
 }
 
 /// The journal ring's sequence cursor at read time (version 28). Use
@@ -910,7 +936,82 @@ pub struct JournalCursor {
     pub latest_seq: u64,
 }
 
-/// A consistent multi-class snapshot read in one round trip (version 28,
+/// One output as the IPC reports it — the payload of [`Response::Outputs`]
+/// for both [`Request::GetOutputs`] and [`Request::EnumerateOutputs`]
+/// (version 29, ADR-0126). `connector` is the stable identity, `primary`
+/// marks the focused output, and `rect` is the output's physical-pixel
+/// rectangle in desktop (framebuffer) coordinates. `geometry` and
+/// `available_modes` carry the rich pre-29 form and are populated only for
+/// `GetOutputs`/[`Request::Observe`] replies; `EnumerateOutputs` omits
+/// them, so its reply is exactly
+/// `{"connector":...,"primary":...,"rect":...}` per output.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OutputInfo {
+    pub connector: String,
+    /// Whether this is the primary (focused) output.
+    #[serde(default)]
+    pub primary: bool,
+    /// Physical-pixel rectangle in desktop coordinates.
+    #[serde(default)]
+    pub rect: Rect,
+    /// Mode/scale/transform/position, populated for `GetOutputs` and
+    /// [`Request::Observe`] replies only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<aegis_model::output::OutputGeometry>,
+    /// Modes the connector advertises, populated for `GetOutputs` and
+    /// [`Request::Observe`] replies only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_modes: Option<Vec<aegis_model::output::OutputMode>>,
+}
+
+impl OutputInfo {
+    /// Project the model's rich output list into the IPC shape. The first
+    /// entry is the primary (focused) output by compositor convention, and
+    /// every physical rectangle is the output's logical rectangle scaled by
+    /// the desktop render scale — the primary output's scale, the single
+    /// scale the desktop frame renders at (the same mapping window crops
+    /// use, so an output's rectangle always contains its windows). Entries
+    /// are sorted by connector name, mirroring the deterministic connector
+    /// order the DRM backend selects outputs in. The rich `geometry` and
+    /// `available_modes` fields are populated; `EnumerateOutputs` strips
+    /// them before replying.
+    pub fn project(infos: &[aegis_model::output::OutputInfo]) -> Vec<Self> {
+        let render_scale = infos
+            .first()
+            .map(|output| output.geometry.scale.as_f32())
+            .filter(|scale| scale.is_finite() && *scale > 0.0)
+            .unwrap_or(1.0);
+        let scale = f64::from(render_scale);
+        let mut projected: Vec<Self> = infos
+            .iter()
+            .enumerate()
+            .map(|(index, output)| {
+                let logical = output.geometry.logical_rect();
+                let physical = |value: i32| (value as f64 * scale).round() as i32;
+                OutputInfo {
+                    connector: output.connector.clone(),
+                    primary: index == 0,
+                    rect: Rect {
+                        origin: aegis_model::Point {
+                            x: physical(logical.origin.x),
+                            y: physical(logical.origin.y),
+                        },
+                        size: aegis_model::Size {
+                            w: physical(logical.size.w),
+                            h: physical(logical.size.h),
+                        },
+                    },
+                    geometry: Some(output.geometry),
+                    available_modes: Some(output.available_modes.clone()),
+                }
+            })
+            .collect();
+        projected.sort_by(|left, right| left.connector.cmp(&right.connector));
+        projected
+    }
+}
+
+/// A multi-class snapshot read in a single round trip (version 28,
 /// ADR-0125). Every class is gated independently by the connection's live
 /// scope: a refused class comes back `None`, exactly as if the matching
 /// `Get*` request had been refused. Class contents are scope-filtered like
@@ -976,8 +1077,11 @@ pub enum Event {
     /// start and no blob follows; the slot stays owned by the consumer
     /// until [`Request::StreamBufferRelease`]. `dropped` is the cumulative
     /// count of frames the stream dropped to backpressure since it started.
-    /// `damage` is conservative: the first version reports one full-frame
-    /// rectangle.
+    /// `damage` describes, in the stream's own coordinate space, the
+    /// regions that changed since the last frame the consumer received; it
+    /// is conservative — a forced (liveness) frame, a moved crop origin, or
+    /// damage that never intersected the target all report one full-frame
+    /// rectangle (ADR-0127).
     StreamFrame {
         stream_id: u64,
         sequence: u64,
@@ -993,10 +1097,26 @@ pub enum Event {
         slot: Option<u32>,
     },
     /// The server ended a stream: the connection's scope was revoked or
-    /// narrowed, its lease expired, the output geometry changed, or the
-    /// compositor is shutting down. Session-lock pauses delivery instead of
-    /// ending the stream.
+    /// narrowed, its lease expired, the streamed window closed, the
+    /// streamed connector disappeared, or the compositor is shutting down.
+    /// Session-lock pauses delivery instead of ending the stream. A pure
+    /// geometry change no longer ends a stream since version 29; it freezes
+    /// it with [`Event::StreamGeometryChanged`] instead.
     StreamEnded { stream_id: u64, reason: String },
+    /// The stream's target geometry changed (version 29, ADR-0126): the
+    /// desktop was resized, the streamed connector's mode changed, or the
+    /// streamed window's size changed. `width`/`height` carry the new
+    /// physical-pixel extent. After emitting this event the compositor
+    /// produces NO further frames for the stream: it stays registered but
+    /// frozen until the client restarts it (`StreamOutputStop` followed by
+    /// a fresh `StreamOutputStart`, which re-negotiates at the new
+    /// geometry). The event is only sent to connections that negotiated
+    /// version 29 or later; an older client simply observes frames stop.
+    StreamGeometryChanged {
+        stream_id: u64,
+        width: u32,
+        height: u32,
+    },
 }
 
 /// The memory byte order of one [`Event::StreamFrame`] pixel blob. Four
@@ -1015,26 +1135,76 @@ pub enum StreamPixelFormat {
 }
 
 /// What a [`Request::StreamOutputStart`] streams (ADR-0054). `Output` is the
-/// version-5 behavior: the whole focused output. `Window` crops each
-/// presented frame to one window's current visible region, following its
-/// position; the stream ends when the window closes or its size changes
-/// (PipeWire consumers negotiate a fixed size).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// version-5 behavior: the whole focused output; version 29 adds an optional
+/// connector selector streaming only that output's region of the desktop
+/// frame (ADR-0126). `Window` renders one window's complete surface tree
+/// offscreen, independent of the desktop frame (ADR-0127): occlusion,
+/// minimization, and foreign workspaces never leak foreign pixels into the
+/// stream. The stream freezes with [`Event::StreamGeometryChanged`] when
+/// the target's size changes and ends when a streamed window closes or a
+/// streamed connector disappears (PipeWire consumers negotiate a fixed
+/// size).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamTarget {
-    /// The whole focused output (version-5 default).
-    #[default]
-    Output,
-    /// One toplevel's visible region, cropped from the output frame. The id
-    /// comes from a user-consent [`Request::PickTarget`] window pick.
+    /// The whole desktop frame (version-5 default), or — when `output`
+    /// names a live connector (version 29) — only that output's physical
+    /// rectangle of the desktop frame. The serde shape is backward
+    /// compatible: an absent selector serializes as `{"type":"Output"}`,
+    /// exactly what pre-29 peers exchange. An unknown connector is refused
+    /// at stream start; a connector that disappears mid-stream ends the
+    /// stream.
+    Output {
+        /// Connector name (e.g. "HDMI-A-1") from
+        /// [`Request::EnumerateOutputs`]; `None` streams the whole desktop.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+    /// One toplevel, rendered offscreen at the capture scale of the output
+    /// it sits on (ADR-0127). The window keeps its real content whether it
+    /// is visible, occluded, minimized, or on another workspace; popups
+    /// extending past the toplevel bounds are clipped. The id comes from a
+    /// user-consent [`Request::PickTarget`] window pick.
     Window { window: WindowId },
 }
 
-impl StreamTarget {
-    /// Whether this target is the whole output (the serde-skipped default).
-    pub fn is_output(&self) -> bool {
-        matches!(self, StreamTarget::Output)
+impl Default for StreamTarget {
+    /// The version-5 default: the whole desktop frame, no connector
+    /// selector.
+    fn default() -> Self {
+        StreamTarget::Output { output: None }
     }
+}
+
+impl StreamTarget {
+    /// Whether this target is the whole output with no connector selector
+    /// (the serde-skipped default).
+    pub fn is_output(&self) -> bool {
+        matches!(self, StreamTarget::Output { output: None })
+    }
+}
+
+/// How a stream treats the compositor cursor (version 29, ADR-0127). The
+/// mode is negotiated at stream start and composited wherever the cursor
+/// position falls inside the captured region: dmabuf streams (output and
+/// window) draw the theme sprite into the capture target on the GPU; SHM
+/// output streams receive a frame with the cursor blended into the readback
+/// pixels. Only the compositor's theme cursor is embedded — a
+/// client-provided cursor surface is ordinary scene content and appears in
+/// output streams regardless of mode (it is never part of a window
+/// stream's surface tree). On the software-cursor fallback (nested or
+/// degraded direct display) the presented frame already contains the
+/// cursor, so `embedded` adds nothing and `hidden` cannot subtract it
+/// there.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StreamCursorMode {
+    /// The cursor never appears in stream frames beyond what the scene
+    /// itself carries (the pre-29 behavior).
+    #[default]
+    Hidden,
+    /// The cursor is composited into stream frames.
+    Embedded,
 }
 
 /// The kind of interactive pick a [`Request::PickTarget`] asks the user for
@@ -1050,12 +1220,14 @@ pub enum PickKind {
     /// Click a window, press Enter (or click empty desktop) for the whole
     /// output, or Escape to cancel.
     Window,
+    /// Click an output to pick it by connector (version 29, ADR-0128).
+    Output,
 }
 
 /// The outcome of a [`Request::PickTarget`], delivered as
 /// [`Response::Picked`]. The user's click is the authorization: a pick
 /// returns exactly what the user pointed at and nothing more (ADR-0054).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum PickResult {
     /// A picked region in compositor logical pixels.
@@ -1068,9 +1240,15 @@ pub enum PickResult {
     },
     /// A picked toplevel.
     Window { id: WindowId },
-    /// The user declined a specific window and chose the whole output (a
-    /// window-mode pick answered with Enter or a click on empty desktop).
-    Output,
+    /// A picked output. `connector` names the clicked connector for an
+    /// output-mode pick (version 29, ADR-0128); it is absent for the legacy
+    /// whole-output answer a window-mode pick produces with Enter or a
+    /// click on empty desktop, keeping the bare `{"type":"Output"}` wire
+    /// shape in both directions.
+    Output {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connector: Option<String>,
+    },
     /// The user dismissed the selector without picking (Escape, or Enter
     /// with no staged region).
     Cancelled,
@@ -1339,6 +1517,12 @@ pub enum Request {
     GetNotifications,
     /// Fetch the live output list (connector + geometry). Requires `query`.
     GetOutputs,
+    /// Enumerate the live outputs for capture addressing (version 29,
+    /// ADR-0126): each output's connector, primary flag, and physical-pixel
+    /// rectangle in desktop coordinates. Requires `query`, like
+    /// [`Request::GetSettings`]. The reply is [`Response::Outputs`] without
+    /// the rich `geometry`/`available_modes` fields.
+    EnumerateOutputs,
     /// Fetch journal entries with `seq > since` (ADR-0033). Requires `query`.
     /// The response carries the ring's `oldest_seq` and `latest_seq` so the
     /// client detects gaps from evicted entries.
@@ -1483,10 +1667,17 @@ pub enum Request {
     /// connection's named scope — never inherited. Frames arrive as
     /// [`Event::StreamFrame`] until [`Request::StreamOutputStop`],
     /// disconnect, or [`Event::StreamEnded`]. `max_fps` throttles delivery;
-    /// `None` means the server default (30 fps, clamped to 1–60).
-    /// `target` (version 6) selects the whole output or one window's
-    /// visible region (ADR-0054); a window id the compositor does not know
-    /// is refused.
+    /// `None` means the server default (30 fps, clamped to 1–240 since
+    /// version 29).
+    /// `target` (version 6) selects the whole output or one window
+    /// (ADR-0054); a window id the compositor does not know is refused.
+    /// Window streams render the window's surface tree offscreen, so an
+    /// occluded, minimized, or foreign-workspace window keeps streaming its
+    /// real content (ADR-0127). Version 29 adds the optional connector
+    /// selector on [`StreamTarget::Output`] (an unknown connector is
+    /// refused) and the renegotiation contract: a stream whose target
+    /// geometry changes is frozen with [`Event::StreamGeometryChanged`] and
+    /// must be restarted (ADR-0126).
     StreamOutputStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_fps: Option<u32>,
@@ -1496,9 +1687,19 @@ pub enum Request {
         /// announce [`StreamPixelFormat::Dmabuf`] and carry the slot table.
         /// Absent or `Some(false)` keeps the sealed-memfd SHM stream. A
         /// client that did not opt in never sees a dmabuf announcement, so
-        /// its framing stays synchronized.
+        /// its framing stays synchronized. Since version 29 a window target
+        /// may opt in too; the runtime honors it wherever an exportable
+        /// capture surface is available and falls back to SHM with a
+        /// warning otherwise (ADR-0127).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dmabuf: Option<bool>,
+        /// Cursor mode for the stream (version 29, ADR-0127). Absent means
+        /// `Hidden`, the pre-29 behavior. `Embedded` composites the theme
+        /// cursor into the stream wherever its position falls inside the
+        /// captured region; see [`StreamCursorMode`] for the exact
+        /// semantics, including the software-cursor fallback caveat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<StreamCursorMode>,
     },
     /// Stop a stream owned by this connection.
     StreamOutputStop { stream_id: u64 },
@@ -1566,7 +1767,7 @@ pub enum Request {
     /// and an explicit [`ActorCapability::SetWallpaper`] entry in the connection's
     /// named scope — never inherited.
     SetWallpaper { path: PathBuf },
-    /// Read a consistent multi-class snapshot with the journal cursor in one
+    /// Read a multi-class snapshot with the journal cursor in a single
     /// round trip (version 28, ADR-0125; the Observe primitive). Requires
     /// `query`; every class is gated by the live scope exactly like the
     /// matching `Get*` request.
@@ -1584,8 +1785,19 @@ pub enum Request {
         /// boundary. Read it from [`ObserveSnapshot::journal_cursor`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_journal_seq: Option<u64>,
+        /// Second precondition currency: the Interaction Domain authority
+        /// revision read from a snapshot. Every specified precondition must
+        /// hold at the commit boundary; the conflict names the currency
+        /// that failed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_interaction_domain_revision: Option<u64>,
         ops: Vec<TransactOp>,
     },
+    /// Read this connection's live grant: the negotiated capabilities, the
+    /// re-resolved scope (so a paired agent observes administrative ceiling
+    /// changes without reconnecting), the lease, and the Actor session
+    /// (version 28; the Observe primitive over connection state).
+    GetConnectionState,
 }
 
 /// A server → client message.
@@ -1628,7 +1840,10 @@ pub enum Response {
     Notifications {
         notifications: Vec<Notification>,
     },
-    /// Reply to [`Request::GetOutputs`].
+    /// Reply to [`Request::GetOutputs`] and [`Request::EnumerateOutputs`].
+    /// `GetOutputs` (and the [`Request::Observe`] outputs class) populate
+    /// every field; `EnumerateOutputs` replies carry only `connector`,
+    /// `primary`, and `rect` per output.
     Outputs {
         outputs: Vec<OutputInfo>,
     },
@@ -1686,6 +1901,16 @@ pub enum Response {
     /// Reply to [`Request::Transact`] (version 28).
     Transact {
         result: TransactResult,
+    },
+    /// Reply to [`Request::GetConnectionState`] (version 28).
+    ConnectionState {
+        caps: ConnectionCapabilities,
+        /// The connection's scope, re-resolved at request time.
+        scope: Scope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<LeaseGrant>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<aegis_security::authority::ActorSessionSnapshot>,
     },
     /// Reply to [`Request::CaptureOutput`]: the output's physical size and
     /// length of the sealed PNG memfd that immediately follows it.
@@ -1809,6 +2034,7 @@ impl std::fmt::Debug for Response {
             Self::InteractionDomain { .. } => "InteractionDomain",
             Self::Observed { .. } => "Observed",
             Self::Transact { .. } => "Transact",
+            Self::ConnectionState { .. } => "ConnectionState",
             Self::CaptureOutput { .. } => "CaptureOutput",
             Self::CaptureInteractionDomain { .. } => "CaptureInteractionDomain",
             Self::CaptureWindow { .. } => "CaptureWindow",

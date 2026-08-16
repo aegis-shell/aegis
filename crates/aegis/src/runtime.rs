@@ -172,6 +172,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         1280,
         720,
         configured_output_modes(config.as_ref()),
+        configured_color_policies(config.as_ref()),
+        configured_icc_profiles(config.as_ref()),
     )?;
     let device = host_bootstrap.create_device()?;
     // Move the host into a binding declared after the device so Rust drops the
@@ -259,6 +261,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         dmabuf_scanout_device,
     )?;
     server.set_outputs(host.output_infos());
+    server.set_color_pipeline(host.color_pipeline());
     log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
     // Client commits and capture-worker completions share one pollable wakeup
     // fd. Capture post-processing can therefore leave the compositor fully
@@ -321,6 +324,13 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // notifications, and modal trusted chrome. Directed Interaction Domain capture renders
     // client surfaces directly and therefore never includes this layer.
     shell.add(Box::new(aegis_shell::AgentFeedback::new(&device)));
+    // The recording indicator is compositor-owned and non-interactive
+    // (ADR-0128): while any capture stream lives it rides above ordinary
+    // desktop content — fullscreen windows included, where the HUD steps
+    // aside — so the user can always see that the screen is shared. It
+    // renders into the ordinary desktop composite and is therefore visible
+    // inside the recording itself, matching GNOME's indicator.
+    shell.add(Box::new(aegis_shell::RecordingIndicator::new()));
     // The optional SNI tray service is spawned once when at least one compiled
     // consumer is active. The cloneable handle keeps the snapshot and command
     // side together across HUD-only, panel-only, and combined builds.
@@ -812,6 +822,15 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         journal_broadcaster.clone(),
     ));
     let settings_revision = 0;
+    // The built-in scope executable allowlists ride the live config
+    // (ADR-0128): seed from the freshly loaded file, then follow every
+    // successful reload (see the watcher path in iteration).
+    live.set_scope_executables(
+        config
+            .as_ref()
+            .map(|config| config.ipc.scope_executables.clone())
+            .unwrap_or_default(),
+    );
     let settings_snapshot = aegis_ipc::SettingsSnapshot {
         revision: settings_revision,
         touchpad: system_status.touchpad.clone(),
@@ -1038,6 +1057,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         scan_req_tx,
         scan_result_rx,
         previous_render_at,
+        night_light: aegis_model::night_light::NightLight::default(),
+        night_light_last_eval: std::time::Instant::now() - std::time::Duration::from_secs(2),
     }
     .run_loop()
 }

@@ -10,7 +10,7 @@ rust-version.workspace = true
 [dependencies]
 aegis-model = { workspace = true, features = ["serde"] }
 aegis-ipc.workspace = true
-aegis-agent.workspace = true
+aegis-ipc-client.workspace = true
 aegis-semantic.workspace = true
 async-io.workspace = true
 atspi.workspace = true

@@ -66,6 +66,7 @@ impl CompositorRuntime {
         // into compositor animation.
         self.capture_worker.drain_wakeup();
         self.idle_process.maintain();
+        self.evaluate_night_light();
         self.semantic_adapter_process.maintain();
         let outputs_powered = self.host.outputs_powered();
         if !self.server.session_locked() && !outputs_powered {
@@ -352,6 +353,13 @@ impl CompositorRuntime {
                         self.deliver_stream_frame(frame);
                     }
                 }
+                CaptureCompletion::StreamWindow {
+                    stream_id,
+                    security_generation,
+                    pixels,
+                } => {
+                    self.deliver_window_stream_frame(stream_id, security_generation, pixels);
+                }
             }
             if finishes_reserved_job {
                 self.capture_worker.release();
@@ -466,6 +474,10 @@ impl CompositorRuntime {
                 }
             }
         }
+        // Per-window streams (ADR-0127): completed offscreen readbacks leave
+        // for the capture worker's conversion lane here; their deliveries
+        // arrive as `CaptureCompletion::StreamWindow` above.
+        self.poll_window_stream_readbacks();
         if self.pending_interaction_domain_capture.is_some() {
             let interaction_domain = self
                 .pending_interaction_domain_capture
@@ -555,6 +567,9 @@ impl CompositorRuntime {
             detected.do_not_disturb = self.notif_queue.lock().unwrap().do_not_disturb();
             detected.tiled = self.server.tiling();
             detected.idle_inhibited = self.system_status.idle_inhibited;
+            // Compositor-owned like `idle_inhibited`: the live capture
+            // stream count (ADR-0128) must survive a host status sample.
+            detected.capture_streams = self.system_status.capture_streams;
             detected.touchpad = self.host.touchpad_status();
             detected.display = self.system_status.display.clone();
             if detected != self.system_status {
@@ -602,6 +617,15 @@ impl CompositorRuntime {
             )
         {
             self.damage.chrome_dirty = true;
+            // Built-in scope executable allowlists follow the reload
+            // (ADR-0128): the next connection handshake resolves against
+            // the fresh table.
+            self.live.set_scope_executables(
+                self.config
+                    .as_ref()
+                    .map(|config| config.ipc.scope_executables.clone())
+                    .unwrap_or_default(),
+            );
             let wallpaper_after_reload = self
                 .config
                 .as_ref()
@@ -648,6 +672,10 @@ impl CompositorRuntime {
             // a live re-modeset after its in-flight page flip retires.
             self.host
                 .set_configured_modes(configured_output_modes(self.config.as_ref()));
+            self.host
+                .set_configured_color_policies(configured_color_policies(self.config.as_ref()));
+            self.host
+                .set_configured_icc_profiles(configured_icc_profiles(self.config.as_ref()));
             self.system_status.touchpad = self.host.set_touchpad_config(
                 self.config
                     .as_ref()
@@ -795,63 +823,150 @@ impl CompositorRuntime {
                     max_fps,
                     target,
                     allow_dmabuf,
+                    cursor,
                     reply,
                 } => {
                     let result = if self.server.session_locked() || !self.host.is_active() {
                         Err("session is locked or inactive".to_owned())
                     } else {
                         let (width, height) = self.surface.size();
-                        match target {
-                            aegis_ipc::StreamTarget::Output => {
-                                // The zero-copy dmabuf transport (protocol 25)
-                                // needs an exportable presentation surface;
-                                // every other case announces SHM pixels.
-                                let mut capture = None;
-                                if allow_dmabuf {
-                                    match self.create_dmabuf_capture(width, height) {
-                                        Ok(created) => capture = Some(created),
-                                        Err(reason) => log::warn!(
-                                            "stream: dmabuf capture unavailable ({reason}); \
-                                             falling back to shm"
-                                        ),
+                        match &target {
+                            aegis_ipc::StreamTarget::Output { output } => {
+                                // A connector selector (IPC protocol 29)
+                                // resolves to that output's sub-region of
+                                // the desktop frame; an unknown connector is
+                                // an error, not a fallback.
+                                let region = match output {
+                                    None => Some(aegis_model::Rect::new(
+                                        0,
+                                        0,
+                                        width as i32,
+                                        height as i32,
+                                    )),
+                                    Some(connector) => resolve_output_rect(
+                                        &self.server.output_infos(),
+                                        connector,
+                                        output_render_scale(&self.server, &self.host),
+                                        width,
+                                        height,
+                                    )
+                                    .filter(|rect| rect.size.w > 0 && rect.size.h > 0),
+                                };
+                                match (output, region) {
+                                    (Some(connector), None) => {
+                                        Err(format!("unknown output connector '{connector}'"))
                                     }
-                                }
-                                match capture {
-                                    Some(capture) => Ok(self.streams.start_dmabuf(
-                                        request.conn_id,
-                                        max_fps,
-                                        (width, height),
-                                        capture,
-                                    )),
-                                    None => Ok(self.streams.start(
-                                        request.conn_id,
-                                        max_fps,
-                                        (width, height),
-                                        target,
-                                    )),
+                                    (_, Some(region)) => {
+                                        let size = (region.size.w as u32, region.size.h as u32);
+                                        // The zero-copy dmabuf transport (protocol 25)
+                                        // needs an exportable presentation surface;
+                                        // every other case announces SHM pixels.
+                                        let mut capture = None;
+                                        if allow_dmabuf {
+                                            match self.create_dmabuf_capture(size.0, size.1) {
+                                                Ok(created) => capture = Some(created),
+                                                Err(reason) => log::warn!(
+                                                    "stream: dmabuf capture unavailable ({reason}); \
+                                                     falling back to shm"
+                                                ),
+                                            }
+                                        }
+                                        match capture {
+                                            Some(capture) => Ok(self.streams.start_dmabuf(
+                                                request.conn_id,
+                                                max_fps,
+                                                size,
+                                                target.clone(),
+                                                cursor,
+                                                capture,
+                                            )),
+                                            None => Ok(self.streams.start(
+                                                request.conn_id,
+                                                max_fps,
+                                                size,
+                                                target.clone(),
+                                                cursor,
+                                            )),
+                                        }
+                                    }
+                                    (None, None) => unreachable!("whole-desktop region is sized"),
                                 }
                             }
                             aegis_ipc::StreamTarget::Window { window } => {
-                                let scale = output_render_scale(&self.server, &self.host);
-                                match window_physical_rect(
-                                    &self.server.windows(),
-                                    window,
-                                    scale,
-                                    width,
-                                    height,
-                                )
-                                .filter(|rect| rect.size.w > 0 && rect.size.h > 0)
-                                {
-                                    Some(rect) => Ok(self.streams.start(
-                                        request.conn_id,
-                                        max_fps,
-                                        (rect.size.w as u32, rect.size.h as u32),
-                                        target,
-                                    )),
-                                    None => Err(format!(
-                                        "window {} is not available for streaming",
-                                        window.0
-                                    )),
+                                // Per-window independent rendering
+                                // (ADR-0127): the negotiated extent is the
+                                // window's physical size at the capture
+                                // scale of the output it sits on; the
+                                // per-stream target is created now and
+                                // cached until the stream stops.
+                                match window_tree_geometry(&self.server, *window) {
+                                    Err(reason) => Err(reason),
+                                    Ok(geometry) => {
+                                        let size =
+                                            (geometry.physical_width, geometry.physical_height);
+                                        let window_state = |shm| WindowStream {
+                                            shm,
+                                            geometry_sig: (
+                                                self.server.all_windows_signature(),
+                                                self.server.outputs_revision(),
+                                            ),
+                                            origin: geometry.origin,
+                                            logical_size: geometry.logical_size,
+                                            scale_milli: geometry.scale_milli,
+                                            generations: std::collections::HashMap::new(),
+                                            dirty: true,
+                                            stage: WindowStreamStage::Idle,
+                                            held_since: None,
+                                        };
+                                        let mut capture = None;
+                                        if allow_dmabuf {
+                                            match self.create_dmabuf_capture(size.0, size.1) {
+                                                Ok(created) => capture = Some(created),
+                                                Err(reason) => log::warn!(
+                                                    "stream: dmabuf capture unavailable ({reason}); \
+                                                     falling back to shm"
+                                                ),
+                                            }
+                                        }
+                                        match capture {
+                                            Some(capture) => {
+                                                let info = self.streams.start_dmabuf(
+                                                    request.conn_id,
+                                                    max_fps,
+                                                    size,
+                                                    target.clone(),
+                                                    cursor,
+                                                    capture,
+                                                );
+                                                self.streams.attach_window(
+                                                    info.stream_id,
+                                                    window_state(None),
+                                                );
+                                                Ok(info)
+                                            }
+                                            None => match WindowShmTarget::new(
+                                                &self.device,
+                                                size.0,
+                                                size.1,
+                                            ) {
+                                                Ok(target_shm) => {
+                                                    let info = self.streams.start(
+                                                        request.conn_id,
+                                                        max_fps,
+                                                        size,
+                                                        target.clone(),
+                                                        cursor,
+                                                    );
+                                                    self.streams.attach_window(
+                                                        info.stream_id,
+                                                        window_state(Some(target_shm)),
+                                                    );
+                                                    Ok(info)
+                                                }
+                                                Err(reason) => Err(reason),
+                                            },
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -880,6 +995,14 @@ impl CompositorRuntime {
                 }
             }
         }
+        // Window streams produce independently of presentation (ADR-0127):
+        // geometry re-checks, dirty-driven and liveness renders into each
+        // stream's cached offscreen target.
+        self.drive_window_streams();
+        // The recording indicator follows the live stream set after every
+        // mutation above (start, stop, disconnect) — the same frame the
+        // change drained in, so it paints promptly (ADR-0128).
+        self.publish_capture_stream_count();
         while let Ok(request) = self.interaction_domain_control_rx.try_recv() {
             let committed_action = request.action.clone();
             let before_revision = self.server.interaction_domain_snapshot().revision;
@@ -1576,50 +1699,23 @@ impl CompositorRuntime {
                 origin,
             );
         }
-        // Pre-authorized transaction batches (ADR-0125): the journal-cursor
-        // precondition is checked at this commit boundary, then ops apply in
-        // order through the same chokepoint as `Do` and each returns its own
-        // journal sequence number and effect as the receipt.
+        // Pre-authorized transaction batches (ADR-0125): preconditions are
+        // checked at this commit boundary, then ops apply in order through
+        // the same chokepoint as `Do` and each returns its own journal
+        // sequence number and effect as the receipt.
         while let Ok(request) = self.transact_rx.try_recv() {
-            let ts = self.start.elapsed().as_millis() as u64;
-            let result = if self.server.session_locked() {
-                Err("session is locked".into())
-            } else {
-                let before_seq = self.journal.lock().unwrap().latest_seq();
-                match request.expected_journal_seq {
-                    Some(expected) if expected != before_seq => {
-                        Ok(aegis_ipc::TransactResult::PreconditionConflict {
-                            expected,
-                            actual: before_seq,
-                        })
-                    }
-                    _ => {
-                        let mut after_seq = before_seq;
-                        let mut results = Vec::with_capacity(request.ops.len());
-                        for cmd in request.ops {
-                            let (seq, effect) = apply_command_journaled(
-                                &mut self.server,
-                                &self.notif_queue,
-                                &mut self.quit_requested,
-                                cmd,
-                                &self.ipc,
-                                &self.journal,
-                                ts,
-                                request.origin.clone(),
-                            );
-                            after_seq = seq;
-                            results.push(aegis_ipc::TransactOpResult { seq, effect });
-                        }
-                        Ok(aegis_ipc::TransactResult::Committed {
-                            receipt: aegis_ipc::TransactReceipt {
-                                before_seq,
-                                after_seq,
-                                results,
-                            },
-                        })
-                    }
-                }
-            };
+            let result = apply_transact_batch(
+                &mut self.server,
+                &self.notif_queue,
+                &mut self.quit_requested,
+                &self.ipc,
+                &self.journal,
+                self.start.elapsed().as_millis() as u64,
+                request.origin,
+                request.expected_journal_seq,
+                request.expected_interaction_domain_revision,
+                request.ops,
+            );
             let _ = request.reply.send(result);
         }
         // Age out expired notifications once per frame.
@@ -1637,6 +1733,42 @@ impl CompositorRuntime {
     /// Decode `path` and swap the live wallpaper (the Wallpaper portal's
     /// compositor side). glTF stays startup-only: its decode needs the GPU
     /// device and surface, which the IPC path deliberately does not touch.
+    /// Night light: pace a 1 Hz evaluation of the configured schedule and
+    /// fade the CRTC gamma ramp toward the target temperature. This is
+    /// KMS-level channel gain — the render pipeline is untouched.
+    pub(super) fn evaluate_night_light(&mut self) {
+        use aegis_model::night_light as nl;
+        if self.night_light_last_eval.elapsed() < std::time::Duration::from_secs(1) {
+            return;
+        }
+        self.night_light_last_eval = std::time::Instant::now();
+        let config = self
+            .config
+            .as_ref()
+            .map(|c| c.night_light.clone())
+            .unwrap_or_default();
+        let scheduled = match (&config.start, &config.end) {
+            (Some(start), Some(end)) => {
+                match (
+                    nl::ClockTime::from_hhmm(start),
+                    nl::ClockTime::from_hhmm(end),
+                ) {
+                    (Some(start), Some(end)) => nl::schedule_active(start, end, local_clock_now()),
+                    _ => false,
+                }
+            }
+            // No schedule: the enable switch alone decides.
+            _ => true,
+        };
+        let target = (config.enable && scheduled).then_some(config.temperature as f32);
+        let fade_seconds = config.fade_seconds.max(1) as f32;
+        let step = ((nl::NEUTRAL_KELVIN - config.temperature as f32).abs() / fade_seconds).max(1.0);
+        if let Some(gains) = self.night_light.step(target, step) {
+            self.host
+                .set_gamma_gains(self.night_light.active.then_some(gains));
+        }
+    }
+
     pub(super) fn swap_wallpaper(&mut self, path: &std::path::Path) -> Result<(), String> {
         let is_gltf = path
             .extension()
@@ -1676,6 +1808,18 @@ pub(super) fn screenshot_updates_human_clipboard(origin: &aegis_ipc::Origin) -> 
         origin,
         aegis_ipc::Origin::Chrome | aegis_ipc::Origin::Keybinding
     )
+}
+
+/// Local wall-clock time for the night-light schedule.
+fn local_clock_now() -> aegis_model::night_light::ClockTime {
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut tm);
+        aegis_model::night_light::ClockTime {
+            minutes: (tm.tm_hour as u32) * 60 + tm.tm_min as u32,
+        }
+    }
 }
 
 #[cfg(test)]

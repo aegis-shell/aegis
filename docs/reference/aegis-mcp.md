@@ -127,6 +127,13 @@ renames are recorded in the mutation journal.
 
 The bridge refreshes the credential-bound ceiling for every `tools/list`,
 and the IPC server reauthorizes the principal for every live request.
+
+The bridge holds one persistent broker connection for its lifetime
+(ADR-0125): the privileged lease renews lazily, a transport failure
+re-pairs transparently on the next call, and a failed request is never
+retried automatically. Observation tokens are connection-bound, so
+`interaction_domain_observe`/`interaction_domain_capture` and
+`interaction_domain_input` always travel on the same connection.
 Forgetting a principal or narrowing its ceiling therefore applies to both
 new and already connected clients. Gated tools remain advertised because
 calling one opens the runtime-grant path.
@@ -155,7 +162,7 @@ tool prompts for a runtime grant (once / session / always).
 
 | Connector-local name | Required capability / operation | Contract |
 |----------------------|---------------------------------|----------|
-| `desktop_snapshot` | `query` / `ObserveWindows`, `ObserveWorkspaces`, `ObserveOutputs`, `ObserveInteractionDomains` | Actor-scoped windows, workspaces, outputs, Interaction Domains, the journal cursor, and the granted ceiling, read in one consistent round trip (protocol 28). |
+| `desktop_snapshot` | `query` / `ObserveWindows`, `ObserveWorkspaces`, `ObserveOutputs`, `ObserveInteractionDomains` | Actor-scoped windows, workspaces, outputs, Interaction Domains, the journal cursor, and the granted ceiling, read in a single round trip (protocol 28). |
 | `desktop_journal` | `query` / `ObserveJournal` | Up to 200 principal- and resource-filtered mutations and a pagination cursor. |
 | `apps_list` | `query` | Filtered XDG applications with trusted `desktop_id` values. |
 | `launch_app` ▲ | `control` / `LaunchApp` | Launch a catalogued application on the desktop. `workspace_id` places its first window on an existing workspace, `new_workspace` (with optional `workspace_label`) on a fresh one; placement never switches the user's view. |

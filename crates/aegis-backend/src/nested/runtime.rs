@@ -351,6 +351,8 @@ impl Backend for NestedHost {
             // The outer compositor owns modesetting; there is nothing to
             // enumerate here.
             available_modes: Vec::new(),
+            // The outer compositor owns color management likewise.
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
         }]
     }
 

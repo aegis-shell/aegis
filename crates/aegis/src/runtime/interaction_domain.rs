@@ -66,6 +66,7 @@ pub(super) struct IpcCommandRequest {
 pub(super) struct TransactRequest {
     pub(super) origin: aegis_ipc::Origin,
     pub(super) expected_journal_seq: Option<u64>,
+    pub(super) expected_interaction_domain_revision: Option<u64>,
     pub(super) ops: Vec<aegis_ipc::Command>,
     pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::TransactResult, String>>,
 }

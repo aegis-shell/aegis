@@ -1044,8 +1044,9 @@ fn hello_with_scope_name_round_trips() {
 fn stream_output_start_round_trips_with_optional_max_fps() {
     let with_fps = Request::StreamOutputStart {
         max_fps: Some(60),
-        target: StreamTarget::Output,
+        target: StreamTarget::Output { output: None },
         dmabuf: None,
+        cursor: None,
     };
     let json = serde_json::to_string(&with_fps).unwrap();
     assert!(json.contains(r#""type":"StreamOutputStart""#), "{json}");
@@ -1058,6 +1059,10 @@ fn stream_output_start_round_trips_with_optional_max_fps() {
         !json.contains("dmabuf"),
         "dmabuf opt-in is skipped when unset: {json}"
     );
+    assert!(
+        !json.contains("cursor"),
+        "cursor mode is skipped when unset: {json}"
+    );
     assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), with_fps);
 
     let default: Request = serde_json::from_str(r#"{"type":"StreamOutputStart"}"#).unwrap();
@@ -1065,18 +1070,84 @@ fn stream_output_start_round_trips_with_optional_max_fps() {
         default,
         Request::StreamOutputStart {
             max_fps: None,
-            target: StreamTarget::Output,
+            target: StreamTarget::Output { output: None },
             dmabuf: None,
+            cursor: None,
         }
     );
+}
+
+#[test]
+fn stream_target_output_selector_is_backward_compatible() {
+    // The version-28 wire shape round-trips exactly: no selector, no field.
+    let target = StreamTarget::Output { output: None };
+    let json = serde_json::to_string(&target).unwrap();
+    assert_eq!(json, r#"{"type":"Output"}"#);
+    assert_eq!(serde_json::from_str::<StreamTarget>(&json).unwrap(), target);
+    assert!(target.is_output());
+    assert_eq!(StreamTarget::default(), target);
+
+    // A connector selector (version 29) adds one field.
+    let selected = StreamTarget::Output {
+        output: Some("HDMI-A-1".into()),
+    };
+    let json = serde_json::to_string(&selected).unwrap();
+    assert_eq!(json, r#"{"type":"Output","output":"HDMI-A-1"}"#);
+    assert_eq!(
+        serde_json::from_str::<StreamTarget>(&json).unwrap(),
+        selected
+    );
+    assert!(!selected.is_output());
+
+    // A start request carrying the selector serializes the target; the
+    // serde-skip rule only fires for the selector-less default.
+    let req = Request::StreamOutputStart {
+        max_fps: None,
+        target: selected.clone(),
+        dmabuf: None,
+        cursor: None,
+    };
+    let json = serde_json::to_string(&req).unwrap();
+    assert!(
+        json.contains(r#""target":{"type":"Output","output":"HDMI-A-1"}"#),
+        "{json}"
+    );
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+}
+
+#[test]
+fn stream_output_start_cursor_mode_round_trips() {
+    let embedded = Request::StreamOutputStart {
+        max_fps: None,
+        target: StreamTarget::Output { output: None },
+        dmabuf: None,
+        cursor: Some(StreamCursorMode::Embedded),
+    };
+    let json = serde_json::to_string(&embedded).unwrap();
+    assert!(json.contains(r#""cursor":"embedded"#), "{json}");
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), embedded);
+
+    let hidden = Request::StreamOutputStart {
+        max_fps: None,
+        target: StreamTarget::Output { output: None },
+        dmabuf: None,
+        cursor: Some(StreamCursorMode::Hidden),
+    };
+    let json = serde_json::to_string(&hidden).unwrap();
+    assert!(json.contains(r#""cursor":"hidden"#), "{json}");
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), hidden);
+
+    // Absent means the default (Hidden) once the dispatcher resolves it.
+    assert_eq!(StreamCursorMode::default(), StreamCursorMode::Hidden);
 }
 
 #[test]
 fn stream_output_start_dmabuf_opt_in_round_trips() {
     let req = Request::StreamOutputStart {
         max_fps: None,
-        target: StreamTarget::Output,
+        target: StreamTarget::Output { output: None },
         dmabuf: Some(true),
+        cursor: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(json.contains(r#""dmabuf":true"#), "{json}");
@@ -1091,6 +1162,7 @@ fn stream_output_start_round_trips_a_window_target() {
             window: WindowId(7),
         },
         dmabuf: None,
+        cursor: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(
@@ -1102,7 +1174,12 @@ fn stream_output_start_round_trips_a_window_target() {
 
 #[test]
 fn pick_target_round_trips_all_kinds_and_results() {
-    for kind in [PickKind::Region, PickKind::Pixel, PickKind::Window] {
+    for kind in [
+        PickKind::Region,
+        PickKind::Pixel,
+        PickKind::Window,
+        PickKind::Output,
+    ] {
         let req = Request::PickTarget { kind };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
@@ -1116,15 +1193,73 @@ fn pick_target_round_trips_all_kinds_and_results() {
             rgb: [255, 128, 0],
         },
         PickResult::Window { id: WindowId(3) },
-        PickResult::Output,
+        PickResult::Output { connector: None },
+        PickResult::Output {
+            connector: Some("HDMI-A-1".into()),
+        },
         PickResult::Cancelled,
     ] {
-        let resp = Response::Picked { result };
+        let resp = Response::Picked {
+            result: result.clone(),
+        };
         let json = serde_json::to_string(&resp).unwrap();
         match serde_json::from_str::<Response>(&json).unwrap() {
             Response::Picked { result: back } => assert_eq!(back, result),
             other => panic!("expected Picked, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn pick_kind_output_serializes_as_a_bare_tag() {
+    // Literal golden fixture (version 29, ADR-0128): the output pick kind
+    // is one tagged unit, exactly like the other kinds.
+    let req = Request::PickTarget {
+        kind: PickKind::Output,
+    };
+    let json = serde_json::to_string(&req).unwrap();
+    assert_eq!(json, r#"{"type":"PickTarget","kind":{"type":"Output"}}"#);
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+}
+
+#[test]
+fn pick_result_output_omits_the_connector_for_the_legacy_shape() {
+    // Golden fixture both directions: the window-mode whole-output answer
+    // keeps the pre-29 bare shape, and that shape still deserializes with
+    // no connector (ADR-0128).
+    let resp = Response::Picked {
+        result: PickResult::Output { connector: None },
+    };
+    let json = serde_json::to_string(&resp).unwrap();
+    assert_eq!(json, r#"{"type":"Picked","result":{"type":"Output"}}"#);
+    match serde_json::from_str::<Response>(&json).unwrap() {
+        Response::Picked { result } => {
+            assert_eq!(result, PickResult::Output { connector: None })
+        }
+        other => panic!("expected Picked, got {other:?}"),
+    }
+}
+
+#[test]
+fn pick_result_output_carries_the_picked_connector_when_present() {
+    let resp = Response::Picked {
+        result: PickResult::Output {
+            connector: Some("DP-1".into()),
+        },
+    };
+    let json = serde_json::to_string(&resp).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"Picked","result":{"type":"Output","connector":"DP-1"}}"#
+    );
+    match serde_json::from_str::<Response>(&json).unwrap() {
+        Response::Picked { result } => assert_eq!(
+            result,
+            PickResult::Output {
+                connector: Some("DP-1".into()),
+            }
+        ),
+        other => panic!("expected Picked, got {other:?}"),
     }
 }
 
@@ -1347,6 +1482,141 @@ fn stream_ended_event_round_trips() {
 }
 
 #[test]
+fn stream_geometry_changed_event_matches_the_wire_fixture() {
+    let event = Event::StreamGeometryChanged {
+        stream_id: 3,
+        width: 2560,
+        height: 1440,
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"StreamGeometryChanged","stream_id":3,"width":2560,"height":1440}"#
+    );
+    assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+}
+
+#[test]
+fn enumerate_outputs_request_and_reply_match_the_wire_fixture() {
+    let req = Request::EnumerateOutputs;
+    let json = serde_json::to_string(&req).unwrap();
+    assert_eq!(json, r#"{"type":"EnumerateOutputs"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+
+    // The EnumerateOutputs reply carries exactly connector/primary/rect.
+    let lean = Response::Outputs {
+        outputs: vec![OutputInfo {
+            connector: "HDMI-A-1".into(),
+            primary: true,
+            rect: Rect::new(0, 0, 1920, 1080),
+            geometry: None,
+            available_modes: None,
+        }],
+    };
+    let json = serde_json::to_string(&lean).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"Outputs","outputs":[{"connector":"HDMI-A-1","primary":true,"rect":{"origin":{"x":0,"y":0},"size":{"w":1920,"h":1080}}}]}"#
+    );
+    let Response::Outputs { outputs } = serde_json::from_str::<Response>(&json).unwrap() else {
+        panic!("expected Outputs");
+    };
+    assert_eq!(
+        outputs,
+        vec![OutputInfo {
+            connector: "HDMI-A-1".into(),
+            primary: true,
+            rect: Rect::new(0, 0, 1920, 1080),
+            geometry: None,
+            available_modes: None,
+        }]
+    );
+
+    // The GetOutputs form adds the rich fields; a pre-29 reply (no
+    // `primary`/`rect`) still decodes, with the additive fields defaulted.
+    let rich = Response::Outputs {
+        outputs: vec![OutputInfo {
+            connector: "HDMI-A-1".into(),
+            primary: true,
+            rect: Rect::new(0, 0, 1920, 1080),
+            geometry: Some(aegis_model::output::OutputGeometry::default()),
+            available_modes: Some(vec![aegis_model::output::OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            }]),
+        }],
+    };
+    let json = serde_json::to_string(&rich).unwrap();
+    assert!(json.contains(r#""geometry""#), "{json}");
+    assert!(json.contains(r#""available_modes""#), "{json}");
+    let Response::Outputs { outputs } = serde_json::from_str::<Response>(&json).unwrap() else {
+        panic!("expected Outputs");
+    };
+    assert_eq!(outputs.len(), 1);
+    assert!(outputs[0].primary);
+    assert!(outputs[0].geometry.is_some());
+    assert_eq!(outputs[0].available_modes.as_ref().unwrap().len(), 1);
+    let legacy: Response = serde_json::from_str(
+        r#"{"type":"Outputs","outputs":[{"connector":"HDMI-A-1","geometry":{"mode":{"width":1920,"height":1080,"refresh_mhz":60000},"scale":1.0,"transform":"Normal","logical_origin":{"x":0,"y":0}},"available_modes":[]}]}"#,
+    )
+    .unwrap();
+    let Response::Outputs { outputs } = legacy else {
+        panic!("expected Outputs");
+    };
+    assert_eq!(outputs.len(), 1);
+    assert!(!outputs[0].primary);
+    assert_eq!(outputs[0].rect, Rect::default());
+    assert!(outputs[0].geometry.is_some());
+}
+
+#[test]
+fn output_info_project_marks_primary_and_scales_rectangles() {
+    let infos = vec![
+        aegis_model::output::OutputInfo {
+            connector: "HDMI-A-1".into(),
+            geometry: aegis_model::output::OutputGeometry {
+                mode: aegis_model::output::OutputMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                },
+                scale: aegis_model::output::Scale(2.0),
+                transform: aegis_model::Transform::Normal,
+                logical_origin: aegis_model::Point { x: 0, y: 0 },
+            },
+            available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
+        },
+        aegis_model::output::OutputInfo {
+            connector: "DP-1".into(),
+            geometry: aegis_model::output::OutputGeometry {
+                mode: aegis_model::output::OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_mhz: 60_000,
+                },
+                scale: aegis_model::output::Scale(2.0),
+                transform: aegis_model::Transform::Normal,
+                logical_origin: aegis_model::Point { x: 960, y: 0 },
+            },
+            available_modes: Vec::new(),
+            color_caps: aegis_model::edid::EdidColorCapabilities::default(),
+        },
+    ];
+    let projected = OutputInfo::project(&infos);
+    // Sorted by connector: DP-1 first; primary stays the first model entry.
+    assert_eq!(projected[0].connector, "DP-1");
+    assert!(!projected[0].primary);
+    assert_eq!(projected[1].connector, "HDMI-A-1");
+    assert!(projected[1].primary);
+    // Render scale 2 (the primary's): logical 1280x720@960 -> 2560x1440@1920.
+    assert_eq!(projected[0].rect, Rect::new(1920, 0, 2560, 1440));
+    assert_eq!(projected[1].rect, Rect::new(0, 0, 1920, 1080));
+    assert!(projected.iter().all(|output| output.geometry.is_some()));
+}
+
+#[test]
 fn transact_op_command_round_trip_and_op_class() {
     let ops = vec![
         TransactOp::Focus {
@@ -1370,9 +1640,7 @@ fn transact_op_command_round_trip_and_op_class() {
         TransactOp::SwitchWorkspace {
             dir: aegis_model::workspace::Switch::Next,
         },
-        TransactOp::SwitchWorkspaceTo {
-            id: WorkspaceId(4),
-        },
+        TransactOp::SwitchWorkspaceTo { id: WorkspaceId(4) },
         TransactOp::MoveToWorkspace {
             window: WindowId(3),
             workspace: WorkspaceId(4),
@@ -1432,6 +1700,7 @@ fn transact_focus_defaults_reveal_for_older_peers() {
 fn transact_request_and_result_round_trip() {
     let request = Request::Transact {
         expected_journal_seq: Some(11),
+        expected_interaction_domain_revision: Some(4),
         ops: vec![TransactOp::ToggleTiling],
     };
     let json = serde_json::to_string(&request).unwrap();
@@ -1439,6 +1708,7 @@ fn transact_request_and_result_round_trip() {
 
     for result in [
         TransactResult::PreconditionConflict {
+            precondition: TransactPrecondition::JournalSeq,
             expected: 11,
             actual: 12,
         },

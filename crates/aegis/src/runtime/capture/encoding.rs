@@ -182,6 +182,41 @@ fn composite_cursor(
     destination_height: u32,
     cursor: &CaptureCursor,
 ) {
+    composite_cursor_impl(
+        destination,
+        destination_width,
+        destination_height,
+        cursor,
+        true,
+    );
+}
+
+/// Premultiplied source-over from an Xcursor BGRA sprite into a BGRA stream
+/// frame (cursor-embedding output streams, IPC protocol 29). Identical math
+/// to [`composite_cursor`]; source and destination channel orders match, so
+/// no swap.
+fn composite_cursor_bgra(
+    destination: &mut [u8],
+    destination_width: u32,
+    destination_height: u32,
+    cursor: &CaptureCursor,
+) {
+    composite_cursor_impl(
+        destination,
+        destination_width,
+        destination_height,
+        cursor,
+        false,
+    );
+}
+
+fn composite_cursor_impl(
+    destination: &mut [u8],
+    destination_width: u32,
+    destination_height: u32,
+    cursor: &CaptureCursor,
+    rgba_destination: bool,
+) {
     let expected_destination = destination_width as usize * destination_height as usize * 4;
     let expected_source = cursor.width as usize * cursor.height as usize * 4;
     if destination.len() < expected_destination || cursor.bgra.len() < expected_source {
@@ -210,8 +245,14 @@ fn composite_cursor(
             let alpha = u32::from(source[3]);
             let inverse = 255 - alpha;
 
-            // Xcursor is BGRA; the readback buffer is RGBA.
-            for (destination_channel, source_channel) in [(0, 2), (1, 1), (2, 0), (3, 3)] {
+            // Xcursor is BGRA; an RGBA destination swaps the colour channels,
+            // a BGRA destination (stream frames) copies them straight.
+            let channels: [(usize, usize); 4] = if rgba_destination {
+                [(0, 2), (1, 1), (2, 0), (3, 3)]
+            } else {
+                [(0, 0), (1, 1), (2, 2), (3, 3)]
+            };
+            for (destination_channel, source_channel) in channels {
                 let over = u32::from(source[source_channel])
                     + (u32::from(destination[destination_channel]) * inverse + 127) / 255;
                 destination[destination_channel] = over.min(255) as u8;
@@ -330,6 +371,13 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
 /// alpha channel forced to 255. Composited desktop frames are opaque, so the
 /// premultiplied→straight distinction cannot produce visible error here;
 /// the swap is a pure byte shuffle.
+///
+/// When the binding attached a cursor snapshot (at least one due SHM output
+/// stream negotiated `embedded`), a second, cursor-composited copy of the
+/// frame is produced alongside the pristine one (ADR-0127): per-stream
+/// cursor modes make a shared pre-blend incorrect, and one extra frame copy
+/// here keeps the blend off the frame thread. Delivery serves each stream
+/// the variant its mode negotiated.
 pub(in crate::runtime) fn stream_pixels(
     capture: CapturedPixels,
 ) -> Result<super::worker::StreamPixels, String> {
@@ -338,7 +386,7 @@ pub(in crate::runtime) fn stream_pixels(
         height,
         pixels,
         crop: _,
-        cursor: _,
+        cursor,
         security_generation: _,
     } = capture;
     let mut rgba = match pixels {
@@ -355,11 +403,16 @@ pub(in crate::runtime) fn stream_pixels(
         px.swap(0, 2);
         px[3] = 255;
     }
+    let cursor_bgra = cursor.map(|cursor| {
+        let mut blended = rgba.clone();
+        composite_cursor_bgra(&mut blended, width, height, &cursor);
+        blended.into()
+    });
     Ok(super::worker::StreamPixels {
         width,
         height,
         bgra: rgba.into(),
-        damage: Vec::new(),
+        cursor_bgra,
     })
 }
 
@@ -399,6 +452,29 @@ mod tests {
         assert_eq!(&rgba[0..4], &[128, 0, 0, 255]);
         assert_eq!(&rgba[4..8], &[0, 0, 0, 255]);
         assert_eq!(&rgba[12..16], &[128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn cursor_composite_bgra_preserves_channel_order() {
+        let mut bgra = vec![0u8; 2 * 4];
+        for pixel in bgra.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        let cursor = CaptureCursor {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+            // 50%-opaque premultiplied red in BGRA order.
+            bgra: std::sync::Arc::from([0, 0, 128, 128].repeat(2)),
+        };
+
+        composite_cursor_bgra(&mut bgra, 2, 1, &cursor);
+
+        // BGRA in, BGRA out: red stays in channel 2 (unlike the RGBA blend,
+        // which swaps it into channel 0).
+        assert_eq!(&bgra[0..4], &[0, 0, 128, 255]);
+        assert_eq!(&bgra[4..8], &[0, 0, 128, 255]);
     }
 
     #[test]
