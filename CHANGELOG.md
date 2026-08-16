@@ -7,6 +7,21 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.28] - 2026-08-16
+
+### Fixed
+
+- Full-screen blur covering every window. The shell's backdrop-region
+  aggregation treated an empty region list from a blur-requesting
+  component as an implicit full-screen region. Since the dock requests
+  blur (sigma 12) while declaring no rectangular regions at rest — its
+  glass body carries a `capture_bounds` footprint instead — the
+  synthesized full-screen region survived the frost filter and the
+  blurred composite was drawn over the whole output, also forcing a
+  full-screen capture that blocked direct scanout. Empty region lists
+  now contribute no rectangular frost; components that want a
+  full-screen backdrop declare it explicitly.
+
 ## [0.0.27] - 2026-08-16
 
 ### Added
