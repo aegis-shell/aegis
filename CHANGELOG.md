@@ -7,6 +7,14 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.33] - 2026-08-17
+
+### Added
+
+- SHM stream presentation pacing regression test (`forcing_due_shm_paces_and_drives_presentation_without_client_damage`)
+  covering first-frame forcing, mid-interval backoff, interval expiry re-forcing, and pacing
+  reset on frame record across a 60 FPS shared-memory fallback stream.
+
 ## [0.0.32] - 2026-08-17
 
 ### Fixed
