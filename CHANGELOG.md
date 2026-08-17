@@ -7,6 +7,14 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.34] - 2026-08-18
+
+### Changed
+
+- Promoted Optics dependency to `v0.0.17`, incorporating target attachment pooling per slot by dimension to eliminate framebuffer recreation thrashing across multi-target composition passes (HUD, panels, backdrop blur).
+- Modularized `aegis-lock` visual styles across discrete style backends (`bsod`, `centered`, `cinematic`, `qr`).
+- Decoupled per-output presentation pacing and added immediate surface texture cache eviction upon `wl_surface.destroy` in `aegis-render`.
+
 ## [0.0.33] - 2026-08-17
 
 ### Added
