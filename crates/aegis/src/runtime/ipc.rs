@@ -1598,6 +1598,42 @@ impl aegis_ipc::Handler for LiveState {
     }
 
     fn connection_disconnected(&self, conn_id: u64) {
+        let _ = self
+            .confirm_pick_controls
+            .lock()
+            .unwrap()
+            .send(ConfirmPickControlRequest {
+                conn_id,
+                action: ConfirmPickControl::Cancel,
+            });
+        let _ = self.pick_controls.lock().unwrap().send(PickControlRequest {
+            conn_id,
+            action: PickControl::Cancel,
+        });
+        let _ = self
+            .app_pick_controls
+            .lock()
+            .unwrap()
+            .send(AppPickControlRequest {
+                conn_id,
+                action: AppPickControl::Cancel,
+            });
+        let _ = self
+            .secret_prompt_controls
+            .lock()
+            .unwrap()
+            .send(SecretPromptControlRequest {
+                conn_id,
+                action: SecretPromptControl::Cancel,
+            });
+        let _ = self
+            .capability_pick_controls
+            .lock()
+            .unwrap()
+            .send(CapabilityPickControlRequest {
+                conn_id,
+                action: CapabilityPickControl::Cancel,
+            });
         let revoked = self
             .actor_sessions
             .lock()

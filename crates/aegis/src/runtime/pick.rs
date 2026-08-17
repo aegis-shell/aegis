@@ -96,10 +96,9 @@ impl CompositorRuntime {
         if let Some(pick) = self.pending_pick.take() {
             let _ = pick.reply.send(Err(reason.to_owned()));
         }
-        if self.pending_pick_open.take().is_some() {
-            // The picker never opened; drop the freeze its request armed.
-            self.screenshot_freeze.disarm();
-        }
+        self.pending_pick_open = None;
+        self.screenshot_freeze.disarm();
+        self.shell.set_screenshot_freeze(false);
         self.shell.cancel_pick();
     }
 }

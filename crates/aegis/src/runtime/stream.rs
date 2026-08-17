@@ -1168,7 +1168,6 @@ impl CompositorRuntime {
             let Some(_slot) = dmabuf.ring.next_submission_slot() else {
                 // The consumer still owns the ring's next slot.
                 stream.dropped += 1;
-                stream.last_frame = Some(now);
                 if dmabuf.ring.next_is_pinned() && !dmabuf.ring_stalled {
                     dmabuf.ring_stalled = true;
                     log::warn!(

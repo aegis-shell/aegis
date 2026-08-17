@@ -233,10 +233,21 @@ impl CompositorRuntime {
 
     pub(super) fn run_loop(mut self) -> Result<(), Box<dyn std::error::Error>> {
         while self.wait_for_work() {
-            let Some(work) = self.prepare_iteration()? else {
-                continue;
+            let work = match self.prepare_iteration() {
+                Ok(Some(work)) => work,
+                Ok(None) => continue,
+                Err(error) => {
+                    log::warn!("compositor: iteration preparation error: {error}");
+                    continue;
+                }
             };
-            let frame = self.process_input(work)?;
+            let frame = match self.process_input(work) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    log::warn!("compositor: input processing error: {error}");
+                    continue;
+                }
+            };
             self.queue_frame_state(frame);
             if !self.presentation.can_redraw() {
                 continue;
@@ -254,7 +265,14 @@ impl CompositorRuntime {
             self.previous_render_at = render_at;
             frame.set_dt(frame_dt);
 
-            let outcome = self.render_and_present(frame)?;
+            let outcome = match self.render_and_present(frame) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    log::warn!("compositor: presentation error: {error}");
+                    self.damage.force_full_redraw = true;
+                    PresentationOutcome::Retry
+                }
+            };
             self.update_animation_state();
             let now = std::time::Instant::now();
             let refresh_interval = self.presentation_interval();
