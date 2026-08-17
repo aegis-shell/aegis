@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.30] - 2026-08-17
+
 ### Fixed
 
 - Screen recordings and casts through the portal no longer starve at
