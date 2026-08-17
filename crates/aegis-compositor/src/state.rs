@@ -1,6 +1,15 @@
 use super::*;
 
 impl State {
+    /// Allocate a fresh `wp_image_description_v1` identity (color-management
+    /// v1): non-zero, never recycled within the session. The wraparound
+    /// guard is theoretical — u32 space is unreachable in a real session.
+    pub(crate) fn alloc_color_identity(&mut self) -> u32 {
+        let id = self.color_identity_next.max(1);
+        self.color_identity_next = id.wrapping_add(1);
+        id
+    }
+
     /// Record the window-open transition when a toplevel first maps
     /// (ADR-0029): the window fades in while growing from a slightly inset
     /// rect to its full mapped rect. No-op under reduced motion, for
@@ -231,6 +240,8 @@ impl State {
             output_policies: std::collections::HashMap::new(),
             color_pipeline: aegis_model::output::ColorPipeline::default(),
             color_management_outputs: Vec::new(),
+            color_identity_next: 2,
+            color_pipeline_identity: 1,
             last_work_area: aegis_model::Rect::default(),
             epoch: std::time::Instant::now(),
             last_app_geometries,

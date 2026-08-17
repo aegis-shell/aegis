@@ -67,12 +67,50 @@ pub enum ContentTransfer {
     Gamma(f32),
 }
 
+/// A luminance range with a reference white level, in cd/m² (the protocol's
+/// `set_luminances` request and `luminances` info event).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Luminances {
+    /// Minimum display emission (black level), including ambient flare.
+    pub min: f32,
+    /// Maximum primary color volume luminance.
+    pub max: f32,
+    /// Reference white luminance.
+    pub reference: f32,
+}
+
+impl Luminances {
+    /// SDR output anchoring: sRGB white at the BT.2408 reference level.
+    pub const SDR: Luminances = Luminances {
+        min: 0.2,
+        max: 203.0,
+        reference: 203.0,
+    };
+    /// HDR output anchoring: matches the HDR10 metadata the DRM backend
+    /// emits (1000 cd/m² peak, BT.2408 reference white).
+    pub const HDR: Luminances = Luminances {
+        min: 0.0,
+        max: 1000.0,
+        reference: 203.0,
+    };
+}
+
 /// A parametric image description: primaries plus transfer function.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParametricColor {
     pub primaries: ContentPrimaries,
     pub transfer: ContentTransfer,
+    /// Primary color volume luminances; `None` means the protocol default
+    /// (the transfer function's implicit anchoring).
+    pub luminances: Option<Luminances>,
+    /// CTA-861-H MaxCLL content metadata (cd/m²); accepted and remembered,
+    /// not yet consumed by the renderer.
+    pub max_cll: Option<u32>,
+    /// CTA-861-H MaxFALL content metadata (cd/m²); same standing as
+    /// `max_cll`.
+    pub max_fall: Option<u32>,
 }
 
 /// The color space a surface's buffer contents are in (its "image
@@ -92,5 +130,8 @@ impl ContentColor {
     pub const SRGB: ParametricColor = ParametricColor {
         primaries: ContentPrimaries::Named(NamedPrimaries::Srgb),
         transfer: ContentTransfer::Named(NamedTransfer::Srgb),
+        luminances: None,
+        max_cll: None,
+        max_fall: None,
     };
 }

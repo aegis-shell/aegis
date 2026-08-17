@@ -318,6 +318,27 @@ impl Host {
         }
     }
 
+    /// Re-arm a disabled hardware cursor plane once its failure backoff has
+    /// elapsed. The next ordinary cursor commit is the probe: a renewed
+    /// rejection disables the plane again with a longer backoff, and a
+    /// successful cursor-active commit resets the failure count. Nested
+    /// presentation owns no KMS planes, so there is nothing to retry.
+    pub fn poll_hardware_cursor_retry(&mut self) -> bool {
+        match self {
+            Self::Nested(_) => false,
+            Self::Drm(host) => host.poll_hardware_cursor_retry(),
+        }
+    }
+
+    /// Reclaim scanout ownership after a lost page-flip event. Nested
+    /// presentation keeps no kernel flip bookkeeping, so there is nothing
+    /// to recover.
+    pub fn recover_lost_presentation(&mut self) {
+        if let Self::Drm(host) = self {
+            host.recover_lost_presentation();
+        }
+    }
+
     /// Update the cursor-plane sprite and placement. `None` disables it.
     /// Returns whether hardware presentation remains available so the caller
     /// can paint a software fallback in the same frame after any failure.

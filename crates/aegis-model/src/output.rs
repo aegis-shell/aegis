@@ -155,14 +155,25 @@ pub enum ColorPipeline {
 
 impl ColorPipeline {
     /// The output image description this pipeline presents to clients:
-    /// the space the framebuffer is written in.
+    /// the space the framebuffer is written in. The luminances anchor the
+    /// description to absolute levels so clients can tell SDR from HDR
+    /// (and scale headroom correctly) instead of guessing.
     pub fn output_color(self) -> crate::color::ParametricColor {
-        use crate::color::{ContentPrimaries, ContentTransfer, NamedPrimaries, NamedTransfer};
+        use crate::color::{
+            ContentPrimaries, ContentTransfer, Luminances, NamedPrimaries, NamedTransfer,
+            ParametricColor,
+        };
         match self {
-            ColorPipeline::Sdr | ColorPipeline::SdrDeepColor => crate::color::ContentColor::SRGB,
-            ColorPipeline::Hdr => crate::color::ParametricColor {
+            ColorPipeline::Sdr | ColorPipeline::SdrDeepColor => ParametricColor {
+                luminances: Some(Luminances::SDR),
+                ..crate::color::ContentColor::SRGB
+            },
+            ColorPipeline::Hdr => ParametricColor {
                 primaries: ContentPrimaries::Named(NamedPrimaries::Bt2020),
                 transfer: ContentTransfer::Named(NamedTransfer::Pq),
+                luminances: Some(Luminances::HDR),
+                max_cll: None,
+                max_fall: None,
             },
         }
     }

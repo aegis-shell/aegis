@@ -375,6 +375,8 @@ impl DrmBackend {
             cursor_plane_active: false,
             cursor_extent,
             hardware_cursor_failed: false,
+            hardware_cursor_retry_at: None,
+            hardware_cursor_failures: 0,
             input_events: Vec::new(),
             gesture_events: Vec::new(),
             pointer: (size.0 as f32 * 0.5, size.1 as f32 * 0.5),
@@ -583,6 +585,12 @@ impl DrmBackend {
         scanout_formats_support(&self.displays.scanout_formats, fourcc, modifier)
     }
 
+    /// First re-probe delay after a cursor-plane commit rejection. Each
+    /// consecutive failure doubles it, capped at
+    /// `HARDWARE_CURSOR_RETRY_MAX`.
+    const HARDWARE_CURSOR_RETRY_BASE: Duration = Duration::from_secs(5);
+    const HARDWARE_CURSOR_RETRY_MAX: Duration = Duration::from_secs(300);
+
     pub fn hardware_cursor_supported(&self) -> bool {
         !self.hardware_cursor_failed
             && !self.displays.outputs.is_empty()
@@ -596,6 +604,50 @@ impl DrmBackend {
     pub fn disable_hardware_cursor(&mut self) {
         self.cursor_state = None;
         self.hardware_cursor_failed = true;
+        let backoff = Self::HARDWARE_CURSOR_RETRY_BASE
+            .saturating_mul(1 << self.hardware_cursor_failures.min(10))
+            .min(Self::HARDWARE_CURSOR_RETRY_MAX);
+        self.hardware_cursor_failures = self.hardware_cursor_failures.saturating_add(1);
+        self.hardware_cursor_retry_at = Some(std::time::Instant::now() + backoff);
+        log::info!("drm: hardware cursor disabled; probing again in {backoff:?}");
+    }
+
+    /// Re-arm the cursor plane once its failure backoff has elapsed. Returns
+    /// true on the re-arm edge only. The probe is the next ordinary cursor
+    /// commit: a renewed rejection disables the plane again with a longer
+    /// backoff, and a successful cursor-active commit resets the count.
+    pub fn poll_hardware_cursor_retry(&mut self) -> bool {
+        if !self.hardware_cursor_failed {
+            return false;
+        }
+        let due = self
+            .hardware_cursor_retry_at
+            .is_some_and(|at| std::time::Instant::now() >= at);
+        if !due {
+            return false;
+        }
+        self.hardware_cursor_failed = false;
+        self.hardware_cursor_retry_at = None;
+        log::info!("drm: probing hardware cursor again after backoff");
+        true
+    }
+
+    /// Reclaim scanout ownership after the runtime's watchdog declared the
+    /// page-flip completion event lost. `retiring` is deliberately NOT
+    /// released: with the event gone, KMS may still be scanning out that
+    /// buffer, and freeing it would corrupt the displayed frame. The next
+    /// commit replaces `retiring` wholesale, so at most one framebuffer
+    /// leaks per lost event — the safe trade against freeing live scanout
+    /// memory.
+    pub fn recover_lost_presentation(&mut self) {
+        if self.pending_flips.is_empty() {
+            return;
+        }
+        log::error!(
+            "drm: reclaiming scanout ownership for {} CRTC(s) after a lost page-flip event",
+            self.pending_flips.len()
+        );
+        self.pending_flips.clear();
     }
 
     pub fn set_hardware_cursor(
@@ -908,6 +960,10 @@ impl DrmBackend {
             return Err(commit_error(error));
         }
         self.cursor_plane_active = self.cursor_state.is_some();
+        if self.cursor_plane_active {
+            // A cursor-active commit landed: the plane is healthy again.
+            self.hardware_cursor_failures = 0;
+        }
         self.pending_flips = self
             .displays
             .outputs
@@ -1341,12 +1397,24 @@ impl DrmBackend {
             let _ = self.card().destroy_property_blob(blob);
         }
         self.cursor_plane_active = self.cursor_state.is_some();
+        if self.cursor_plane_active {
+            // A cursor-active commit landed: the plane is healthy again.
+            self.hardware_cursor_failures = 0;
+        }
 
         // The ioctl imported the sync_file; userspace retains and closes its
         // descriptor immediately after atomic_commit returns.
         scanout.acquire_fence = None;
 
-        debug_assert!(self.retiring.is_none());
+        if let Some(unretired) = self.retiring.take() {
+            // Only reachable after recover_lost_presentation: the buffer may
+            // still be scanned out, so its handles are deliberately leaked
+            // rather than freed under live scanout.
+            log::warn!(
+                "drm: leaking scanout slot {} framebuffer; its page-flip event was lost",
+                unretired.slot
+            );
+        }
         self.retiring = self.current.take();
         self.current = Some(scanout);
         self.pending_flips = self

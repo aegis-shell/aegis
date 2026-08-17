@@ -1314,10 +1314,10 @@ pub(crate) struct State {
     /// may no longer be recoverable (remove, transfer, output reconfigure).
     pending_interaction_domain_damage:
         std::collections::BTreeMap<InteractionDomainId, Vec<aegis_model::Rect>>,
-    /// Surface pointers in stacking order (bottom to top). Entries are nulled
-    /// when a surface's destroy notify fires; focusing a toplevel moves its
-    /// pointer to the end and updates affected live records' slot indices.
-    /// Iterators must skip null entries.
+    /// Surface pointers in stacking order (bottom to top). Entries are
+    /// removed (order-preserving, with the shifted tail renumbered) when a
+    /// surface's destroy notify fires; focusing a toplevel moves its pointer
+    /// to the end and updates affected live records' slot indices.
     surfaces: Vec<*mut SurfaceRec>,
     /// Monotonic millisecond timestamp of the last compatibility frame
     /// callback sent to surfaces that were not visible on the physical
@@ -1452,6 +1452,13 @@ pub(crate) struct State {
     /// Live `wp_color_management_output_v1` resources, for
     /// `image_description_changed` broadcasts on pipeline changes.
     pub(crate) color_management_outputs: Vec<*mut ffi::wl_resource>,
+    /// Next `wp_image_description_v1` identity to hand out (non-zero, never
+    /// recycled within the session per the protocol).
+    pub(crate) color_identity_next: u32,
+    /// The identity of the current pipeline output description record;
+    /// refreshed on every `set_color_pipeline` so `preferred_changed` can
+    /// name it instead of the reserved invalid id 0.
+    pub(crate) color_pipeline_identity: u32,
     /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
     /// current workspace at first map; rendering and input see only the
     /// visible set (`visible_toplevels`).

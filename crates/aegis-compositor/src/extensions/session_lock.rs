@@ -324,11 +324,9 @@ unsafe extern "C" fn session_lock_surface_resource_destroy(resource: *mut ffi::w
                 // before acknowledging an in-flight lock request.
                 (*state).session_lock_phase.request_secure_frame();
             }
-            for slot in &mut (*(*record).lock).surfaces {
-                if *slot == record {
-                    *slot = std::ptr::null_mut();
-                    break;
-                }
+            let lock_surfaces = &mut (*(*record).lock).surfaces;
+            if let Some(pos) = lock_surfaces.iter().position(|p| *p == record) {
+                lock_surfaces.remove(pos);
             }
         }
         drop(Box::from_raw(record));

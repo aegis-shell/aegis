@@ -241,11 +241,8 @@ unsafe extern "C" fn data_device_resource_destroy(resource: *mut ffi::wl_resourc
         let Some(_guard) = ActiveSeatGuard::for_resource(state, resource, false) else {
             return;
         };
-        for slot in (*state).data_devices.iter_mut() {
-            if *slot == resource {
-                *slot = std::ptr::null_mut();
-                break;
-            }
+        if let Some(pos) = (*state).data_devices.iter().position(|p| *p == resource) {
+            (*state).data_devices.remove(pos);
         }
         if let Some(drag) = (*state).drag.as_mut()
             && drag.target_device == resource
@@ -496,11 +493,8 @@ unsafe extern "C" fn data_offer_resource_destroy(resource: *mut ffi::wl_resource
             && !(*rec).source.is_null()
             && ffi::wl_resource_get_version((*rec).source) >= 3;
         if !state.is_null() {
-            for slot in (*state).data_offers.iter_mut() {
-                if *slot == resource {
-                    *slot = std::ptr::null_mut();
-                    break;
-                }
+            if let Some(pos) = (*state).data_offers.iter().position(|p| *p == resource) {
+                (*state).data_offers.remove(pos);
             }
             (*state).untrack_seat_resource(resource);
             if let Some(drag) = (*state).drag.as_mut()

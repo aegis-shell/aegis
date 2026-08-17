@@ -65,6 +65,14 @@ impl CompositorRuntime {
                     self.host.name()
                 );
             }
+            if self.presentation.take_recovery_due(now) {
+                log::error!(
+                    "{}: page-flip event lost; reclaiming scanout ownership and forcing a full redraw",
+                    self.host.name()
+                );
+                self.host.recover_lost_presentation();
+                self.damage.force_full_redraw = true;
+            }
             if self.presentation.tick(now) {
                 if self.animating {
                     self.presentation.queue_redraw();
@@ -123,17 +131,15 @@ impl CompositorRuntime {
     }
 
     fn idle_wait(&self) -> std::time::Duration {
-        // A live output stream paces the loop only at its liveness tick
-        // (ADR-0126): streams capture from damage-driven presentations up
-        // to their negotiated max-fps and never force a frame at that
-        // cadence, but on a static screen the loop still wakes at the next
-        // liveness deadline so the consumer observes ~1 fps instead of a
-        // frozen picture. Window streams (ADR-0127) render independently of
-        // presentation: the loop additionally wakes at a dirty window
-        // stream's max-fps deadline and polls briefly while one of its
-        // readbacks is in flight. Streams are not served while the session
-        // is locked or the backend is inactive, so they must not keep the
-        // loop awake then either. While
+        // A live output stream paces the loop at its negotiated max-fps
+        // (ADR-0130): a due stream forces a presentation, so the loop wakes
+        // at the stream's next frame deadline even on a static screen.
+        // Window streams (ADR-0127) render independently of presentation:
+        // the loop additionally wakes at a dirty window stream's max-fps
+        // deadline and polls briefly while one of its readbacks is in
+        // flight. Streams are not served while the session is locked or the
+        // backend is inactive, so they must not keep the loop awake then
+        // either. While
         // a frame is already traversing the SHM readback lane (readback
         // bound, or the worker converting it), delivery is in flight and
         // its completion wakes the loop; poll again after a short quantum
@@ -270,7 +276,7 @@ impl CompositorRuntime {
                     now,
                     refresh_interval,
                 ),
-                PresentationOutcome::Retry => self.presentation.retry(),
+                PresentationOutcome::Retry => self.presentation.retry_at(now + refresh_interval),
             }
         }
 

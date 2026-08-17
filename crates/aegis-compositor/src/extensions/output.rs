@@ -118,11 +118,12 @@ unsafe extern "C" fn xdg_output_resource_destroy(resource: *mut ffi::wl_resource
         if state.is_null() {
             return;
         }
-        for slot in (*state).xdg_output_resources.iter_mut() {
-            if *slot == resource {
-                *slot = std::ptr::null_mut();
-                break;
-            }
+        if let Some(pos) = (*state)
+            .xdg_output_resources
+            .iter()
+            .position(|p| *p == resource)
+        {
+            (*state).xdg_output_resources.remove(pos);
         }
         (*state).xdg_output_links.remove(&(resource as usize));
     }

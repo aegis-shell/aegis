@@ -98,11 +98,9 @@ unsafe extern "C" fn idle_inhibitor_resource_destroy(resource: *mut ffi::wl_reso
         }
         let state = (*record).state;
         if !state.is_null() {
-            for slot in &mut (*state).idle_inhibitors {
-                if *slot == (*record).resource {
-                    *slot = std::ptr::null_mut();
-                    break;
-                }
+            let inhibitors = &mut (*state).idle_inhibitors;
+            if let Some(pos) = inhibitors.iter().position(|p| *p == (*record).resource) {
+                inhibitors.remove(pos);
             }
         }
         drop(Box::from_raw(record));
@@ -251,11 +249,9 @@ unsafe extern "C" fn idle_notification_resource_destroy(resource: *mut ffi::wl_r
             return;
         }
         if !(*record).state.is_null() {
-            for slot in &mut (*(*record).state).idle_notifications {
-                if *slot == (*record).resource {
-                    *slot = std::ptr::null_mut();
-                    break;
-                }
+            let notifications = &mut (*(*record).state).idle_notifications;
+            if let Some(pos) = notifications.iter().position(|p| *p == (*record).resource) {
+                notifications.remove(pos);
             }
         }
         drop(Box::from_raw(record));

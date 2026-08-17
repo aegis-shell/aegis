@@ -33,6 +33,11 @@ enum PresentationState {
         deadline: Instant,
         redraw_queued: bool,
     },
+    /// A transient backend rejection (EBUSY: KMS still owns the previous
+    /// batch) parks the retry until the next estimated vblank. Retrying
+    /// immediately would spin the loop on zero-timeout waits, rendering
+    /// full frames back-to-back for a commit that cannot land yet.
+    Retrying { not_before: Instant },
     /// Presentation is unavailable, with the reason retained so losing the
     /// backend after output power-off still invalidates the input epoch.
     Suspended(PresentationAvailability),
@@ -121,6 +126,14 @@ impl PresentationScheduler {
     /// The runtime can then complete callbacks directly instead of performing
     /// a no-damage render assessment solely to reopen the callback cycle.
     pub(super) fn tick(&mut self, now: Instant) -> bool {
+        if let PresentationState::Retrying { not_before } = self.state
+            && now >= not_before
+        {
+            // A parked retry promotes to a fresh render; this is not an
+            // estimated-vblank callback boundary.
+            self.state = PresentationState::Queued;
+            return false;
+        }
         if let PresentationState::WaitingForEstimatedVblank {
             deadline,
             redraw_queued,
@@ -158,6 +171,11 @@ impl PresentationScheduler {
                     deadline,
                     redraw_queued: true,
                 }
+            }
+            // A parked retry already implies a redraw; fresh damage simply
+            // waits for the same deadline.
+            PresentationState::Retrying { not_before } => {
+                PresentationState::Retrying { not_before }
             }
             PresentationState::Suspended(availability) => {
                 PresentationState::Suspended(availability)
@@ -269,17 +287,23 @@ impl PresentationScheduler {
         }
     }
 
-    pub(super) fn retry(&mut self) {
+    /// How long a vblank wait may outlive its stall warning before the flip
+    /// event is declared lost and scanout ownership is reclaimed.
+    const RECOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+
+    pub(super) fn retry_at(&mut self, not_before: Instant) {
         assert!(
             matches!(self.state, PresentationState::Rendering { .. }),
             "retry completed outside a render transaction"
         );
-        self.state = PresentationState::Queued;
+        self.state = PresentationState::Retrying { not_before };
     }
 
     /// Report a page flip that exceeded the ownership watchdog once per
-    /// submission. The state remains blocked: a late flip is not permission
-    /// to reuse a scanout buffer that KMS may still own.
+    /// submission. The state remains blocked at this tier: a late flip is
+    /// not permission to reuse a scanout buffer that KMS may still own.
+    /// `take_recovery_due` provides the second tier for a flip whose event
+    /// never arrives at all.
     pub(super) fn take_stall_warning(&mut self, now: Instant) -> Option<Duration> {
         let PresentationState::WaitingForVblank {
             submitted_at,
@@ -298,6 +322,27 @@ impl PresentationScheduler {
         }
     }
 
+    /// Second watchdog tier: a flip event still missing
+    /// `RECOVERY_TIMEOUT` after submission is treated as lost. Remaining
+    /// blocked would freeze presentation forever, so the caller reclaims
+    /// backend ownership and forces a full redraw. If KMS genuinely still
+    /// owns the batch, the next commit comes back EBUSY and the paced retry
+    /// keeps the loop alive instead. Fires once per submission.
+    pub(super) fn take_recovery_due(&mut self, now: Instant) -> bool {
+        let due = matches!(
+            self.state,
+            PresentationState::WaitingForVblank {
+                submitted_at,
+                stall_reported: true,
+                ..
+            } if now.saturating_duration_since(submitted_at) >= Self::RECOVERY_TIMEOUT
+        );
+        if due {
+            self.state = PresentationState::Queued;
+        }
+        due
+    }
+
     pub(super) fn wait_timeout(&self, idle_timeout: Duration, now: Instant) -> Duration {
         match self.state {
             PresentationState::Queued
@@ -307,6 +352,9 @@ impl PresentationScheduler {
             } => Duration::ZERO,
             PresentationState::Rendering { .. } => {
                 panic!("event wait requested during a render transaction")
+            }
+            PresentationState::Retrying { not_before } => {
+                not_before.saturating_duration_since(now).min(idle_timeout)
             }
             PresentationState::WaitingForEstimatedVblank { deadline, .. } => {
                 deadline.saturating_duration_since(now).min(idle_timeout)
@@ -482,10 +530,22 @@ mod tests {
     }
 
     #[test]
-    fn retry_reopens_a_render_transaction() {
+    fn a_transient_rejection_parks_the_retry_until_the_next_vblank() {
+        let now = Instant::now();
         let mut state = PresentationScheduler::new();
         state.begin_redraw();
-        state.retry();
+        state.retry_at(now + FRAME);
+
+        // No zero-timeout spin: the loop waits out the estimated vblank,
+        // and fresh damage is absorbed by the parked retry.
+        assert!(!state.can_redraw());
+        assert_eq!(state.wait_timeout(Duration::from_secs(1), now), FRAME);
+        state.queue_redraw();
+        assert!(!state.can_redraw());
+
+        assert!(!state.tick(now + FRAME - Duration::from_nanos(1)));
+        assert!(!state.can_redraw());
+        assert!(!state.tick(now + FRAME));
         assert!(state.can_redraw());
         state.begin_redraw();
     }
@@ -531,6 +591,28 @@ mod tests {
             state.wait_timeout(Duration::ZERO, now + PRESENTATION_WATCHDOG),
             PRESENTATION_WATCHDOG
         );
+    }
+
+    #[test]
+    fn a_lost_flip_event_recovers_instead_of_freezing() {
+        let now = Instant::now();
+        let mut state = PresentationScheduler::new();
+        state.begin_redraw();
+        state.submitted(true, false, now, FRAME);
+
+        // First tier warns once and stays blocked.
+        assert!(
+            state
+                .take_stall_warning(now + PRESENTATION_WATCHDOG)
+                .is_some()
+        );
+        assert!(!state.can_redraw());
+        assert!(!state.take_recovery_due(now + PRESENTATION_WATCHDOG));
+
+        // Second tier reclaims ownership and requeues exactly once.
+        assert!(state.take_recovery_due(now + PresentationScheduler::RECOVERY_TIMEOUT));
+        assert!(state.can_redraw());
+        assert!(!state.take_recovery_due(now + PresentationScheduler::RECOVERY_TIMEOUT));
     }
 
     #[test]

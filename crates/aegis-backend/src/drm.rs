@@ -736,6 +736,13 @@ pub struct DrmBackend {
     cursor_plane_active: bool,
     cursor_extent: (u32, u32),
     hardware_cursor_failed: bool,
+    /// When a disabled cursor plane may be probed again. Cursor commit
+    /// rejections are usually transient (a modeset or hotplug in flight), so
+    /// the software fallback is not terminal: each consecutive failure
+    /// doubles the backoff, and the first successful cursor-active commit
+    /// resets the count.
+    hardware_cursor_retry_at: Option<std::time::Instant>,
+    hardware_cursor_failures: u32,
     input_events: Vec<InputEvent>,
     gesture_events: Vec<PointerGestureEvent>,
     pointer: (f32, f32),

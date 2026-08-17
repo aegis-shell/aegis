@@ -53,6 +53,9 @@ impl CompositorRuntime {
         // directly. The cheap Arc clone ends the CursorCache borrow before
         // mutating the host; cursor buffers themselves are cached by exact
         // pixels in the DRM backend.
+        // A previously rejected cursor plane re-arms itself once its failure
+        // backoff elapses; the ordinary cursor commit below is the probe.
+        self.host.poll_hardware_cursor_retry();
         if self.host.supports_hardware_cursor() {
             if cursor_hidden {
                 self.host.set_hardware_cursor(None);
@@ -84,15 +87,14 @@ impl CompositorRuntime {
         // capture always forces a presentation frame.
         let mut frame_capture =
             self.prepare_frame_capture(session_locked, &mut pending_screenshots);
-        // A liveness-starved dmabuf stream (ADR-0126) forces a composite
-        // present exactly like a bound readback: its capture-surface slot is
-        // filled from the presented frame right after the commit. Ordinary
-        // max-fps due-ness never forces a frame — due dmabuf streams simply
-        // blit from whatever frame presents, so on a static screen only the
-        // one-second liveness tick keeps their consumers fed.
+        // A due dmabuf stream (ADR-0130) forces a composite present exactly
+        // like a bound readback: its capture-surface slot is filled from the
+        // presented frame right after the commit. An active stream paces
+        // presentation at its negotiated max-fps, so its consumer observes
+        // real frames at that rate even on a static screen.
         let now = std::time::Instant::now();
-        let dmabuf_stream_liveness_due =
-            !session_locked && self.host.is_active() && self.streams.liveness_due_dmabuf(now);
+        let dmabuf_stream_forcing_due =
+            !session_locked && self.host.is_active() && self.streams.forcing_due_dmabuf(now);
         let dmabuf_stream_capture_due = !session_locked
             && self.host.is_active()
             && !self.streams.due_dmabuf_ids(now).is_empty();
@@ -139,7 +141,7 @@ impl CompositorRuntime {
         let cursor_only_eligible = matches!(damage, FrameDamage::None)
             && cursor_plane_changed
             && frame_capture.is_none()
-            && !dmabuf_stream_liveness_due
+            && !dmabuf_stream_forcing_due
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
@@ -168,7 +170,11 @@ impl CompositorRuntime {
                     | DrmError::Inactive
                     | DrmError::Reconfigured,
                 )) => {
-                    self.damage.force_full_redraw = true;
+                    // Nothing was presented and no damage baseline was
+                    // consumed, so the retry stays on the cheap cursor-only
+                    // path: the unpresented position keeps
+                    // `cursor_plane_changed` true next frame. The scheduler
+                    // paces the retry to the next estimated vblank.
                     return Ok(PresentationOutcome::Retry);
                 }
                 Err(HostError::Drm(DrmError::ScanoutUnsupported)) => {
@@ -179,7 +185,7 @@ impl CompositorRuntime {
         }
         if matches!(damage, FrameDamage::None)
             && frame_capture.is_none()
-            && !dmabuf_stream_liveness_due
+            && !dmabuf_stream_forcing_due
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
@@ -206,6 +212,9 @@ impl CompositorRuntime {
         // composite. This is the primary-plane zero-GPU-cost path for games,
         // maximized video, and semantic fullscreen alike. A miss or
         // a kernel rejection falls through to the normal composite below.
+        // Scanout stays disqualified while any output stream lives
+        // (ADR-0130): a page-flipped frame never passes through the
+        // compositor, so streams could not capture it.
         //
         // While scanout is active the renderer never composites, so the damage
         // tracker's per-surface generation baselines go stale: a client that
@@ -217,7 +226,7 @@ impl CompositorRuntime {
         let primary_plane_plan = self.plan_primary_plane(
             physical_size,
             cursor_hidden,
-            frame_capture.is_some() || dmabuf_stream_liveness_due,
+            frame_capture.is_some() || self.streams.any_output_live(),
         );
         if let Some(candidate) = primary_plane_plan.direct_candidate() {
             match self.host.present_scanout(candidate, damage.area_rects()) {
@@ -242,9 +251,10 @@ impl CompositorRuntime {
                     // pacing, and re-anchor the cursor/minute baselines the
                     // skip-render path consults. Captures and screenshots are
                     // disqualified by the primary-plane plan, so none run here.
-                    // Streams cannot capture this frame (there is no
-                    // composite to read), but its damage still accumulates
-                    // for their next captured frame (ADR-0127).
+                    // Live output streams disqualify scanout outright
+                    // (ADR-0130), so this path never runs while one exists;
+                    // a stopped stream's leftover damage still accumulates
+                    // for the next captured frame (ADR-0127).
                     self.streams.accumulate_damage(&damage);
                     self.server.acknowledge_presented_surface_damage();
                     if self.server.retired_buffers_pending() {
@@ -315,14 +325,15 @@ impl CompositorRuntime {
             damage = FrameDamage::Full;
             self.launcher_backdrop.invalidate();
         }
-        // Opportunistic stream capture (ADR-0126): this frame composites for
-        // real damage, so every due SHM stream may piggyback on it with the
-        // shared readback — without the stream ever having forced the frame.
-        // One-shot captures keep priority; a locked or inactive session
-        // simply produces no stream frames (the streams survive). When any
-        // due SHM stream negotiated the embedded cursor mode, the readback
-        // carries a cursor snapshot along so the worker can produce a
-        // composited twin next to the pristine frame (ADR-0127).
+        // Opportunistic stream capture: this frame composites for real
+        // damage, so every due SHM stream may piggyback on it with the
+        // shared readback — between the forced frames its cadence already
+        // guarantees (ADR-0130). One-shot captures keep priority; a locked
+        // or inactive session simply produces no stream frames (the streams
+        // survive). When any due SHM stream negotiated the embedded cursor
+        // mode, the readback carries a cursor snapshot along so the worker
+        // can produce a composited twin next to the pristine frame
+        // (ADR-0127).
         if frame_capture.is_none()
             && self.pending_capture.is_none()
             && !self.stream_job_in_flight

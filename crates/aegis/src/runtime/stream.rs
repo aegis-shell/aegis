@@ -32,11 +32,12 @@ const DEFAULT_MAX_FPS: u32 = 30;
 /// Hard bounds on the negotiated frame-rate cap.
 const MIN_MAX_FPS: u32 = 1;
 const MAX_MAX_FPS: u32 = 240;
-/// How long a live stream may go without a captured frame before it may
-/// force one presentation on a static screen (ADR-0126). Streams capture
-/// opportunistically from damage-driven composites up to their `max_fps`;
-/// this tick only guarantees a consumer observes ~1 fps on a frozen
-/// desktop instead of a stalled picture.
+/// How long a live WINDOW stream may go without a rendered frame before the
+/// liveness tick forces one re-render of its (clean) tree, so a consumer
+/// observes ~1 fps and minimized windows keep honest thumbnails
+/// (ADR-0127). Output streams pace differently: a due output stream
+/// *forces a presentation* at its negotiated `max_fps` cadence, so the
+/// liveness concept does not apply to them (ADR-0130).
 pub(super) const LIVENESS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// DRM fourcc announced for dmabuf stream frames: the capture surfaces hold
@@ -559,13 +560,14 @@ impl OutputStreams {
             .collect()
     }
 
-    /// Whether an OUTPUT-target stream went at least [`LIVENESS_INTERVAL`]
-    /// without an offered frame — or never received one — and may therefore
-    /// force a presentation on an otherwise static screen (ADR-0126). This
-    /// is the only due-ness allowed to force a frame; ordinary
-    /// `frame_interval` due-ness only rides frames that happen anyway.
-    /// Window streams render offscreen and never force presentation.
-    fn liveness_due(&self, now: Instant, dmabuf: bool) -> bool {
+    /// Whether an OUTPUT-target stream is due a frame at its negotiated
+    /// `max_fps` cadence — its first frame, or one full `frame_interval`
+    /// without one — and may therefore *force* a presentation even on a
+    /// static screen (ADR-0130: an active stream paces the loop, replacing
+    /// ADR-0126's opportunistic-only capture whose one-second liveness
+    /// floor starved consumers on quiet desktops). Window streams render
+    /// offscreen and never force presentation.
+    fn forcing_due(&self, now: Instant, dmabuf: bool) -> bool {
         self.streams
             .values()
             .filter(|stream| !stream.frozen)
@@ -574,48 +576,59 @@ impl OutputStreams {
             .any(|stream| {
                 stream
                     .last_frame
-                    .is_none_or(|last| now.duration_since(last) >= LIVENESS_INTERVAL)
+                    .is_none_or(|last| now.duration_since(last) >= stream.frame_interval)
             })
     }
 
-    /// Whether a due SHM stream may force a presentation right now: the
-    /// first frame after start, or a stream starved for one liveness tick.
-    pub(super) fn liveness_due_shm(&self, now: Instant) -> bool {
-        self.liveness_due(now, false)
+    /// Whether a due SHM stream may force a presentation right now.
+    pub(super) fn forcing_due_shm(&self, now: Instant) -> bool {
+        self.forcing_due(now, false)
     }
 
     /// Whether a due dmabuf stream may force a composite right now.
-    pub(super) fn liveness_due_dmabuf(&self, now: Instant) -> bool {
-        self.liveness_due(now, true)
+    pub(super) fn forcing_due_dmabuf(&self, now: Instant) -> bool {
+        self.forcing_due(now, true)
+    }
+
+    /// Whether any live OUTPUT-target stream exists. Direct scanout is
+    /// disqualified while one does (ADR-0130): a page-flipped frame never
+    /// passes through the compositor, so under scanout streams would only
+    /// ever observe the forced-cadence composites.
+    pub(super) fn any_output_live(&self) -> bool {
+        self.streams
+            .values()
+            .any(|stream| !stream.frozen && stream.window.is_none())
     }
 
     /// Time until the soonest stream-driven wakeup at `now` — zero when one
     /// is already reached — across every live stream, or `None` when no
     /// streams exist. The main loop caps its idle wait with this. Output
-    /// streams only ever need their liveness deadline (ADR-0126). Window
-    /// streams (ADR-0127) additionally wake at their `max_fps` cadence
-    /// while their tree is dirty, and poll briefly while a readback is in
+    /// streams wake at their `frame_interval` deadline: a due output stream
+    /// forces a presentation, so the loop must wake in time to drive it
+    /// (ADR-0130). Window streams (ADR-0127) additionally wake at their
+    /// `max_fps` cadence while their tree is dirty, fall back to the
+    /// liveness tick otherwise, and poll briefly while a readback is in
     /// flight.
     pub(super) fn next_stream_wake_in(&self, now: Instant) -> Option<Duration> {
         self.streams
             .values()
             .filter(|stream| !stream.frozen)
             .map(|stream| {
+                let pacing = stream.last_frame.map_or(Duration::ZERO, |last| {
+                    (last + stream.frame_interval).saturating_duration_since(now)
+                });
+                let Some(window) = &stream.window else {
+                    return pacing;
+                };
                 let liveness = stream.last_frame.map_or(Duration::ZERO, |last| {
                     (last + LIVENESS_INTERVAL).saturating_duration_since(now)
                 });
-                let Some(window) = &stream.window else {
-                    return liveness;
-                };
                 if matches!(window.stage, WindowStreamStage::AwaitingReadback { .. }) {
                     // The GPU readback is in flight; poll for it shortly.
                     return liveness.min(Duration::from_millis(1));
                 }
                 if window.dirty && matches!(window.stage, WindowStreamStage::Idle) {
-                    let fps = stream.last_frame.map_or(Duration::ZERO, |last| {
-                        (last + stream.frame_interval).saturating_duration_since(now)
-                    });
-                    return liveness.min(fps);
+                    return liveness.min(pacing);
                 }
                 liveness
             })
@@ -2260,55 +2273,64 @@ mod tests {
         let mut streams = OutputStreams::new();
         let t0 = Instant::now();
         let id = start(&mut streams, 1, Some(30), (100, 100));
-        // A just-started stream is liveness-due (its first frame is forced
+        // A just-started stream is forcing-due (its first frame is forced
         // even on a static screen) and wakes the loop immediately.
-        assert!(streams.liveness_due_shm(t0));
+        assert!(streams.forcing_due_shm(t0));
         assert_eq!(streams.next_stream_wake_in(t0), Some(Duration::ZERO));
-        // Once framed, it must not force again for a whole liveness tick,
-        // even though its max-fps interval elapses much sooner.
+        // Once framed, it forces again as soon as its max-fps interval
+        // elapses — the stream paces the loop at its negotiated cadence.
         streams.record_frame(id, t0, true);
-        assert!(!streams.liveness_due_shm(t0 + Duration::from_millis(100)));
-        assert!(!streams.liveness_due_shm(t0 + Duration::from_millis(999)));
-        assert!(streams.liveness_due_shm(t0 + LIVENESS_INTERVAL));
+        let interval = Duration::from_secs(1) / 30;
+        assert!(!streams.forcing_due_shm(t0 + Duration::from_millis(10)));
+        assert!(streams.forcing_due_shm(t0 + interval));
     }
 
     #[test]
-    fn max_fps_due_ness_alone_never_forces_a_present() {
+    fn max_fps_due_ness_forces_a_present_and_paces_the_loop() {
         let mut streams = OutputStreams::new();
         let t0 = Instant::now();
         let fast = start(&mut streams, 1, Some(60), (100, 100));
         streams.record_frame(fast, t0, true);
-        // 20ms later the stream is fps-due (it captures from any frame that
-        // happens anyway) but not liveness-due (it may not force one).
+        // 20ms later the 60fps stream is due and may force a frame, even on
+        // a static screen (ADR-0130).
         let t1 = t0 + Duration::from_millis(20);
         assert_eq!(streams.due_shm_ids(t1), vec![fast]);
-        assert!(!streams.liveness_due_shm(t1));
-        // The loop wakes at the liveness deadline, not the fps cadence.
-        let wait = streams.next_stream_wake_in(t1).expect("stream live");
+        assert!(streams.forcing_due_shm(t1));
+        // The loop wakes at the fps deadline, not a liveness tick.
+        let wait = streams
+            .next_stream_wake_in(t0 + Duration::from_millis(10))
+            .expect("stream live");
+        let interval = Duration::from_secs(1) / 60;
         assert!(
-            wait > Duration::from_millis(900) && wait <= LIVENESS_INTERVAL,
-            "liveness wait: {wait:?}"
+            wait <= interval && wait > Duration::ZERO,
+            "pacing wait: {wait:?}"
+        );
+        assert_eq!(
+            streams.next_stream_wake_in(t0 + interval),
+            Some(Duration::ZERO)
         );
     }
 
     #[test]
-    fn frozen_streams_are_neither_due_nor_liveness_due() {
+    fn frozen_streams_are_neither_due_nor_forcing_due() {
         let mut streams = OutputStreams::new();
         let t0 = Instant::now();
         let id = start(&mut streams, 1, Some(60), (100, 100));
         streams.freeze(id);
         // A frozen stream produces nothing and never wakes the loop.
         assert!(streams.due_shm_ids(t0).is_empty());
-        assert!(!streams.liveness_due_shm(t0));
+        assert!(!streams.forcing_due_shm(t0));
+        assert!(!streams.any_output_live());
         assert_eq!(streams.next_stream_wake_in(t0), None);
         // A second, live stream is unaffected.
         let live = start(&mut streams, 2, Some(60), (100, 100));
         assert_eq!(streams.due_shm_ids(t0), vec![live]);
+        assert!(streams.any_output_live());
         // Restart works: stop the frozen stream and start fresh at the new
         // geometry; the new stream is due immediately again.
         streams.stop(id);
         let restarted = start(&mut streams, 1, Some(60), (2560, 1440));
-        assert!(streams.liveness_due_shm(t0));
+        assert!(streams.forcing_due_shm(t0));
         assert_eq!(
             streams.target_of(restarted).map(|(_, size)| size),
             Some((2560, 1440))
@@ -2316,19 +2338,19 @@ mod tests {
     }
 
     #[test]
-    fn next_stream_wake_paces_the_loop_at_the_soonest_starving_stream() {
+    fn next_stream_wake_paces_the_loop_at_the_soonest_due_stream() {
         let mut streams = OutputStreams::new();
         // No streams: no stream-driven wakeup.
         assert_eq!(streams.next_stream_wake_in(Instant::now()), None);
 
-        // A stream that never received a frame starves immediately.
+        // A stream that never received a frame is due immediately.
         let fast = start(&mut streams, 1, Some(60), (100, 100));
         assert_eq!(
             streams.next_stream_wake_in(Instant::now()),
             Some(Duration::ZERO)
         );
 
-        // After frames, the wait is the remaining liveness interval; a
+        // After frames, the wait is the remaining frame interval; a
         // second stream framed later pushes its own deadline out but the
         // soonest one wins.
         let t0 = Instant::now();
@@ -2336,16 +2358,17 @@ mod tests {
         let slow = start(&mut streams, 2, Some(1), (100, 100));
         streams.record_frame(slow, t0 + Duration::from_millis(100), true);
         let wait = streams
-            .next_stream_wake_in(t0 + Duration::from_millis(500))
+            .next_stream_wake_in(t0 + Duration::from_millis(10))
             .expect("streams live");
+        let fast_interval = Duration::from_secs(1) / 60;
         assert!(
-            wait <= Duration::from_millis(501) && wait > Duration::from_millis(400),
-            "fast stream starves at +1s: {wait:?}"
+            wait <= fast_interval && wait > Duration::from_millis(3),
+            "fast stream is due at +16.7ms: {wait:?}"
         );
         assert_eq!(
-            streams.next_stream_wake_in(t0 + LIVENESS_INTERVAL),
+            streams.next_stream_wake_in(t0 + fast_interval),
             Some(Duration::ZERO),
-            "the fast stream reached its liveness deadline"
+            "the fast stream reached its frame deadline"
         );
 
         // Stopping every stream removes the stream-driven wakeup.
@@ -2531,11 +2554,11 @@ mod tests {
         let id = start(&mut streams, 1, Some(60), (100, 50));
         attach_stub_window(&mut streams, id, WindowStreamStage::Idle, true);
         // Window streams render independently of presentation: they never
-        // appear in the shared-readback or liveness-forcing sets.
+        // appear in the shared-readback or presentation-forcing sets.
         assert!(streams.due_shm_ids(t0).is_empty());
         assert!(streams.due_dmabuf_ids(t0).is_empty());
-        assert!(!streams.liveness_due_shm(t0));
-        assert!(!streams.liveness_due_dmabuf(t0));
+        assert!(!streams.forcing_due_shm(t0));
+        assert!(!streams.forcing_due_dmabuf(t0));
         // ... but they still wake the loop: a dirty window stream with no
         // frame yet renders immediately.
         assert_eq!(streams.next_stream_wake_in(t0), Some(Duration::ZERO));

@@ -85,27 +85,25 @@ impl CompositorRuntime {
                 });
             }
         }
-        // Stream fan-out (ADR-0052, pacing per ADR-0126): a stream readback
-        // bound here FORCES this frame to present, so it may only happen
-        // when a SHM stream is liveness-starved — its first frame, or one
-        // full liveness tick without a frame on a static screen. Streams
-        // that are merely due at their max-fps cadence never force a frame;
-        // they piggyback on damage-driven composites via the opportunistic
-        // binding in `render_and_present`. One-shots keep priority; a
-        // locked or inactive session simply produces no stream frames (the
-        // stream survives). Due dmabuf streams bind no readback: their
-        // liveness-forced present is driven separately and their frame is
-        // copied on the GPU (IPC protocol 25). When any live SHM output
-        // stream negotiated the embedded cursor mode, the binding attaches
-        // a cursor snapshot so the worker produces a composited twin of the
-        // frame next to the pristine one (ADR-0127).
+        // Stream fan-out (ADR-0052, pacing per ADR-0130): a stream readback
+        // bound here FORCES this frame to present. A SHM output stream is
+        // binding-worthy at its negotiated max-fps cadence — its first
+        // frame, or one full frame interval without one — so an active
+        // stream drives presentation even on a static screen. One-shots
+        // keep priority; a locked or inactive session simply produces no
+        // stream frames (the stream survives). Due dmabuf streams bind no
+        // readback: their forced present is driven separately and their
+        // frame is copied on the GPU (IPC protocol 25). When any live SHM
+        // output stream negotiated the embedded cursor mode, the binding
+        // attaches a cursor snapshot so the worker produces a composited
+        // twin of the frame next to the pristine one (ADR-0127).
         if frame_capture.is_none()
             && self.pending_capture.is_none()
             && !self.stream_job_in_flight
             && !session_locked
             && self.host.is_active()
             && !self.capture_worker.is_busy()
-            && self.streams.liveness_due_shm(std::time::Instant::now())
+            && self.streams.forcing_due_shm(std::time::Instant::now())
         {
             frame_capture = Some(FrameCapture {
                 crop: None,

@@ -11,7 +11,7 @@
 use super::*;
 
 use aegis_model::color::{
-    ContentColor, ContentPrimaries, ContentTransfer, CustomPrimaries, NamedPrimaries,
+    ContentColor, ContentPrimaries, ContentTransfer, CustomPrimaries, Luminances, NamedPrimaries,
     NamedTransfer, ParametricColor,
 };
 use aegis_model::output::ColorPipeline;
@@ -35,6 +35,7 @@ const ICC_ERROR_OUT_OF_FILE: u32 = 4;
 const PARAMS_ERROR_UNSUPPORTED_FEATURE: u32 = 2;
 const PARAMS_ERROR_INVALID_TF: u32 = 3;
 const PARAMS_ERROR_INVALID_PRIMARIES_NAMED: u32 = 4;
+const PARAMS_ERROR_INVALID_LUMINANCE: u32 = 5;
 // wp_image_description_v1.error
 const DESCRIPTION_ERROR_NOT_READY: u32 = 0;
 const DESCRIPTION_ERROR_NO_INFORMATION: u32 = 1;
@@ -50,9 +51,13 @@ const FEATURE_ICC_V2_V4: u32 = 0;
 const FEATURE_PARAMETRIC: u32 = 1;
 const FEATURE_SET_PRIMARIES: u32 = 2;
 const FEATURE_SET_TF_POWER: u32 = 3;
+const FEATURE_SET_LUMINANCES: u32 = 4;
 // named transfer functions we advertise (protocol ids)
 const TF_EXT_LINEAR: u32 = 5;
 const TF_GAMMA22: u32 = 2;
+/// `srgb`: the version-1 spelling of the sRGB curve (deprecated since 2).
+const TF_SRGB: u32 = 9;
+/// `compound_power_2_4`: the since-2 spelling of the same sRGB curve.
 const TF_COMPOUND_POWER_2_4: u32 = 14;
 const TF_ST2084_PQ: u32 = 11;
 const TF_HLG: u32 = 13;
@@ -95,20 +100,28 @@ struct ColorFeedbackRec {
 }
 
 struct IccCreatorRec {
+    state: *mut State,
     bytes: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
 struct ParamsCreatorRec {
+    state: *mut State,
     primaries: Option<ContentPrimaries>,
     transfer: Option<ContentTransfer>,
+    luminances: Option<Luminances>,
+    max_cll: Option<u32>,
+    max_fall: Option<u32>,
 }
 
 fn named_transfer(tf: u32) -> Option<ContentTransfer> {
     Some(ContentTransfer::Named(match tf {
         TF_EXT_LINEAR => NamedTransfer::Linear,
         TF_GAMMA22 => NamedTransfer::Gamma22,
-        TF_COMPOUND_POWER_2_4 => NamedTransfer::Srgb,
+        // Both spellings of the sRGB curve: `srgb` (v1 clients) and
+        // `compound_power_2_4` (clients built against protocol version 2
+        // headers, which may still send it on a v1 binding).
+        TF_SRGB | TF_COMPOUND_POWER_2_4 => NamedTransfer::Srgb,
         TF_ST2084_PQ => NamedTransfer::Pq,
         TF_HLG => NamedTransfer::Hlg,
         _ => return None,
@@ -125,12 +138,17 @@ fn named_primaries(p: u32) -> Option<NamedPrimaries> {
     })
 }
 
-/// The wire id of a named transfer, for the info events.
-fn transfer_wire_id(tf: NamedTransfer) -> u32 {
+/// The wire id of a named transfer, for the info events. `version` is the
+/// bound interface version of the receiving resource: the sRGB curve is
+/// spelled `srgb` (9) for version-1 peers and `compound_power_2_4` (14)
+/// from version 2 on — a peer must not be sent an enum value its version
+/// does not define.
+fn transfer_wire_id(tf: NamedTransfer, version: u32) -> u32 {
     match tf {
         NamedTransfer::Linear => TF_EXT_LINEAR,
         NamedTransfer::Gamma22 => TF_GAMMA22,
-        NamedTransfer::Srgb => TF_COMPOUND_POWER_2_4,
+        NamedTransfer::Srgb if version >= 2 => TF_COMPOUND_POWER_2_4,
+        NamedTransfer::Srgb => TF_SRGB,
         NamedTransfer::Pq => TF_ST2084_PQ,
         NamedTransfer::Hlg => TF_HLG,
     }
@@ -155,6 +173,32 @@ fn pipeline_description(state: *mut State) -> ContentColor {
             (*state).color_pipeline
         };
         ContentColor::Parametric(pipeline.output_color())
+    }
+}
+
+/// The identity naming the current pipeline output description record
+/// (minted by `Server::set_color_pipeline`; the null-state fallback matches
+/// the initial record minted at state construction).
+fn pipeline_identity(state: *mut State) -> u32 {
+    unsafe {
+        if state.is_null() {
+            1
+        } else {
+            (*state).color_pipeline_identity
+        }
+    }
+}
+
+/// A fresh identity for a client-created description record.
+fn fresh_identity(state: *mut State) -> u32 {
+    unsafe {
+        if state.is_null() {
+            static FALLBACK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            return FALLBACK
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+        }
+        (*state).alloc_color_identity()
     }
 }
 
@@ -206,16 +250,19 @@ pub(crate) unsafe extern "C" fn color_manager_bind(
             FEATURE_PARAMETRIC,
             FEATURE_SET_PRIMARIES,
             FEATURE_SET_TF_POWER,
+            FEATURE_SET_LUMINANCES,
         ] {
             ffi::wl_resource_post_event(res, ffi::WP_COLOR_MANAGER_V1_SUPPORTED_FEATURE, feature);
         }
-        for tf in [
-            TF_EXT_LINEAR,
-            TF_GAMMA22,
-            TF_COMPOUND_POWER_2_4,
-            TF_ST2084_PQ,
-            TF_HLG,
-        ] {
+        // The sRGB curve's wire id moved in interface version 2; advertise
+        // only the spelling the bound version defines (the protocol forbids
+        // advertising ids the peer's version does not know).
+        let srgb_tf = if ffi::wl_resource_get_version(res) >= 2 {
+            TF_COMPOUND_POWER_2_4
+        } else {
+            TF_SRGB
+        };
+        for tf in [TF_EXT_LINEAR, TF_GAMMA22, srgb_tf, TF_ST2084_PQ, TF_HLG] {
             ffi::wl_resource_post_event(res, ffi::WP_COLOR_MANAGER_V1_SUPPORTED_TF_NAMED, tf);
         }
         for primaries in [
@@ -336,6 +383,7 @@ unsafe extern "C" fn color_output_get_image_description(
             id,
             pipeline_description(state),
             true,
+            pipeline_identity(state),
         );
     }
 }
@@ -528,12 +576,14 @@ unsafe extern "C" fn color_manager_get_surface_feedback(
             Some(color_feedback_resource_destroy),
         );
         (*rec).color_feedback = res;
-        // The initial hint: identity 0 is "unknown" (a v1 client must
-        // get_preferred to learn the description).
+        // The initial hint names the current pipeline description record so
+        // the client can de-duplicate it against a description it already
+        // holds (0 is the reserved invalid id and must not be sent).
+        let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
         ffi::wl_resource_post_event(
             res,
             ffi::WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_PREFERRED_CHANGED,
-            0u32,
+            pipeline_identity(state),
         );
     }
 }
@@ -584,6 +634,7 @@ unsafe extern "C" fn color_feedback_get_preferred(
             id,
             pipeline_description(state),
             true,
+            pipeline_identity(state),
         );
     }
 }
@@ -608,7 +659,7 @@ pub(crate) unsafe fn resend_color_pipeline(state: *mut State) {
                 ffi::wl_resource_post_event(
                     feedback,
                     ffi::WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_PREFERRED_CHANGED,
-                    0u32,
+                    (*state).color_pipeline_identity,
                 );
             }
         }
@@ -624,13 +675,14 @@ static IMAGE_DESCRIPTION_IMPL: ffi::wp_image_description_v1_interface_impl =
     };
 
 /// Create an image-description resource holding `value`, then immediately
-/// deliver `ready` (or `failed` when `valid` is false).
+/// deliver `ready` with `identity` (or `failed` when `valid` is false).
 unsafe fn create_image_description_resource(
     client: *mut ffi::wl_client,
     version: u32,
     id: u32,
     value: ContentColor,
     valid: bool,
+    identity: u32,
 ) {
     unsafe {
         let res = ffi::wl_resource_create(
@@ -653,12 +705,16 @@ unsafe fn create_image_description_resource(
             Some(image_description_resource_destroy),
         );
         if valid {
-            ffi::wl_resource_post_event(res, ffi::WP_IMAGE_DESCRIPTION_V1_READY);
+            // `ready` carries the record identity; 0 is the reserved
+            // invalid id and a garbage vararg here is UB.
+            ffi::wl_resource_post_event(res, ffi::WP_IMAGE_DESCRIPTION_V1_READY, identity);
         } else {
+            // `failed` is (cause, msg): both arguments are mandatory.
             ffi::wl_resource_post_event(
                 res,
                 ffi::WP_IMAGE_DESCRIPTION_V1_FAILED,
                 CAUSE_UNSUPPORTED,
+                c"image description validation failed".as_ptr(),
             );
         }
     }
@@ -732,6 +788,9 @@ unsafe fn send_image_description_info(info: *mut ffi::wl_resource, value: &Conte
 
 fn send_parametric_info(info: *mut ffi::wl_resource, value: &ParametricColor) {
     unsafe {
+        // The info resource inherits the bound interface version; pick the
+        // transfer-function spelling that version defines.
+        let version = ffi::wl_resource_get_version(info) as u32;
         match &value.primaries {
             ContentPrimaries::Named(named) => {
                 ffi::wl_resource_post_event(
@@ -761,7 +820,7 @@ fn send_parametric_info(info: *mut ffi::wl_resource, value: &ParametricColor) {
                 ffi::wl_resource_post_event(
                     info,
                     ffi::WP_IMAGE_DESCRIPTION_INFO_V1_TF_NAMED,
-                    transfer_wire_id(*named),
+                    transfer_wire_id(*named, version),
                 );
             }
             ContentTransfer::Gamma(gamma) => {
@@ -771,6 +830,18 @@ fn send_parametric_info(info: *mut ffi::wl_resource, value: &ParametricColor) {
                     (gamma * 10_000.0).round() as u32,
                 );
             }
+        }
+        // The luminances event is what lets clients anchor absolute levels
+        // (SDR vs HDR detection); omitting it leaves them with a 0/0
+        // reference and garbage headroom math.
+        if let Some(lum) = value.luminances {
+            ffi::wl_resource_post_event(
+                info,
+                ffi::WP_IMAGE_DESCRIPTION_INFO_V1_LUMINANCES,
+                (lum.min * 10_000.0).round() as u32,
+                lum.max.round() as u32,
+                lum.reference.round() as u32,
+            );
         }
     }
 }
@@ -825,7 +896,10 @@ unsafe extern "C" fn color_manager_create_icc_creator(
         if res.is_null() {
             return;
         }
-        let rec = Box::into_raw(Box::new(IccCreatorRec { bytes: None }));
+        let rec = Box::into_raw(Box::new(IccCreatorRec {
+            state: ffi::wl_resource_get_user_data(mgr) as *mut State,
+            bytes: None,
+        }));
         ffi::wl_resource_set_implementation(
             res,
             &ICC_CREATOR_IMPL as *const _ as *const c_void,
@@ -940,6 +1014,7 @@ unsafe extern "C" fn icc_creator_create(
             id,
             ContentColor::Icc(bytes.into()),
             valid,
+            fresh_identity((*rec).state),
         );
         ffi::wl_resource_destroy(res);
     }
@@ -954,11 +1029,11 @@ static PARAMS_CREATOR_IMPL: ffi::wp_image_description_creator_params_v1_interfac
         set_tf_power: params_creator_set_tf_power,
         set_primaries_named: params_creator_set_primaries_named,
         set_primaries: params_creator_set_primaries,
-        set_luminances: params_creator_unsupported3,
+        set_luminances: params_creator_set_luminances,
         set_mastering_display_primaries: params_creator_unsupported8,
         set_mastering_luminance: params_creator_unsupported2,
-        set_max_cll: params_creator_unsupported1,
-        set_max_fall: params_creator_unsupported1,
+        set_max_cll: params_creator_set_max_cll,
+        set_max_fall: params_creator_set_max_fall,
     };
 
 unsafe extern "C" fn color_manager_create_parametric_creator(
@@ -977,7 +1052,10 @@ unsafe extern "C" fn color_manager_create_parametric_creator(
         if res.is_null() {
             return;
         }
-        let rec = Box::into_raw(Box::new(ParamsCreatorRec::default()));
+        let rec = Box::into_raw(Box::new(ParamsCreatorRec {
+            state: ffi::wl_resource_get_user_data(mgr) as *mut State,
+            ..ParamsCreatorRec::default()
+        }));
         ffi::wl_resource_set_implementation(
             res,
             &PARAMS_CREATOR_IMPL as *const _ as *const c_void,
@@ -996,21 +1074,79 @@ unsafe extern "C" fn params_creator_resource_destroy(res: *mut ffi::wl_resource)
     }
 }
 
-// Luminance and mastering-metadata setters are outside the advertised
-// feature set; the spec answer is unsupported_feature.
-unsafe extern "C" fn params_creator_unsupported1(
+// `set_max_cll` / `set_max_fall` carry optional CTA-861 content metadata.
+// They are *not* gated on any feature — the spec makes them always
+// accepted — so a protocol error here would kill every HDR client (mpv
+// calls them unconditionally) for no reason. Remember the values; the
+// renderer does not consume them yet.
+unsafe extern "C" fn params_creator_set_max_cll(
     _c: *mut ffi::wl_client,
     r: *mut ffi::wl_resource,
-    _a: u32,
+    max_cll: u32,
 ) {
     unsafe {
-        ffi::wl_resource_post_error(
-            r,
-            PARAMS_ERROR_UNSUPPORTED_FEATURE,
-            c"params creator: luminance metadata is not supported".as_ptr(),
-        );
+        let rec = ffi::wl_resource_get_user_data(r) as *mut ParamsCreatorRec;
+        if !rec.is_null() {
+            (*rec).max_cll = Some(max_cll);
+        }
     }
 }
+unsafe extern "C" fn params_creator_set_max_fall(
+    _c: *mut ffi::wl_client,
+    r: *mut ffi::wl_resource,
+    max_fall: u32,
+) {
+    unsafe {
+        let rec = ffi::wl_resource_get_user_data(r) as *mut ParamsCreatorRec;
+        if !rec.is_null() {
+            (*rec).max_fall = Some(max_fall);
+        }
+    }
+}
+
+/// `set_luminances` (advertised feature `set_luminances`): wire units are
+/// min x 10000, max/reference in cd/m².
+unsafe extern "C" fn params_creator_set_luminances(
+    _c: *mut ffi::wl_client,
+    r: *mut ffi::wl_resource,
+    min_lum: u32,
+    max_lum: u32,
+    reference_lum: u32,
+) {
+    unsafe {
+        let rec = ffi::wl_resource_get_user_data(r) as *mut ParamsCreatorRec;
+        if rec.is_null() {
+            return;
+        }
+        if (*rec).luminances.is_some() {
+            ffi::wl_resource_post_error(
+                r,
+                CREATOR_ERROR_ALREADY_SET,
+                c"params creator: luminances already set".as_ptr(),
+            );
+            return;
+        }
+        let luminances = Luminances {
+            min: min_lum as f32 / 10_000.0,
+            max: max_lum as f32,
+            reference: reference_lum as f32,
+        };
+        if !(luminances.max > 0.0 && luminances.reference > 0.0 && luminances.min <= luminances.max)
+        {
+            ffi::wl_resource_post_error(
+                r,
+                PARAMS_ERROR_INVALID_LUMINANCE,
+                c"params creator: implausible luminances".as_ptr(),
+            );
+            return;
+        }
+        (*rec).luminances = Some(luminances);
+    }
+}
+
+// The mastering-display setters stay outside the advertised feature set
+// (the renderer cannot consume mastering metadata yet); the spec answer
+// for those is unsupported_feature.
 unsafe extern "C" fn params_creator_unsupported2(
     _c: *mut ffi::wl_client,
     r: *mut ffi::wl_resource,
@@ -1021,22 +1157,7 @@ unsafe extern "C" fn params_creator_unsupported2(
         ffi::wl_resource_post_error(
             r,
             PARAMS_ERROR_UNSUPPORTED_FEATURE,
-            c"params creator: luminance metadata is not supported".as_ptr(),
-        );
-    }
-}
-unsafe extern "C" fn params_creator_unsupported3(
-    _c: *mut ffi::wl_client,
-    r: *mut ffi::wl_resource,
-    _a: u32,
-    _b: u32,
-    _d: u32,
-) {
-    unsafe {
-        ffi::wl_resource_post_error(
-            r,
-            PARAMS_ERROR_UNSUPPORTED_FEATURE,
-            c"params creator: luminance metadata is not supported".as_ptr(),
+            c"params creator: mastering-display metadata is not supported".as_ptr(),
         );
     }
 }
@@ -1238,8 +1359,12 @@ unsafe extern "C" fn params_creator_create(
             ContentColor::Parametric(ParametricColor {
                 primaries,
                 transfer,
+                luminances: (*rec).luminances,
+                max_cll: (*rec).max_cll,
+                max_fall: (*rec).max_fall,
             }),
             true,
+            fresh_identity((*rec).state),
         );
         ffi::wl_resource_destroy(res);
     }
@@ -1254,6 +1379,7 @@ mod tests {
         for (wire, expected) in [
             (TF_EXT_LINEAR, NamedTransfer::Linear),
             (TF_GAMMA22, NamedTransfer::Gamma22),
+            (TF_SRGB, NamedTransfer::Srgb),
             (TF_COMPOUND_POWER_2_4, NamedTransfer::Srgb),
             (TF_ST2084_PQ, NamedTransfer::Pq),
             (TF_HLG, NamedTransfer::Hlg),
@@ -1262,9 +1388,23 @@ mod tests {
                 panic!("wire id {wire} must map");
             };
             assert_eq!(named, expected);
-            assert_eq!(transfer_wire_id(named), wire);
         }
-        assert!(named_transfer(9).is_none()); // deprecated ambiguous srgb
+        // The sRGB curve is spelled per the receiver's interface version:
+        // `srgb` for v1 peers, `compound_power_2_4` from v2 on.
+        assert_eq!(transfer_wire_id(NamedTransfer::Srgb, 1), TF_SRGB);
+        assert_eq!(
+            transfer_wire_id(NamedTransfer::Srgb, 2),
+            TF_COMPOUND_POWER_2_4
+        );
+        for (named, wire) in [
+            (NamedTransfer::Linear, TF_EXT_LINEAR),
+            (NamedTransfer::Gamma22, TF_GAMMA22),
+            (NamedTransfer::Pq, TF_ST2084_PQ),
+            (NamedTransfer::Hlg, TF_HLG),
+        ] {
+            assert_eq!(transfer_wire_id(named, 1), wire);
+            assert_eq!(transfer_wire_id(named, 2), wire);
+        }
         assert!(named_transfer(1).is_none()); // bt1886 (not advertised)
     }
 
@@ -1284,20 +1424,20 @@ mod tests {
 
     #[test]
     fn pipeline_description_follows_the_session_mode() {
-        // SDR pipelines present sRGB; HDR presents BT.2020 PQ.
-        assert_eq!(
-            ColorPipeline::Sdr.output_color(),
-            aegis_model::color::ContentColor::SRGB
-        );
-        assert_eq!(
-            ColorPipeline::SdrDeepColor.output_color(),
-            aegis_model::color::ContentColor::SRGB
-        );
+        // SDR pipelines present sRGB anchored at the BT.2408 reference
+        // white; HDR presents BT.2020 PQ with the backend's HDR10 peak.
+        let sdr = ColorPipeline::Sdr.output_color();
+        assert_eq!(sdr.primaries, ContentColor::SRGB.primaries);
+        assert_eq!(sdr.transfer, ContentColor::SRGB.transfer);
+        assert_eq!(sdr.luminances, Some(aegis_model::color::Luminances::SDR));
+        let deep = ColorPipeline::SdrDeepColor.output_color();
+        assert_eq!(deep, sdr);
         let hdr = ColorPipeline::Hdr.output_color();
         assert_eq!(
             hdr.primaries,
             ContentPrimaries::Named(NamedPrimaries::Bt2020)
         );
         assert_eq!(hdr.transfer, ContentTransfer::Named(NamedTransfer::Pq));
+        assert_eq!(hdr.luminances, Some(aegis_model::color::Luminances::HDR));
     }
 }

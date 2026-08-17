@@ -7,6 +7,38 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Screen recordings and casts through the portal no longer starve at
+  ~1–3 fps. Output streams pace presentation at their negotiated
+  `max_fps` again (ADR-0130): a due stream forces a frame even on a
+  static desktop, cursor motion on the hardware cursor plane reaches the
+  stream, and direct scanout is disqualified while an output stream
+  lives so fullscreen video and games are captured instead of
+  page-flipping past the compositor.
+- `wp_color_management_v1` no longer kills clients over optional HDR
+  metadata. `set_max_cll`/`set_max_fall` are ungated by the protocol but
+  were answered with a fatal `unsupported_feature` error, which
+  disconnected mpv the moment its colorspace hint engaged. They are now
+  accepted and remembered, and `set_luminances` is implemented and
+  advertised.
+- mpv misdetecting an SDR desktop as HDR (forcing PQ and engaging the
+  colorspace hint on its own). Output image descriptions never sent the
+  `luminances` event, leaving clients a zero reference white; SDR
+  outputs now report sRGB anchored at the BT.2408 reference white and
+  HDR outputs report the backend's HDR10 peak.
+- `wp_image_description_v1.ready`/`failed` events were posted without
+  their mandatory arguments — a garbage `identity` vararg for `ready`
+  and a missing message string for `failed`, the latter a compositor
+  crash risk on the ICC validation path. `ready` now carries a real
+  record identity, which also lets clients de-duplicate the pipeline
+  description across `get_preferred` calls.
+- The sRGB transfer function is now spelled per the bound interface
+  version (`srgb` for v1 peers, `compound_power_2_4` from v2) in both
+  the advertised set and the info events, and both spellings are
+  accepted from clients; previously a v1 client sending `srgb` (9)
+  received a fatal `invalid_tf` error.
+
 ## [0.0.29] - 2026-08-16
 
 ### Added

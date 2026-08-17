@@ -1128,7 +1128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn destroyed_keyboard_tombstone_never_matches_a_client() {
+    fn destroyed_keyboard_resource_never_matches_a_client() {
         assert!(!resource_belongs_to_client(
             std::ptr::null_mut(),
             std::ptr::null_mut()

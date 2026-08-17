@@ -334,11 +334,12 @@ unsafe extern "C" fn output_resource_destroy(resource: *mut ffi::wl_resource) {
             return;
         }
         let state = (*global).state;
-        for slot in (*state).output_resources.iter_mut() {
-            if *slot == resource {
-                *slot = std::ptr::null_mut();
-                break;
-            }
+        if let Some(pos) = (*state)
+            .output_resources
+            .iter()
+            .position(|p| *p == resource)
+        {
+            (*state).output_resources.remove(pos);
         }
     }
 }

@@ -1616,13 +1616,26 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
             (*child).parent = std::ptr::null_mut();
         }
         // Detach from the surfaces list so iterators stop visiting this rec, then
-        // reclaim the allocation. The slot is left null and never reused: stable
-        // indices are not load-bearing here, but the bookkeeping is simplest this
-        // way and the Vec stops growing once churn settles.
+        // reclaim the allocation. Removal is order-preserving because the Vec
+        // order is the stacking order (see raise_toplevel), and the shifted tail
+        // is renumbered so every live record's destroy-slot `index` keeps
+        // matching its position. A long session churns surfaces (popups,
+        // tooltips, drag icons); leaving a tombstone here made every frame's
+        // scene walks grow with cumulative churn instead of the live count.
         if !(*rec).state.is_null() {
+            let surfaces = &mut (*(*rec).state).surfaces;
             let idx = (*rec).index;
-            let slot = (*(*rec).state).surfaces.as_mut_ptr().add(idx);
-            std::ptr::write(slot, std::ptr::null_mut());
+            let pos = if idx < surfaces.len() && surfaces[idx] == rec {
+                Some(idx)
+            } else {
+                surfaces.iter().position(|p| *p == rec)
+            };
+            if let Some(pos) = pos {
+                surfaces.remove(pos);
+                for (offset, ptr) in surfaces[pos..].iter().copied().enumerate() {
+                    (*ptr).index = pos + offset;
+                }
+            }
         }
         drop(Box::from_raw(rec));
     }

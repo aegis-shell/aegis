@@ -726,16 +726,18 @@ into the dmabuf transport since protocol 29; the runtime honors it
 wherever an exportable capture surface is available and falls back to SHM
 with a warning otherwise.
 
-Streams are damage-driven: an output stream captures from every real
-composite that presents while its `max_fps` interval has elapsed, but it
-never forces a frame at that cadence. On a static screen a stream forces
-at most one presentation per one-second liveness tick (and one immediately
-after start), so a consumer observes ~1 fps instead of a frozen picture
-at a fraction of the former rendering cost. Window streams render their
-own target instead of capturing from composites: a window stream renders
-when its surface tree committed since the last capture and its `max_fps`
-interval elapsed, re-rendering the clean tree at the same one-second
-liveness tick.
+Streams pace presentation at their negotiated cadence (ADR-0130): an
+output stream whose `max_fps` interval has elapsed forces a presentation
+when nothing else produces one, so a consumer receives frames at that
+rate even on a static screen — including cursor-only motion, which the
+hardware cursor plane would otherwise hide from the stream. Every
+damage-driven composite additionally serves every due stream between
+forced frames. Direct scanout is disqualified while an output stream
+lives, so fullscreen content is composited — and therefore captured —
+for the stream's lifetime. Window streams render their own target instead
+of capturing from composites: a window stream renders when its surface
+tree committed since the last capture and its `max_fps` interval elapsed,
+re-rendering the clean tree at a one-second liveness tick (ADR-0127).
 
 Each captured frame arrives as `Event::StreamFrame { stream_id, sequence,
 width, height, stride, format, damage, dropped, byte_len }` followed
@@ -744,7 +746,7 @@ immediately by one sealed memfd of `byte_len` tightly packed pixels
 rules as one-shot captures. `format` is `Bgra8` today; `damage` describes,
 in the stream's own coordinate space, the regions that changed since the
 last frame the consumer received. It is conservative: a forced
-(liveness-tick) frame, a moved crop origin, or damage that never
+(cadence-driven) frame, a moved crop origin, or damage that never
 intersected the target all report one full-frame rectangle. `dropped`
 is the cumulative count of frames lost to backpressure since the stream
 started: delivery runs over a bounded two-frame lane per stream, and excess

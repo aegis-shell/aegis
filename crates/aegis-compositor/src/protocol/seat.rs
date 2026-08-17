@@ -17,7 +17,7 @@ static SEAT_IMPL: ffi::wl_seat_interface_impl = ffi::wl_seat_interface_impl {
 // `set_cursor` assigns the cursor role and exposes the surface as an overlay;
 // the nested backend hides the host cursor while that overlay is active.
 // `release` destroys the resource, which then runs
-// `pointer_resource_destroy` to null out the slot.
+// `pointer_resource_destroy` to remove it from the seat's resource list.
 static POINTER_IMPL: ffi::wl_pointer_interface_impl = ffi::wl_pointer_interface_impl {
     set_cursor: pointer_set_cursor,
     release: res_destroy,
@@ -227,12 +227,15 @@ unsafe extern "C" fn pointer_resource_destroy(resource: *mut ffi::wl_resource) {
         let Some(runtime) = (*state).seat_runtime_mut(seat) else {
             return;
         };
-        // Null the slot. Iterators skip null entries; the slot is never reused.
-        for slot in runtime.pointer_resources.iter_mut() {
-            if *slot == resource {
-                *slot = std::ptr::null_mut();
-                break;
-            }
+        // Remove the resource outright. Long sessions churn wl_pointer
+        // resources; a tombstone here would be walked by every focus scan
+        // for the rest of the session.
+        if let Some(pos) = runtime
+            .pointer_resources
+            .iter()
+            .position(|p| *p == resource)
+        {
+            runtime.pointer_resources.remove(pos);
         }
         // If the focused client no longer has any pointer resources, clear focus
         // so the next motion event re-evaluates enter against remaining clients.
@@ -357,11 +360,12 @@ unsafe extern "C" fn keyboard_resource_destroy(resource: *mut ffi::wl_resource) 
         let Some(runtime) = (*state).seat_runtime_mut(seat) else {
             return;
         };
-        for slot in runtime.keyboard_resources.iter_mut() {
-            if *slot == resource {
-                *slot = std::ptr::null_mut();
-                break;
-            }
+        if let Some(pos) = runtime
+            .keyboard_resources
+            .iter()
+            .position(|p| *p == resource)
+        {
+            runtime.keyboard_resources.remove(pos);
         }
     }
 }
@@ -410,11 +414,8 @@ unsafe extern "C" fn touch_resource_destroy(resource: *mut ffi::wl_resource) {
         let Some(runtime) = (*state).seat_runtime_mut(seat) else {
             return;
         };
-        for slot in runtime.touch_resources.iter_mut() {
-            if *slot == resource {
-                *slot = std::ptr::null_mut();
-                break;
-            }
+        if let Some(pos) = runtime.touch_resources.iter().position(|p| *p == resource) {
+            runtime.touch_resources.remove(pos);
         }
     }
 }

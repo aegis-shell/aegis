@@ -668,6 +668,9 @@ impl Server {
             return;
         }
         self.state.color_pipeline = pipeline;
+        // The pipeline change retires the old output description record:
+        // mint a fresh identity so `preferred_changed` names the new one.
+        self.state.color_pipeline_identity = self.state.alloc_color_identity();
         unsafe { crate::extensions::resend_color_pipeline(self.state.as_mut()) };
     }
 
