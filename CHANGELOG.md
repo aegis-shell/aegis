@@ -7,7 +7,17 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
-## [0.0.31] - 2026-08-17
+## [0.0.32] - 2026-08-17
+
+### Fixed
+
+- Shared-memory stream presentation pacing:
+  - Account for SHM stream forcing in presentation skip decisions (`cursor_only_eligible`
+    and `NoDamage` checks), ensuring shared-memory fallback streams consistently pace
+    at the full 60 FPS target rate on quiet desktops.
+  - Automatically queue compositor redraws upon completing stream frame delivery
+    when output streams are live to eliminate frame latency gaps.
+  - Fold recording indicator chip into HUD left status chip group.
 
 ### Fixed
 
