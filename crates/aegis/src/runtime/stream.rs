@@ -2822,6 +2822,33 @@ mod tests {
         attach_stub_window(&mut streams, window, WindowStreamStage::Idle, false);
         assert!(!streams.any_shm_embedded());
     }
+
+    #[test]
+    fn forcing_due_shm_paces_and_drives_presentation_without_client_damage() {
+        let mut streams = OutputStreams::new();
+        let id = start(&mut streams, 1, Some(60), (1920, 1080));
+        let t0 = Instant::now();
+
+        // 1. A freshly started SHM stream is due immediately (first frame forced).
+        assert!(streams.forcing_due_shm(t0));
+        assert!(streams.any_output_live());
+
+        // Record framed at t0.
+        streams.record_frame(id, t0, true);
+
+        // 2. Mid-interval (e.g. 5ms after t0 for a 60fps stream ~16.6ms): not due yet.
+        assert!(!streams.forcing_due_shm(t0 + Duration::from_millis(5)));
+        let wait = streams.next_stream_wake_in(t0 + Duration::from_millis(5)).unwrap();
+        assert!(wait <= Duration::from_millis(12));
+
+        // 3. Once interval has passed (17ms): forcing is due again.
+        assert!(streams.forcing_due_shm(t0 + Duration::from_millis(17)));
+
+        // 4. Record next frame at t0 + 17ms: resets pacing.
+        streams.record_frame(id, t0 + Duration::from_millis(17), true);
+        assert!(!streams.forcing_due_shm(t0 + Duration::from_millis(20)));
+        assert!(streams.forcing_due_shm(t0 + Duration::from_millis(35)));
+    }
 }
 
 #[cfg(test)]
