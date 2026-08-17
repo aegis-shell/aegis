@@ -7,7 +7,18 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
-## [0.0.30] - 2026-08-17
+## [0.0.31] - 2026-08-17
+
+### Fixed
+
+- Screen capture and portal recording flow reliability:
+  - Discard penalty delays on transient slot ring busy drops in the compositor,
+    allowing immediate frame capture as soon as consumer buffers are returned.
+  - Cancel and disarm active interactive pickers, confirmation prompts, and
+    screenshot freeze states when IPC clients disconnect abruptly, preventing
+    deadlocks and stale state on rapid client restarts.
+  - Isolate non-fatal client errors in the compositor main event loop so transient
+    presentation / input anomalies do not terminate the display server.
 
 ### Fixed
 
