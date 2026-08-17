@@ -410,3 +410,31 @@ fn tray_fold_reserves_one_slot_for_registered_sni_overflow() {
     let fold = fold_tray(7, 5);
     assert_eq!((fold.visible, fold.hidden), (4, 3));
 }
+
+#[test]
+fn recording_cell_width_scales_with_stream_count() {
+    assert_eq!(recording_cell_width(1), 38.0);
+    assert_eq!(recording_cell_width(2), 48.0);
+    assert_eq!(recording_cell_width(10), 48.0);
+}
+
+#[test]
+fn left_chip_grows_to_accommodate_active_recording_streams() {
+    let mut bar = Hud::new();
+    let workspaces = workspaces_empty();
+    let layout_inactive = bar.chip_layout((1920.0, 1080.0), &workspaces, 0, 0, 0);
+
+    bar.status.capture_streams = 1;
+    let layout_recording = bar.chip_layout((1920.0, 1080.0), &workspaces, 0, 0, 0);
+    assert_eq!(
+        layout_recording.chips[LEFT].w - layout_inactive.chips[LEFT].w,
+        recording_cell_width(1) + CELL_GAP
+    );
+
+    bar.status.capture_streams = 2;
+    let layout_multi = bar.chip_layout((1920.0, 1080.0), &workspaces, 0, 0, 0);
+    assert_eq!(
+        layout_multi.chips[LEFT].w - layout_inactive.chips[LEFT].w,
+        recording_cell_width(2) + CELL_GAP
+    );
+}

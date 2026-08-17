@@ -34,7 +34,7 @@ pub use chrome::{
     AgentFeedback, AppMenu, AppPickParams, AppPicker, BatteryAlert, BatteryAlertParams,
     CapabilityFamily, CapabilityGroup, CapabilityPickParams, CapabilityPickResult,
     CapabilityPrompt, ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt,
-    ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction, RecordingIndicator,
+    ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction,
     ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};

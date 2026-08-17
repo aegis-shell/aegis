@@ -95,6 +95,9 @@ impl CompositorRuntime {
         let now = std::time::Instant::now();
         let dmabuf_stream_forcing_due =
             !session_locked && self.host.is_active() && self.streams.forcing_due_dmabuf(now);
+        let shm_stream_forcing_due =
+            !session_locked && self.host.is_active() && self.streams.forcing_due_shm(now);
+        let stream_forcing_due = dmabuf_stream_forcing_due || shm_stream_forcing_due;
         let dmabuf_stream_capture_due = !session_locked
             && self.host.is_active()
             && !self.streams.due_dmabuf_ids(now).is_empty();
@@ -141,7 +144,8 @@ impl CompositorRuntime {
         let cursor_only_eligible = matches!(damage, FrameDamage::None)
             && cursor_plane_changed
             && frame_capture.is_none()
-            && !dmabuf_stream_forcing_due
+            && !stream_forcing_due
+            && !self.streams.any_output_live()
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
@@ -185,7 +189,7 @@ impl CompositorRuntime {
         }
         if matches!(damage, FrameDamage::None)
             && frame_capture.is_none()
-            && !dmabuf_stream_forcing_due
+            && !stream_forcing_due
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed

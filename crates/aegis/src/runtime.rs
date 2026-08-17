@@ -324,13 +324,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // notifications, and modal trusted chrome. Directed Interaction Domain capture renders
     // client surfaces directly and therefore never includes this layer.
     shell.add(Box::new(aegis_shell::AgentFeedback::new(&device)));
-    // The recording indicator is compositor-owned and non-interactive
-    // (ADR-0128): while any capture stream lives it rides above ordinary
-    // desktop content — fullscreen windows included, where the HUD steps
-    // aside — so the user can always see that the screen is shared. It
-    // renders into the ordinary desktop composite and is therefore visible
-    // inside the recording itself, matching GNOME's indicator.
-    shell.add(Box::new(aegis_shell::RecordingIndicator::new()));
     // The optional SNI tray service is spawned once when at least one compiled
     // consumer is active. The cloneable handle keeps the snapshot and command
     // side together across HUD-only, panel-only, and combined builds.

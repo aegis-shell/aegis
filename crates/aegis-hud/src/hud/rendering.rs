@@ -44,6 +44,53 @@ pub(super) fn battery_icon_name(battery: BatteryStatus) -> String {
     }
 }
 
+pub(super) fn recording_cell_width(streams: u32) -> f32 {
+    if streams <= 1 { 38.0 } else { 48.0 }
+}
+
+pub(super) fn render_recording_cell(
+    f: &mut Frame,
+    design: &Design,
+    id: &str,
+    rect: Rect,
+    streams: u32,
+) {
+    let label = if streams <= 1 {
+        "REC".to_string()
+    } else {
+        format!("REC {streams}")
+    };
+    const DOT_SIZE: f32 = 7.0;
+    f.place(id, &chrome_place(rect, centered_layer()), |f| {
+        f.row_ex(
+            &LayoutOpts {
+                width: rect.w,
+                height: rect.h,
+                gap: 4.0,
+                cross: Align::Center,
+                ..Default::default()
+            },
+            |f| {
+                f.column_ex(
+                    &LayoutOpts {
+                        width: DOT_SIZE,
+                        height: DOT_SIZE,
+                        bg: design.colors.critical,
+                        border: hud_contour_color(design),
+                        border_width: design.hud_foreground.glyph_contour_width,
+                        radius: DOT_SIZE * 0.5,
+                        ..Default::default()
+                    },
+                    |_| {},
+                );
+                f.push_style(hud_text_outline(design));
+                f.label_compact_sized(&label, design.typography.footnote);
+                f.pop_style();
+            },
+        );
+    });
+}
+
 /// Decide the fold for `items` registered SNI entries given `max` slots
 /// (assumes `max >= 1`). Within budget everything renders. Past it, one slot
 /// is reserved for the "+N" indicator.

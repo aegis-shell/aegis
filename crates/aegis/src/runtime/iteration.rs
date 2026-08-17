@@ -352,6 +352,9 @@ impl CompositorRuntime {
                     {
                         self.deliver_stream_frame(frame);
                     }
+                    if self.streams.any_output_live() {
+                        self.presentation.queue_redraw();
+                    }
                 }
                 CaptureCompletion::StreamWindow {
                     stream_id,

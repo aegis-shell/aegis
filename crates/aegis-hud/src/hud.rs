@@ -344,10 +344,17 @@ impl Hud {
         let mut layout = ChipLayout::default();
         let y = CHIP_TOP;
 
-        // Left chip: system status (network, Bluetooth, battery), the tray
-        // row, then the clock and the notification bell (ADR-0083).
-        let mut width = CELL_ICON; // network is always present
-        let mut cells = 1usize;
+        // Left chip: recording status (when active), system status (network,
+        // Bluetooth, battery), the tray row, then the clock and the
+        // notification bell (ADR-0083).
+        let mut width = 0.0;
+        let mut cells = 0usize;
+        if self.status.capture_streams > 0 {
+            width += recording_cell_width(self.status.capture_streams);
+            cells += 1;
+        }
+        width += CELL_ICON; // network is always present
+        cells += 1;
         if self.status.bluetooth_enabled.is_some() {
             width += CELL_ICON;
             cells += 1;
@@ -533,6 +540,17 @@ impl Chrome for Hud {
                 x += width + CELL_GAP;
                 rect
             };
+
+            if self.status.capture_streams > 0 {
+                let rect = cell(recording_cell_width(self.status.capture_streams));
+                render_recording_cell(
+                    f,
+                    &design,
+                    "aegis-hud-recording",
+                    rect,
+                    self.status.capture_streams,
+                );
+            }
 
             let rect = cell(CELL_ICON);
             render_status_cell(
