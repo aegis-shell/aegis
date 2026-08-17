@@ -1043,6 +1043,9 @@ fn lock_screen_defaults_to_cinematic_with_an_independent_builtin_background() {
         Some("wallpapers/night-lock.png")
     );
     assert_eq!(config.lock_screen.background.dim, 0.4);
+
+    let config = Config::parse("schema_version = 2\n[lock_screen]\nstyle = \"bsod\"\n").unwrap();
+    assert_eq!(config.lock_screen.style, LockScreenStyle::Bsod);
 }
 
 #[test]

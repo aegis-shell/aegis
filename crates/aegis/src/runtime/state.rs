@@ -62,6 +62,14 @@ pub(super) struct DamageTracking {
     /// (shape, hidden) as of the last presented frame.
     pub(super) last_presented_cursor: Option<(u32, bool)>,
     pub(super) last_presented_cursor_position: Option<(i32, i32)>,
+    /// Sprite identity committed to the hardware cursor plane at the last
+    /// successful present: (hotspot, sprite size). The presentation path
+    /// uses these to skip redundant backend cache lookups when the cursor
+    /// is fully unchanged between frames. These mirror the KMS plane state
+    /// and must be reset whenever the plane is reprogrammed externally
+    /// (VT switch, backend reconfigure).
+    pub(super) last_presented_cursor_hotspot: Option<(u32, u32)>,
+    pub(super) last_presented_cursor_pixels: Option<(u32, u32)>,
     /// Damage each Flux ring slot has missed since it was last presented.
     /// Partial repaint unions the current frame's damage with this history so
     /// a three-buffer compositor never exposes stale pixels.

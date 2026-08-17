@@ -577,7 +577,11 @@ impl CompositorRuntime {
             self.shell.finish_window_switcher();
             self.server.cancel_window_switcher();
         }
-        let interaction_domain_revision = self.server.interaction_domain_snapshot().revision;
+        // Read-only revision probe: `process_input` runs on every event-loop
+        // iteration, and the full snapshot deep-clones every client record
+        // the session has ever accepted. The cheap accessor exists exactly
+        // for this hot path.
+        let interaction_domain_revision = self.server.interaction_domain_revision();
         for (interaction_domain, damage) in self.server.take_interaction_domain_damage() {
             self.interaction_domain_damage_sequence =
                 self.interaction_domain_damage_sequence.saturating_add(1);

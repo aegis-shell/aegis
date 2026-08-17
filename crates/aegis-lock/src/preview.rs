@@ -432,6 +432,7 @@ impl PreviewApp {
             || (avatar_visible && self.graphics.avatar_is_animated())
             || self.graphics.avatar_reload_pending()
             || self.lock_state.validation_pending()
+            || self.graphics.composition_animates(&self.lock_state)
             || self
                 .graphics
                 .feedback_animation_active(&self.lock_state, Instant::now())
@@ -1075,8 +1076,9 @@ fn parse_composition(value: &str) -> Result<LockScreenStyle, String> {
     match value {
         "centered" => Ok(LockScreenStyle::Centered),
         "cinematic" => Ok(LockScreenStyle::Cinematic),
+        "bsod" => Ok(LockScreenStyle::Bsod),
         _ => Err(format!(
-            "invalid lock-screen composition {value:?}; expected centered or cinematic"
+            "invalid lock-screen composition {value:?}; expected centered, cinematic, or bsod"
         )),
     }
 }
@@ -1124,7 +1126,7 @@ fn print_help() {
             "  --password TEXT     Accept only this development-only fake password\n",
             "                      (mutually exclusive with --result)\n",
             "  --size WIDTHxHEIGHT Fixed logical window size [default: 1280x800]\n",
-            "  --composition NAME  UI composition: centered or cinematic\n",
+            "  --composition NAME  UI composition: centered, cinematic, or bsod\n",
             "  --style NAME        Compatibility alias for --composition\n",
             "  --background PATH   Independent lock-screen image override\n",
             "  --ready-fd FD       Signal FD after the first frame is presented\n",
@@ -1177,6 +1179,7 @@ mod tests {
         assert!(parse_size("20000x800").is_err());
         assert!(parse_size("wide").is_err());
         assert!(parse_composition("glass").is_err());
+        assert_eq!(parse_composition("bsod"), Ok(LockScreenStyle::Bsod));
         let ParsedCommand::Run(alias) = parse_args(["--style=centered".to_owned()]).unwrap() else {
             panic!("expected run options");
         };

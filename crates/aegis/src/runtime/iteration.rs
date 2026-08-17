@@ -279,7 +279,7 @@ impl CompositorRuntime {
                     observation_token,
                     encoded,
                 } => {
-                    let current_revision = self.server.interaction_domain_snapshot().revision;
+                    let current_revision = self.server.interaction_domain_revision();
                     let result = if !self.capture_worker.permits(security_generation) {
                         Err("Interaction Domain capture authority changed before delivery".into())
                     } else {
@@ -1008,7 +1008,7 @@ impl CompositorRuntime {
         self.publish_capture_stream_count();
         while let Ok(request) = self.interaction_domain_control_rx.try_recv() {
             let committed_action = request.action.clone();
-            let before_revision = self.server.interaction_domain_snapshot().revision;
+            let before_revision = self.server.interaction_domain_revision();
             let allowed_while_locked = match &request.action {
                 aegis_ipc::InteractionDomainAction::Revoke { .. } => true,
                 aegis_ipc::InteractionDomainAction::Transact { mutations, .. } => {

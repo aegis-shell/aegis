@@ -8,4 +8,7 @@ mod ui;
 
 pub use secret::Secret;
 pub use state::{AuthResult, LockAction, LockState, PresentationMode};
-pub use ui::{LockLayout, LockScreenStyle, lock_layout, lock_layout_for};
+pub use ui::{
+    BsodLayout, BsodTypeScale, LockLayout, LockScreenStyle, bsod_layout, bsod_type_scale,
+    lock_layout, lock_layout_for,
+};

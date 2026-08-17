@@ -178,8 +178,16 @@ dim = 0.24
 at the lower right without an avatar. It renders the display name in uppercase
 and reports a rejected credential through a red, briefly shaking rail rather
 than an error sentence. Use `centered` for the conventional centered persona
-column. `[ui] reduced_motion = true` keeps the red rejection state but disables
-the shake. The neutral rail has no empty password marks and therefore does not
+column. Use `bsod` for a nostalgic full-screen "stop screen": flat signature
+blue, a large sad face, a left-aligned headline, a cycling percentage counter,
+and a support block whose stop code tracks the authentication phase
+(`SESSION_LOCKED`, `CREDENTIAL_MISMATCH`, or `AUTH_SERVICE_UNAVAILABLE`). The
+`bsod` style ignores `[lock_screen.background]` entirely — it always paints its
+own blue — and like `cinematic` it loads no avatar.
+
+`[ui] reduced_motion = true` keeps the red rejection state but disables
+the shake (and freezes the `bsod` percentage counter at its current value).
+The neutral rail has no empty password marks and therefore does not
 suggest an expected credential length. The image path is relative to the
 configuration file; it does not change or inherit `[wallpaper]`.
 
@@ -190,8 +198,8 @@ The change applies the next time `aegis-lock` starts.
 
 ## Set a Lock-Screen Avatar
 
-Avatars are loaded only by the `centered` presentation. The `cinematic`
-presentation deliberately remains typographic.
+Avatars are loaded only by the `centered` presentation. The `cinematic` and
+`bsod` presentations deliberately remain typographic.
 
 Place a still image in the Aegis data namespace. The first decodable file in
 this order is used:

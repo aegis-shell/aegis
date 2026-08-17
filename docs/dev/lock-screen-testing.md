@@ -86,10 +86,11 @@ target/debug/aegis-lock-preview \
   --background /absolute/path/to/lock-screen.png
 ```
 
-`--composition` accepts `cinematic` or `centered`; it selects the complete UI
-composition rather than only visual styling. `--style` remains a compatibility
-alias. `--background` accepts a static image and affects only that Preview
-process. Production `aegis-lock` uses the independent
+`--composition` accepts `cinematic`, `centered`, or `bsod`; it selects the
+complete UI composition rather than only visual styling. `--style` remains a
+compatibility alias. `--background` accepts a static image and affects only
+that Preview process; the `bsod` composition ignores it because it always
+paints its own signature blue. Production `aegis-lock` uses the independent
 `[lock_screen.background]` configuration described in the
 [Configuration Reference](../reference/config.md#lock-screen). An invalid
 custom image falls back to the bundled lock artwork.
@@ -101,6 +102,13 @@ neutral rail with no password marks; the typing frame must show only marks for
 entered characters, never empty slots that imply an expected password length;
 the rejected frame must show a red rail without a text error. Use a short
 recording rather than a still frame when reviewing the rejection shake.
+
+For `bsod`-specific work, preview the engaged, typing, checking, and rejected
+states at a compact (`390x844`), desktop (`1280x800`), and ultra
+(`3440x1440`) size: the sad face, wrapped headline, percentage counter,
+credential box, and support block must stay inside the side margins and never
+collide with the corner clock. The counter must climb while authentication is
+pending and resume its idle cycle afterwards.
 
 ## Select a Visual State
 
@@ -252,6 +260,7 @@ hardware recovery checks.
 |--------|-----------------|
 | Layout, color, typography or localized copy | Preview both compositions at representative sizes, scales, locales and visual states |
 | Independent lock background or artwork scrim | Preview with `--background`, then start a fresh production lock using `[lock_screen.background]` |
+| Stop-screen (`bsod`) composition | Preview engaged, typing, checking, and rejected states at compact, desktop, and ultra sizes |
 | Avatar image, VRM or animation | Preview initial frame, motion, hot reload and fallback avatar |
 | Credential state machine or authentication feedback | `aegis-lock` unit tests plus Preview submission results |
 | Lock-surface lifecycle or input routing | Nested lock, including client exit and outer capture |

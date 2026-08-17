@@ -126,8 +126,8 @@ one.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `style` | string | `"cinematic"` | `"cinematic"` places the clock at the upper right and a game-style credential rail at the lower right. `"centered"` uses the conventional centered identity column. |
-| `[lock_screen.background]` | table | built-in lock artwork | Background source and artwork scrim. It never inherits or mutates `[wallpaper]`. |
+| `style` | string | `"cinematic"` | `"cinematic"` places the clock at the upper right and a game-style credential rail at the lower right. `"centered"` uses the conventional centered identity column. `"bsod"` renders the nostalgic full-screen stop-screen composition (see below). |
+| `[lock_screen.background]` | table | built-in lock artwork | Background source and artwork scrim. It never inherits or mutates `[wallpaper]`. Ignored by `style = "bsod"`, which always paints its own signature blue. |
 
 The background table accepts these fields:
 
@@ -158,6 +158,16 @@ briefly shakes its rail and holds it red instead of showing an error sentence;
 `[ui] reduced_motion = true` disables the shake while retaining the color.
 The neutral cinematic rail has no empty password slots, so it does not imply a
 fixed or expected password length.
+
+The `bsod` style reproduces the classic stop page as a lock composition: a
+flat `#0078D7` field that ignores the background table, a large sad face, a
+left-aligned wrapped headline, a cycling `N% complete` counter that reports
+real elapsed progress while authentication is genuinely in flight, a
+square white credential box that turns red on rejection, and a lower-left
+support block whose stop code tracks the authentication phase
+(`SESSION_LOCKED`, `CREDENTIAL_MISMATCH`, `AUTH_SERVICE_UNAVAILABLE`). A quiet
+corner clock remains during the ambient privacy presentation. It loads no
+avatar and honors `[ui] reduced_motion` by freezing the counter.
 
 ## Layout
 

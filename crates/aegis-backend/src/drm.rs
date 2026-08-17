@@ -591,7 +591,24 @@ struct CursorBuffer {
     /// buffer. Plane programming uses the full driver-advertised dumb-buffer
     /// extent, while this value keeps cache lookup exact.
     content_size: (u32, u32),
+    /// Cheap pre-filter for the pixel comparison below: sprites with
+    /// different lengths or sizes are rejected without touching memory.
+    len: usize,
 }
+
+impl CursorBuffer {
+    fn matches(&self, size: (u32, u32), pixels: &[u8]) -> bool {
+        self.content_size == size
+            && self.len == pixels.len()
+            && self.pixels.as_slice() == pixels
+    }
+}
+
+/// Upper bound on distinct cursor sprites retained as KMS dumb buffers.
+/// The set of distinct (shape, quantized-scale) pairs is bounded by the
+/// theme (~tens) times active scales; entries beyond this bound are evicted
+/// oldest-first so the cache cannot drift upward over a long session.
+const MAX_CURSOR_BUFFERS: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 struct CursorState {

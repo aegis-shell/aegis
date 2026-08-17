@@ -1,6 +1,7 @@
 mod preview;
 mod profile;
 mod render;
+mod style;
 
 fn main() {
     aegis_logging::init("info");

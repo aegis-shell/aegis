@@ -685,10 +685,23 @@ impl DrmBackend {
             ));
         }
 
-        let buffer = if let Some(index) = self.cursor_buffers.iter().position(|buffer| {
-            buffer.content_size == cursor.size && buffer.pixels.as_slice() == cursor.pixels
-        }) {
-            index
+        // Move-to-front LRU: the hot sprite sits at index 0, so the common
+        // case (cursor position changes every motion event while the sprite
+        // stays identical) hits on the first comparison instead of scanning
+        // the whole history. `matches` pre-filters on size and length before
+        // the pixel comparison, so misses stay cheap. `cursor_state.buffer`
+        // is rewritten at the end of this function, so no intermediate index
+        // fix-up is needed.
+        let buffer = if let Some(index) = self
+            .cursor_buffers
+            .iter()
+            .position(|buffer| buffer.matches(cursor.size, cursor.pixels))
+        {
+            if index != 0 {
+                let entry = self.cursor_buffers.remove(index);
+                self.cursor_buffers.insert(0, entry);
+            }
+            0
         } else {
             let card = self.card();
             let mut dumb = card.create_dumb_buffer(self.cursor_extent, DrmFourcc::Argb8888, 32)?;
@@ -718,13 +731,31 @@ impl DrmBackend {
                     return Err(error.into());
                 }
             };
-            self.cursor_buffers.push(CursorBuffer {
-                framebuffer,
-                dumb,
-                pixels: cursor.pixels.to_vec(),
-                content_size: cursor.size,
-            });
-            self.cursor_buffers.len() - 1
+            self.cursor_buffers.insert(
+                0,
+                CursorBuffer {
+                    framebuffer,
+                    dumb,
+                    pixels: cursor.pixels.to_vec(),
+                    content_size: cursor.size,
+                    len: cursor.pixels.len(),
+                },
+            );
+            // Evict least-recently-used (tail) entries beyond the bound. The
+            // freshly inserted sprite is at index 0 and is never evicted;
+            // `cursor_state` is rewritten below, so no live index can go
+            // stale while entries are dropped.
+            while self.cursor_buffers.len() > MAX_CURSOR_BUFFERS {
+                let evicted = self.cursor_buffers.pop().expect("bound check ensures an entry");
+                let card = self.card();
+                if let Err(error) = card.destroy_framebuffer(evicted.framebuffer) {
+                    log::warn!("DRM: failed to destroy evicted cursor framebuffer: {error}");
+                }
+                if let Err(error) = card.destroy_dumb_buffer(evicted.dumb) {
+                    log::warn!("DRM: failed to destroy evicted cursor buffer: {error}");
+                }
+            }
+            0
         };
         self.cursor_state = Some(CursorState {
             buffer,

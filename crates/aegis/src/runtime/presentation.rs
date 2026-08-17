@@ -55,7 +55,14 @@ impl CompositorRuntime {
         // pixels in the DRM backend.
         // A previously rejected cursor plane re-arms itself once its failure
         // backoff elapses; the ordinary cursor commit below is the probe.
-        self.host.poll_hardware_cursor_retry();
+        let cursor_probe_armed = self.host.poll_hardware_cursor_retry();
+        // Sprite identity this frame wants on the hardware plane. Written
+        // whenever a cursor commit is actually attempted and read by the
+        // present-side baseline updates below; the zero default means the
+        // plane was hidden, disabled, or failed to load, in which case no
+        // baseline may claim the plane still shows a particular sprite.
+        let mut last_committed_hotspot: (u32, u32) = (0, 0);
+        let mut last_committed_sprite_size: (u32, u32) = (0, 0);
         if self.host.supports_hardware_cursor() {
             if cursor_hidden {
                 self.host.set_hardware_cursor(None);
@@ -71,12 +78,29 @@ impl CompositorRuntime {
                         )
                     });
                 if let Some((pixels, size, hotspot)) = loaded {
-                    self.host.set_hardware_cursor(Some(HardwareCursor {
-                        pixels: &pixels,
-                        size,
-                        hotspot,
-                        position: cursor_position,
-                    }));
+                    // Same sprite, hotspot, and position as the last
+                    // committed cursor: skip the backend cache lookup and
+                    // the KMS property diff entirely. This is the steady
+                    // state of a static pointer while the frame loop still
+                    // runs (animations, streams) without any cursor change.
+                    // A just-re-armed disabled plane must not skip: its
+                    // probe is exactly this commit, and skipping it would
+                    // leave the cursor invisible until the next change.
+                    let unchanged = self.damage.last_presented_cursor
+                        == Some((cursor_shape, cursor_hidden))
+                        && self.damage.last_presented_cursor_position == Some(cursor_position)
+                        && self.damage.last_presented_cursor_hotspot == Some(hotspot)
+                        && self.damage.last_presented_cursor_pixels == Some(size);
+                    if !unchanged || cursor_probe_armed {
+                        self.host.set_hardware_cursor(Some(HardwareCursor {
+                            pixels: &pixels,
+                            size,
+                            hotspot,
+                            position: cursor_position,
+                        }));
+                    }
+                    last_committed_hotspot = hotspot;
+                    last_committed_sprite_size = size;
                 } else {
                     log::warn!("cursor: theme rasterization failed; disabling hardware cursor");
                     self.host.disable_hardware_cursor();
@@ -159,6 +183,10 @@ impl CompositorRuntime {
                     self.damage.last_present_minute = Some(wall_clock_minute());
                     self.damage.last_presented_cursor = Some((cursor_shape, cursor_hidden));
                     self.damage.last_presented_cursor_position = Some(cursor_position);
+                    self.damage.last_presented_cursor_hotspot =
+                        (!cursor_hidden).then_some(last_committed_hotspot);
+                    self.damage.last_presented_cursor_pixels =
+                        (!cursor_hidden).then_some(last_committed_sprite_size);
                     self.frame_count += 1;
                     return Ok(PresentationOutcome::Submitted);
                 }
@@ -271,6 +299,10 @@ impl CompositorRuntime {
                     self.damage.last_present_minute = Some(wall_clock_minute());
                     self.damage.last_presented_cursor = Some((cursor_shape, cursor_hidden));
                     self.damage.last_presented_cursor_position = Some(cursor_position);
+                    self.damage.last_presented_cursor_hotspot =
+                        (!cursor_hidden).then_some(last_committed_hotspot);
+                    self.damage.last_presented_cursor_pixels =
+                        (!cursor_hidden).then_some(last_committed_sprite_size);
                     self.damage.force_full_redraw = false;
                     self.frame_count += 1;
                     return Ok(PresentationOutcome::Submitted);
@@ -291,8 +323,14 @@ impl CompositorRuntime {
                         // The backend disabled the KMS cursor after rejecting
                         // this commit. The same frame must include the
                         // software cursor, outside any client-only damage
-                        // scissor.
+                        // scissor. The plane is disabled until its retry
+                        // backoff elapses; dropping the sprite baseline
+                        // guarantees the re-arm probe commit is issued.
                         damage = FrameDamage::Full;
+                        self.damage.last_presented_cursor = None;
+                        self.damage.last_presented_cursor_position = None;
+                        self.damage.last_presented_cursor_hotspot = None;
+                        self.damage.last_presented_cursor_pixels = None;
                     }
                     if matches!(
                         error,
@@ -1727,7 +1765,7 @@ impl CompositorRuntime {
                 }
                 for intent in self.shell.take_interaction_domain_intents() {
                     let action = interaction_domain_intent_to_action(intent);
-                    let before_revision = self.server.interaction_domain_snapshot().revision;
+                    let before_revision = self.server.interaction_domain_revision();
                     let result =
                         apply_interaction_domain_action(&mut self.server, None, action.clone());
                     match &result {
@@ -2322,6 +2360,10 @@ impl CompositorRuntime {
                 self.damage.last_present_minute = Some(wall_clock_minute());
                 self.damage.last_presented_cursor = Some((cursor_shape, cursor_hidden));
                 self.damage.last_presented_cursor_position = Some(cursor_position);
+                self.damage.last_presented_cursor_hotspot =
+                    (!cursor_hidden).then_some(last_committed_hotspot);
+                self.damage.last_presented_cursor_pixels =
+                    (!cursor_hidden).then_some(last_committed_sprite_size);
                 self.damage.force_full_redraw = false;
 
                 self.frame_count += 1;

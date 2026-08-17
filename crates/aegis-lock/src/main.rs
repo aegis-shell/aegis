@@ -1,6 +1,7 @@
 mod auth;
 mod profile;
 mod render;
+mod style;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -480,6 +481,7 @@ impl AppData {
             // Keep dispatch latency bounded even when reduced motion turns
             // the visible validation sweep into a static treatment.
             || self.lock_state.validation_pending()
+            || self.graphics.composition_animates(&self.lock_state)
             || self
                 .graphics
                 .feedback_animation_active(&self.lock_state, Instant::now())

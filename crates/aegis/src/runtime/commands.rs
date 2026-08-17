@@ -238,7 +238,7 @@ pub(super) fn apply_interaction_domain_action(
             fallback,
             expected_revision,
         } => {
-            let actual = server.interaction_domain_snapshot().revision;
+            let actual = server.interaction_domain_revision();
             if expected_revision.is_some_and(|expected| expected != actual) {
                 return Err(format!(
                     "InteractionDomain revision conflict: expected {}, actual {actual}",

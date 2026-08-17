@@ -114,6 +114,21 @@ impl LockState {
         )
     }
 
+    /// Elapsed time in the current waiting or checking phase.
+    ///
+    /// Feedback that derives from this (such as the stop-screen percentage
+    /// counter) stays honest about a stalled authenticator instead of
+    /// cycling forever.
+    #[must_use]
+    pub fn validation_elapsed(&self, now: Instant) -> Option<Duration> {
+        match self.phase {
+            AuthPhase::Waiting { started } | AuthPhase::Checking { started } => {
+                Some(now.saturating_duration_since(started))
+            }
+            _ => None,
+        }
+    }
+
     /// Progress for the cinematic validation sweep.
     ///
     /// Waiting and active authentication share one fixed-rate clock. Its speed

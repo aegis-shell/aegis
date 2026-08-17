@@ -249,6 +249,10 @@ pub enum LockScreenStyle {
     /// Full-bleed artwork with peripheral clock and lower-right credentials.
     #[default]
     Cinematic,
+    /// Nostalgic "stop-screen" lock: flat signature blue, a sad face, a
+    /// percentage spinner, and a QR-free support block. The background
+    /// configuration is ignored; the style always paints its own blue.
+    Bsod,
 }
 
 /// Source type for the lock screen's background. This is intentionally

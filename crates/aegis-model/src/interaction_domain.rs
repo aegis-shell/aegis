@@ -1282,12 +1282,29 @@ impl InteractionDomainModel {
     }
 
     pub fn snapshot(&self) -> InteractionDomainSnapshot {
+        // Durable client records accumulate for the process lifetime (audit
+        // identity), but a snapshot is the live published view: disconnected
+        // clients with no remaining interaction groups contribute nothing to
+        // authorization decisions and are excluded so per-frame fan-out cost
+        // does not grow with session window churn. The IPC scope filter keeps
+        // only group-referenced clients anyway.
+        let group_clients: BTreeSet<ClientId> = self
+            .interaction_groups
+            .values()
+            .map(|group| group.client)
+            .collect();
+        let clients = self
+            .clients
+            .values()
+            .filter(|client| client.connected || group_clients.contains(&client.id))
+            .cloned()
+            .collect();
         InteractionDomainSnapshot {
             revision: self.revision,
             principals: self.principals.values().cloned().collect(),
             interaction_domains: self.interaction_domains.values().cloned().collect(),
             seats: self.seats.values().cloned().collect(),
-            clients: self.clients.values().cloned().collect(),
+            clients,
             interaction_groups: self.interaction_groups.values().cloned().collect(),
         }
     }

@@ -24,11 +24,18 @@ impl DrmBackend {
             }
             self.modeset_done = false;
             self.cursor_plane_active = false;
+            // The kernel plane is now blank; forgetting the cached sprite
+            // position makes the next cursor commit reprogram the plane
+            // instead of trusting a stale baseline.
+            self.cursor_state = None;
             self.outputs_powered = false;
             log::info!("drm: physical outputs powered off; input remains active");
         } else {
             self.outputs_powered = true;
             self.modeset_done = false;
+            // Re-assert the cursor on the first full commit after wake; the
+            // plane was blanked at power-off, so its old placement is void.
+            self.cursor_state = None;
             log::info!("drm: physical outputs waking on next secure frame");
         }
         Ok(())

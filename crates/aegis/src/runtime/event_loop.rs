@@ -33,6 +33,12 @@ impl CompositorRuntime {
                 // screenshot across a target-availability boundary.
                 self.refuse_suspended_frame();
                 self.primary_plane_state.invalidate();
+                // The hardware cursor plane is blanked when outputs go away;
+                // drop the sprite baseline so the next commit reprograms it.
+                self.damage.last_presented_cursor = None;
+                self.damage.last_presented_cursor_position = None;
+                self.damage.last_presented_cursor_hotspot = None;
+                self.damage.last_presented_cursor_pixels = None;
                 if reason == PresentationAvailability::BackendUnavailable {
                     self.invalidate_input_epoch();
                 }
@@ -44,14 +50,24 @@ impl CompositorRuntime {
                 // must still invalidate that older input epoch.
                 self.refuse_suspended_frame();
                 self.primary_plane_state.invalidate();
+                self.damage.last_presented_cursor = None;
+                self.damage.last_presented_cursor_position = None;
+                self.damage.last_presented_cursor_hotspot = None;
+                self.damage.last_presented_cursor_pixels = None;
                 self.invalidate_input_epoch();
                 self.previous_render_at = now;
             }
             ActivationChange::Resumed => {
                 // VT resume replaces the DRM master fd, framebuffers, and
                 // output topology. It may not reuse an earlier damage or
-                // timing baseline.
+                // timing baseline. The hardware cursor plane was blanked at
+                // suspend, so its presentation-side sprite baseline is void
+                // and the first cursor commit must not be skipped.
                 self.damage.force_full_redraw = true;
+                self.damage.last_presented_cursor = None;
+                self.damage.last_presented_cursor_position = None;
+                self.damage.last_presented_cursor_hotspot = None;
+                self.damage.last_presented_cursor_pixels = None;
                 self.previous_render_at = now;
             }
         }

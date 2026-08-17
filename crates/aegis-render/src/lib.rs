@@ -811,6 +811,14 @@ impl Renderer {
         }
     }
 
+    /// Immediately evict all cached textures (SHM and DMA-BUF) for a surface
+    /// that has been destroyed, releasing GPU resources without waiting for GC.
+    pub fn evict_surface(&mut self, surface_id: usize) {
+        self.retire_cached(surface_id);
+        self.retire_dmabuf_surface(surface_id);
+        self.failed_imports.remove(&surface_id);
+    }
+
     /// Drop cached textures for surfaces no longer present. Call once per frame
     /// with every live surface id (shm and dma-buf). Reuses internal scratch
     /// buffers so no set or list is heap-allocated on the steady-state path.
@@ -2392,5 +2400,15 @@ mod tests {
         window.read_only = false;
         window.layout_role = aegis_model::layout::LayoutRole::Tiled;
         assert!(!window_casts_resize_shadow(&window));
+    }
+
+    #[test]
+    fn evict_surface_purges_cached_textures_immediately() {
+        let mut renderer = Renderer::new();
+        // Insert dummy failed import and verify evict clears it
+        renderer.failed_imports.insert(42, ());
+        assert!(renderer.failed_imports.contains_key(&42));
+        renderer.evict_surface(42);
+        assert!(!renderer.failed_imports.contains_key(&42));
     }
 }
