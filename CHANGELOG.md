@@ -7,6 +7,18 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-08-18
+
+### Added
+
+- Development environment variable reference and nested backend debugging documentation.
+
+### Changed
+
+- Modernized Command Panel with a floating HUD layout: top-left profile chip, top-right notifications stream, centered glass page view, navigation pills with spotlight beam projection, and right telemetry monitor column.
+- Streamlined liquid glass rendering by removing the background scrim quad and painted borders to emphasize physical optical refraction and eliminate stencil invalidation flash.
+- Cleaned up `aegis-lock` BSOD style rendering.
+
 ## [0.0.34] - 2026-08-18
 
 ### Changed
