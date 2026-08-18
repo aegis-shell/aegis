@@ -3,31 +3,25 @@
 //! A nostalgic full-screen stop page as a lock screen: flat signature blue,
 //! a large sad face, a left-aligned headline, and the authentication state
 //! woven into the page's own voice — there is no input box. Typed characters
-//! advance the percentage counter (three percent each), the counter itself
-//! narrates verification, and a rejected attempt becomes a stop-code update
-//! in the support block. A hand-rolled QR module (see [`qr`]) carries the
-//! easter egg where the classic page shows its support code.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//! advance the character counter, the counter itself narrates verification,
+//! and a rejected attempt becomes a stop-code update in the support block.
+//! A hand-rolled QR module (see [`qr`]) carries the easter egg where the
+//! classic page shows its support code.
 
 use aegis_lock::{LockState, bsod_layout};
 use flux::Canvas;
 use lens::{Align, Color, Rect};
 
+use crate::profile::clock_strings;
 use crate::render::{LockBackground, LockVisual};
 use crate::style::common::{
-    FramePresentation, StylePainter, aligned_layer, credential_label, keyboard_status, localized,
-    lock_theme,
+    FramePresentation, StylePainter, aligned_layer, keyboard_status, localized, lock_theme,
 };
 use crate::style::qr;
 
 /// Signature stop-screen blue (`#0078D7`). The composition always paints
 /// this color regardless of `[lock_screen.background]`.
 const BSOD_BLUE: [u8; 3] = [0, 120, 215];
-/// Progress granted per typed character.
-const PERCENT_PER_CHARACTER: u32 = 3;
-/// Idle counter cycle length in seconds.
-const IDLE_CYCLE: f32 = 9.0;
 /// Quiet-zone width in modules around the painted QR.
 const QR_QUIET_ZONE: f32 = 2.0;
 
@@ -66,30 +60,13 @@ impl StylePainter for BsodPainter {
 
     fn paint_clock(
         &self,
-        ui: &mut lens::Frame,
-        frame: &FramePresentation<'_>,
-        clock: &str,
+        _ui: &mut lens::Frame,
+        _frame: &FramePresentation<'_>,
+        _clock: &str,
         _date: &str,
     ) {
-        let layout = bsod_layout(frame.logical.0 as f32, frame.logical.1 as f32);
-        ui.set_theme(lock_theme(
-            &self.visual.design,
-            Color::rgba(255, 255, 255, 255),
-            242,
-        ));
-        ui.place(
-            "bsod-clock",
-            &aegis_design::materials::chrome_place(
-                Rect {
-                    x: layout.clock_x,
-                    y: layout.clock_y,
-                    w: layout.clock_width,
-                    h: layout.clock_size * 1.4,
-                },
-                aligned_layer(Align::End),
-            ),
-            |ui| ui.label_compact_sized(clock, layout.clock_size),
-        );
+        // The clock is integrated directly into the left support block alongside
+        // the QR code, eliminating isolated corner clutter.
     }
 
     fn paint_identity(&self, ui: &mut lens::Frame, frame: &FramePresentation<'_>) {
@@ -116,25 +93,27 @@ impl StylePainter for BsodPainter {
             |ui| ui.label_compact_sized(copy.face, layout.face_size),
         );
 
-        // Headline.
-        ui.place(
-            "bsod-headline",
-            &aegis_design::materials::chrome_place(
-                Rect {
-                    x: layout.margin_x + frame.feedback_offset,
-                    y: layout.headline_y,
-                    w: layout.copy_width,
-                    h: layout.headline_size * 3.0,
-                },
-                aligned_layer(Align::Start),
-            ),
-            |ui| {
-                ui.label_wrapped_sized(&copy.headline, layout.headline_size, layout.copy_width);
-            },
-        );
+        // Headline lines rendered with natural, tight line-height.
+        let headline_step = layout.headline_size * 1.30;
+        for (i, line) in copy.headline_lines.iter().enumerate() {
+            let line_y = layout.headline_y + i as f32 * headline_step;
+            ui.place(
+                &format!("bsod-headline-{i}"),
+                &aegis_design::materials::chrome_place(
+                    Rect {
+                        x: layout.margin_x + frame.feedback_offset,
+                        y: line_y,
+                        w: layout.copy_width,
+                        h: layout.headline_size * 1.3,
+                    },
+                    aligned_layer(Align::Start),
+                ),
+                |ui| ui.label_compact_sized(line, layout.headline_size),
+            );
+        }
 
         // The counter line narrates typing, verification, and rejection in
-        // the page's own voice — no input box, no separate status row.
+        // the page's own voice — reporting character counts directly without percentage.
         let counter_color = if frame.state.rejected() {
             Color::rgba(255, 176, 176, 255)
         } else {
@@ -154,170 +133,109 @@ impl StylePainter for BsodPainter {
             ),
             |ui| {
                 ui.label_compact_sized(
-                    &counter_line(&copy, counter, frame.state),
+                    &counter_line(counter, frame.state),
                     layout.counter_size,
                 );
             },
         );
 
-        // Typed characters echo as narrow marks directly under the counter,
-        // tying the input to the progress it produced.
-        let marks = if frame.state.password_len() > 0 {
-            "| ".repeat(frame.state.password_len())
-                .trim_end()
-                .to_owned()
-        } else {
-            String::new()
-        };
-        if !marks.is_empty() {
-            ui.place(
-                "bsod-marks",
-                &aegis_design::materials::chrome_place(
-                    Rect {
-                        x: layout.margin_x,
-                        y: layout.marks_y,
-                        w: layout.copy_width,
-                        h: layout.counter_size * 1.2,
-                    },
-                    aligned_layer(Align::Start),
-                ),
-                |ui| {
-                    ui.label_compact_sized(
-                        &credential_label(&marks, frame.state.credential_revision()),
-                        layout.counter_size,
-                    );
-                },
-            );
-        }
-
-        // Support block pinned lower-left, beside the QR.
+        // Support block pinned beside the QR code, evenly dividing the QR height.
         ui.set_theme(white);
-        let support_lines = copy.support_lines();
-        let mut support_y = layout.support_y;
+        let support_lines = copy.support_lines(frame.state);
+        let count = support_lines.len();
+        let step = if count > 1 {
+            (layout.qr_size - layout.support_size) / (count - 1) as f32
+        } else {
+            0.0
+        };
         for (index, line) in support_lines.iter().enumerate() {
+            let line_y = layout.support_y + index as f32 * step;
             ui.place(
                 &format!("bsod-support-{index}"),
                 &aegis_design::materials::chrome_place(
                     Rect {
                         x: layout.support_x,
-                        y: support_y,
+                        y: line_y,
                         w: layout.support_width,
-                        h: layout.support_size * 1.5,
+                        h: layout.support_size * 1.4,
                     },
                     aligned_layer(Align::Start),
                 ),
                 |ui| ui.label_compact_sized(line, layout.support_size),
             );
-            support_y += layout.support_size * 1.5;
-        }
-        if let Some(keyboard) = keyboard_status(frame.state) {
-            ui.place(
-                "bsod-keyboard",
-                &aegis_design::materials::chrome_place(
-                    Rect {
-                        x: layout.support_x,
-                        y: support_y,
-                        w: layout.support_width,
-                        h: layout.support_size * 1.5,
-                    },
-                    aligned_layer(Align::Start),
-                ),
-                |ui| {
-                    ui.set_theme(lock_theme(
-                        &self.visual.design,
-                        Color::rgba(255, 255, 255, 255),
-                        170,
-                    ));
-                    ui.label_compact_sized(&keyboard, layout.support_size);
-                },
-            );
         }
     }
 
-    fn animates_while_engaged(&self, state: &LockState) -> bool {
-        !self.visual.reduced_motion && state.password_len() == 0 && !state.validation_pending()
+    fn animates_while_engaged(&self, _state: &LockState) -> bool {
+        false
     }
 }
 
-/// Percentage value shown by the counter.
-///
-/// The number is the authentication story itself: typing advances it by
-/// three percent per character, verification holds it while the
-/// authenticator works, and rejection hands it back to the idle cycle.
-pub fn counter_value(state: &LockState) -> u32 {
-    if state.validation_pending() {
-        // Freeze at the typed progress while the authenticator works; the
-        // counter never claims completion it cannot guarantee.
-        typed_progress(state)
-    } else if state.rejected() {
-        // A rejected attempt restarts the loop from the top.
+/// Character count value shown by the counter.
+pub fn counter_value(state: &LockState) -> usize {
+    if state.rejected() {
         0
-    } else if state.password_len() > 0 {
-        typed_progress(state)
     } else {
-        idle_cycle_value()
+        state.password_len()
     }
-}
-
-/// Three percent per typed character, saturating just below completion.
-fn typed_progress(state: &LockState) -> u32 {
-    (state.password_len() as u32 * PERCENT_PER_CHARACTER).min(99)
-}
-
-fn idle_cycle_value() -> u32 {
-    // The idle loop rides the wall clock: a monotonic `Instant` is only
-    // meaningful against a stored baseline, and the renderer is stateless
-    // across frames.
-    let phase = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |since| since.as_secs_f32() % IDLE_CYCLE)
-        / IDLE_CYCLE;
-    let eased = 0.5 - (phase * std::f32::consts::PI).cos() * 0.5;
-    (eased * 100.0).round() as u32
 }
 
 /// All stop-screen copy for one authentication state.
 struct BsodCopy {
     face: &'static str,
-    headline: String,
-    counter_lead: String,
-    counter_idle: String,
+    headline_lines: Vec<String>,
     support_intro: String,
     stop_code: String,
 }
 
 impl BsodCopy {
     fn for_state(state: &LockState) -> Self {
-        let (headline, stop_code) = if state.rejected() {
+        let (headline_lines, stop_code) = if state.rejected() {
             (
-                localized(
-                    "Your PC ran into a problem and needs to restart. Just kidding — the password was wrong.",
-                    "你的电脑遇到问题,需要重新启动。开个玩笑——密码不对。",
-                ),
+                vec![
+                    localized(
+                        "Your PC ran into a problem and needs to restart.",
+                        "你的电脑遇到问题,需要重新启动。",
+                    ),
+                    localized(
+                        "Just kidding — the password was wrong.",
+                        "开个玩笑——密码不对。",
+                    ),
+                ],
                 localized("CREDENTIAL_MISMATCH", "凭据不匹配"),
             )
         } else if state.message().is_some() {
             (
-                localized(
-                    "Your session ran into a problem it cannot fix alone. Authentication is unavailable.",
-                    "你的会话遇到了无法独自修复的问题。认证服务不可用。",
-                ),
+                vec![
+                    localized(
+                        "Your session ran into a problem it cannot fix alone.",
+                        "你的会话遇到了无法独自修复的问题。",
+                    ),
+                    localized(
+                        "Authentication is unavailable.",
+                        "认证服务不可用。",
+                    ),
+                ],
                 localized("AUTH_SERVICE_UNAVAILABLE", "认证服务不可用"),
             )
         } else {
             (
-                localized(
-                    "Your session has been locked. Type your password to continue.",
-                    "你的会话已锁定。输入密码以继续。",
-                ),
+                vec![
+                    localized(
+                        "Your session has been locked.",
+                        "你的会话已锁定。",
+                    ),
+                    localized(
+                        "Type your password to continue.",
+                        "输入密码以继续。",
+                    ),
+                ],
                 localized("SESSION_LOCKED", "会话已锁定"),
             )
         };
         Self {
             face: ":(",
-            headline,
-            counter_lead: localized("Collecting keystrokes, and then", "正在收集按键,然后"),
-            counter_idle: localized("complete", "完成"),
+            headline_lines,
             support_intro: localized(
                 "For more information about this issue, scan the code:",
                 "有关此问题的详细信息,请扫描此码:",
@@ -326,24 +244,50 @@ impl BsodCopy {
         }
     }
 
-    fn support_lines(&self) -> Vec<String> {
+    fn support_lines(&self, state: &LockState) -> Vec<String> {
+        let (clock, _) = clock_strings();
+        let keyboard = keyboard_status(state);
+        let time_line = match keyboard {
+            Some(kb) => localized(
+                &format!("Time: {clock}  ·  {kb}"),
+                &format!("时间: {clock}  ·  {kb}"),
+            ),
+            None => localized(
+                &format!("Time: {clock}"),
+                &format!("时间: {clock}"),
+            ),
+        };
         vec![
             self.support_intro.clone(),
             format!("Stop code: {}", self.stop_code),
+            time_line,
         ]
     }
 }
 
-fn counter_line(copy: &BsodCopy, counter: u32, state: &LockState) -> String {
+fn counter_line(counter: usize, state: &LockState) -> String {
     if state.validation_pending() {
         localized("Verifying your identity…", "正在验证你的身份…")
     } else if state.rejected() {
         localized(
-            "Restarting the collection: 0% complete",
-            "重新开始收集:0% 完成",
+            "Collecting keystrokes: 0 chars entered",
+            "正在收集按键: 已输入 0 个字符",
+        )
+    } else if counter == 0 {
+        localized(
+            "Collecting keystrokes (0 chars entered)",
+            "正在收集按键 (已输入 0 个字符)",
+        )
+    } else if counter == 1 {
+        localized(
+            "Collecting keystrokes: 1 char entered",
+            "正在收集按键: 已输入 1 个字符",
         )
     } else {
-        format!("{} {}% {}", copy.counter_lead, counter, copy.counter_idle)
+        localized(
+            &format!("Collecting keystrokes: {counter} chars entered"),
+            &format!("正在收集按键: 已输入 {counter} 个字符"),
+        )
     }
 }
 
@@ -389,16 +333,15 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn counter_grants_three_percent_per_character() {
+    fn counter_tracks_typed_character_count() {
         let now = Instant::now();
         let mut lock = LockState::new(now);
-        assert_eq!(counter_value(&lock), idle_cycle_value());
+        assert_eq!(counter_value(&lock), 0);
         assert!(lock.type_text("abcde", now));
-        assert_eq!(counter_value(&lock), 15);
-        // Long credentials saturate below completion.
+        assert_eq!(counter_value(&lock), 5);
         let mut long = LockState::new(now);
         assert!(long.type_text(&"x".repeat(40), now));
-        assert_eq!(typed_progress(&long), 99);
+        assert_eq!(counter_value(&long), 40);
     }
 
     #[test]
@@ -408,11 +351,11 @@ mod tests {
         assert!(lock.type_text("secret", now));
         assert!(matches!(lock.submit(now), LockAction::Authenticate(_)));
         let held = counter_value(&lock);
-        assert_eq!(held, 18);
+        assert_eq!(held, 6);
     }
 
     #[test]
-    fn rejection_restarts_the_collection_story() {
+    fn rejection_resets_the_character_count() {
         let now = Instant::now();
         let mut lock = LockState::new(now);
         assert!(lock.type_text("wrong", now));
@@ -434,7 +377,7 @@ mod tests {
             "unexpected stop code {}",
             copy.stop_code
         );
-        assert!(copy.headline.contains("password") || copy.headline.contains("密码"));
+        assert!(copy.headline_lines.iter().any(|l| l.contains("password") || l.contains("密码")));
     }
 
     #[test]

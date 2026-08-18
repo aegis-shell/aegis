@@ -42,7 +42,7 @@ impl Design {
                 menu_active: Color::rgba(255, 255, 255, 36),
                 popover_surface: Color::rgba(255, 255, 255, 110),
                 popover_border: Color::rgba(255, 255, 255, 72),
-                glass_surface: Color::rgba(255, 255, 255, 12),
+                glass_surface: Color::rgba(18, 22, 34, 32),
                 glass_border: Color::rgba(255, 255, 255, 0),
                 application_surface: Color::rgba(25, 28, 40, 255),
                 application_text: Color::rgba(244, 246, 252, 255),
@@ -74,12 +74,12 @@ impl Design {
                 scrollbar: 5.0,
             },
             glass: GlassStyles {
-                chip: GlassStyle::new(0.16, 4.0, 2.0),
+                chip: GlassStyle::new(0.16, 4.0, 2.0).with_material(1.0, 1.0, 1.0, 0.0),
                 tooltip: GlassStyle::new(0.14, 10.0, 5.0).with_material(3.0, 3.0, 0.85, 0.0),
                 menu: GlassStyle::new(0.18, 16.0, 8.0).with_material(5.0, 3.6, 0.7, 0.0),
-                floating_panel: GlassStyle::new(0.18, 16.0, 8.0),
-                prominent_panel: GlassStyle::new(0.20, 18.0, 9.0),
-                dock: GlassStyle::new(0.20, 12.0, 6.0),
+                floating_panel: GlassStyle::new(0.18, 16.0, 8.0).with_material(3.5, 3.0, 0.85, 0.0),
+                prominent_panel: GlassStyle::new(0.20, 18.0, 9.0).with_material(4.0, 3.2, 0.8, 0.0),
+                dock: GlassStyle::new(0.20, 12.0, 6.0).with_material(3.0, 2.5, 0.9, 0.0),
             },
             glass_focus: GlassFocus {
                 hover_tint: Color::rgba(255, 255, 255, 6),
@@ -187,12 +187,12 @@ impl Design {
                 validation: Color::rgba(30, 90, 200, 255),
             },
             glass: GlassStyles {
-                chip: GlassStyle::new(0.18, 4.0, 2.0),
+                chip: GlassStyle::new(0.18, 4.0, 2.0).with_material(1.0, 1.0, 1.0, 1.0),
                 tooltip: GlassStyle::new(0.16, 10.0, 5.0).with_material(3.0, 3.5, 0.9, 1.0),
                 menu: GlassStyle::new(0.20, 16.0, 8.0).with_material(5.0, 4.5, 0.8, 1.0),
-                floating_panel: GlassStyle::new(0.20, 16.0, 8.0),
-                prominent_panel: GlassStyle::new(0.22, 18.0, 9.0),
-                dock: GlassStyle::new(0.22, 12.0, 6.0),
+                floating_panel: GlassStyle::new(0.20, 16.0, 8.0).with_material(3.5, 3.5, 0.9, 1.0),
+                prominent_panel: GlassStyle::new(0.22, 18.0, 9.0).with_material(4.0, 4.0, 0.85, 1.0),
+                dock: GlassStyle::new(0.22, 12.0, 6.0).with_material(3.0, 3.0, 0.95, 1.0),
             },
             glass_focus: GlassFocus {
                 hover_tint: Color::rgba(28, 32, 44, 7),
@@ -815,7 +815,7 @@ mod tests {
         let glass = Design::dark().glass;
         assert_eq!(
             glass.for_role(GlassRole::FloatingPanel),
-            GlassStyle::new(0.18, 16.0, 8.0)
+            GlassStyle::new(0.18, 16.0, 8.0).with_material(3.5, 3.0, 0.85, 0.0)
         );
         assert!(glass.chip.shadow_blur < glass.floating_panel.shadow_blur);
         assert!(glass.floating_panel.shadow_blur < glass.prominent_panel.shadow_blur);
@@ -835,7 +835,7 @@ mod tests {
         assert!(menu.frost_strength > glass.floating_panel.frost_strength);
         assert!(menu.tint_strength > glass.floating_panel.tint_strength);
         assert!(menu.saturation < 1.0);
-        // Dark appearance pins text-bearing plates to smoke (0); the shader's
+        // Dark appearance pins plates to smoke (0); the shader's
         // per-pixel pearl-over-dark would wash the plate toward the light
         // text and undo the legibility the strengths buy.
         assert_eq!(menu.plate_polarity, 0.0);
@@ -845,26 +845,21 @@ mod tests {
         assert_eq!(tooltip.plate_polarity, 0.0);
         for role in [
             GlassRole::Chip,
+            GlassRole::Tooltip,
+            GlassRole::Menu,
             GlassRole::FloatingPanel,
             GlassRole::ProminentPanel,
             GlassRole::Dock,
         ] {
             let style = glass.for_role(role);
-            assert_eq!(
-                (
-                    style.frost_strength,
-                    style.tint_strength,
-                    style.saturation,
-                    style.plate_polarity,
-                ),
-                (1.0, 1.0, 1.0, -1.0)
-            );
+            assert_eq!(style.plate_polarity, 0.0);
         }
         // Light appearance pins the opposite polarity (pearl plate under dark
         // text) with strengths of its own.
         let light = Design::light().glass;
         assert_eq!(light.menu.plate_polarity, 1.0);
         assert_eq!(light.for_role(GlassRole::Tooltip).plate_polarity, 1.0);
+        assert_eq!(light.for_role(GlassRole::FloatingPanel).plate_polarity, 1.0);
         assert!(light.menu.tint_strength > menu.tint_strength);
     }
 

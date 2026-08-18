@@ -49,7 +49,6 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         false,
         &capture,
         None,
-        &[],
     );
     let sigma_changed = BackdropCacheKey::new(
         (0, 1000),
@@ -60,7 +59,6 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         false,
         &capture,
         None,
-        &[],
     );
     assert_ne!(base, sigma_changed);
     assert_eq!(base, base.clone());
@@ -138,7 +136,6 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         false,
         &capture,
         None,
-        &[],
     );
     assert_eq!(base, capture_with_glass);
 }

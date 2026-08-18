@@ -143,38 +143,41 @@ fn a_fullscreen_window_closes_the_panel() {
 #[test]
 fn cluster_bounds_stay_inside_small_displays() {
     for display in [(320.0, 480.0), (800.0, 600.0), (1920.0, 1080.0)] {
-        let (header, main, notifications, tray) = CommandPanel::cluster_bounds(display);
-        for rect in [header, main, notifications, tray] {
+        let (profile, main, notifications, side) = CommandPanel::cluster_bounds(display);
+        for rect in [profile, main, notifications, side] {
             assert!(rect.x >= 0.0 && rect.y >= 0.0);
             assert!(rect.x + rect.w <= display.0 + 0.01);
             assert!(rect.y + rect.h <= display.1 + 0.01);
         }
-        assert!(main.y >= header.y + header.h);
-        assert!(notifications.x >= main.x + main.w);
-        // The header spans the full cluster width; main + gap + side column
-        // divide the same width below it.
-        assert!((header.w - (main.w + PANEL_GAP + notifications.w)).abs() < 0.01);
-        // The side column: notifications on top, tray pinned to the bottom,
-        // both full column width and together as tall as the main panel.
-        assert_eq!(notifications.w, tray.w);
-        assert_eq!(notifications.y, main.y);
-        assert!((notifications.h + PANEL_GAP + tray.h - main.h).abs() < 0.01);
-        assert!(main.w >= MAIN_FLOOR_W);
-        assert!(notifications.w >= SIDE_FLOOR_W);
+        assert!(notifications.x >= profile.x + profile.w);
+        assert_eq!(notifications.y, profile.y);
     }
 }
 
 #[test]
 fn full_size_displays_get_the_design_geometry() {
-    let (header, main, notifications, tray) = CommandPanel::cluster_bounds((1920.0, 1080.0));
-    assert_eq!(header.h, HEADER_H);
-    assert_eq!(main.w, CONTENT_W);
-    assert_eq!(main.h, CONTENT_H);
-    assert_eq!(notifications.w, SIDE_W);
-    assert_eq!(tray.w, SIDE_W);
-    assert_eq!(tray.h, TRAY_PANEL_H);
-    assert_eq!(header.w, CONTENT_W + PANEL_GAP + SIDE_W);
-    assert_eq!(notifications.h + PANEL_GAP + tray.h, CONTENT_H);
+    let (profile, main, notifications, side) = CommandPanel::cluster_bounds((1920.0, 1080.0));
+    // Profile is compact in top-left
+    assert_eq!(profile.w, 280.0);
+    assert_eq!(profile.h, 72.0);
+    assert_eq!(profile.x, 48.0);
+    assert_eq!(profile.y, 37.8);
+
+    // Notifications is compact in top-right
+    assert_eq!(notifications.w, 260.0);
+    assert_eq!(notifications.h, 200.0);
+    assert_eq!(notifications.x, 1920.0 - 48.0 - 260.0);
+    assert_eq!(notifications.y, 37.8);
+
+    // Main Split Control Panel is centered on screen
+    assert_eq!(main.w, 720.0);
+    assert_eq!(main.h, 460.0);
+    assert_eq!(main.x, (1920.0 - 720.0) * 0.5);
+    assert_eq!(main.y, (1080.0 - 460.0) * 0.5);
+
+    // Side Column (Machine Monitor + Tray) is disabled
+    assert_eq!(side.w, 0.0);
+    assert_eq!(side.h, 0.0);
 }
 
 #[test]
@@ -308,4 +311,27 @@ fn agent_workspace_row_tracks_aggregate_interaction_domain_state() {
     let indicator = agent_workspace_indicator(&snapshot, &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::Idle);
     assert_eq!(indicator.label, "Agent Workspaces");
+}
+
+#[test]
+fn command_panel_emits_liquid_glass_regions_when_open() {
+    let mut panel = CommandPanel::without_sources();
+    let display = (1920.0, 1080.0);
+    let workspaces = WorkspaceSnapshot { outputs: Vec::new() };
+    let mut out = ChromeEvents::default();
+
+    // Inactive panel returns no liquid glass regions
+    assert!(panel.liquid_glass_regions(display, &[], &workspaces).is_empty());
+
+    // Opened panel returns physical liquid glass bodies (profile, notifications, capsule tabs, close button, view)
+    panel.toggle_command_panel(&mut out);
+    panel.reveal = 1.0;
+    let regions = panel.liquid_glass_regions(display, &[], &workspaces);
+    assert!(regions.len() >= 4);
+    assert_eq!(regions[0].opacity, 1.0); // Profile chip
+    assert_eq!(regions[1].opacity, 1.0); // Notifications
+    // Each capsule has 100% semicircle ends (corner_radius == height * 0.5)
+    assert_eq!(regions[2].corner_radius, 22.0); // First capsule tab
+    let last = regions.last().unwrap();
+    assert_eq!(last.opacity, 1.0); // Right Content View
 }

@@ -21,7 +21,6 @@ pub(super) fn draw_direct_desktop_scene(
     overview: bool,
     overview_progress: f32,
     window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
-    live_previews: &[aegis_shell::LivePreviewPresentation],
     scheme: aegis_model::settings::ColorScheme,
 ) -> Result<(), flux::Error> {
     let RenderGeometry {
@@ -67,21 +66,16 @@ pub(super) fn draw_direct_desktop_scene(
             renderer,
             server,
             scale,
-            window_switcher.is_some() || !live_previews.is_empty(),
+            window_switcher.is_some(),
         );
         if let Some(presentation) = window_switcher {
-            draw_window_switcher_scene(
+            draw_window_switcher_scrim(
                 canvas,
-                device,
-                renderer,
-                server,
                 logical_size,
                 scale,
                 presentation,
                 scheme,
             );
-        } else {
-            draw_live_preview_scenes(canvas, device, renderer, server, scale, live_previews);
         }
     }
     Ok(())

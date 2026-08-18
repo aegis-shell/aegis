@@ -14,16 +14,14 @@ impl CommandPanel {
             .map(|visible| menu_bounds(self.menu_owner, visible, display))
     }
 
-    /// The header band: profile zone (ringed avatar, display name,
-    /// `@username · groups`) on the left and the machine monitor (chassis
-    /// glyph plus utilization gauges) on the right, separated by a hairline
-    /// divider. Slides in from the left like the old menu panel.
-    pub(super) fn render_header_band(
+    /// The top-left profile panel: user persona (ringed avatar, display name,
+    /// `@username · groups`) with corner brackets. Slides in from the top-left.
+    pub(super) fn render_profile_panel(
         &self,
         f: &mut Frame,
         rect: Rect,
         progress: f32,
-        i18n: &Localizer,
+        _i18n: &Localizer,
     ) {
         let hud = Hud::classic();
         let type_scale = self.design.typography;
@@ -32,15 +30,17 @@ impl CommandPanel {
             x: rect.x + slide,
             ..rect
         };
+
+        // Profile chip minimal painted foreground (physical refraction provided by prism LiquidGlassRegion)
         f.place(
-            "aegis-hud-header-panel",
+            "aegis-hud-profile-glass",
             &chrome_place(
                 rect,
                 LayoutOpts {
-                    bg: hud.surface,
-                    border: hud.border,
-                    border_width: 1.0,
-                    radius: 16.0,
+                    bg: Color::rgba(24, 26, 36, 42),
+                    border: Color::rgba(255, 255, 255, 18),
+                    border_width: 0.75,
+                    radius: self.design.radii.chip.max(20.0),
                     pad: 0.0,
                     ..surface_layout()
                 },
@@ -50,44 +50,28 @@ impl CommandPanel {
             },
         );
 
-        let pad = 16.0;
-        let inner_y = rect.y + pad;
-        let inner_h = (rect.h - pad * 2.0).max(1.0);
+        let pad = 12.0;
         let center_y = rect.y + rect.h * 0.5;
         let base_theme = themes::hud(&hud);
         let muted_theme = themes::hud_muted(base_theme, &hud);
-        // The panel is a scheme-invariant dark-glass island (ADR-0080); the
-        // persona header's avatar style — the warm graphite disc below in the
-        // dark appearance — follows the stored design snapshot's role policy.
         let avatar_style = self.design.avatars.for_role(AvatarRole::PersonaHeader);
         let original = f.theme();
 
-        // -- profile zone: ringed avatar + name lines (~270px) ------------
-        let avatar_center = (rect.x + pad + 42.0, center_y);
-        // The avatar crate supplies only the portrait texture. Its surrounding
-        // chrome belongs to this host: a flat warm graphite disc replaces the
-        // old blue-white gradient fallback, with the shared persona keyline
-        // ring around it.
+        // -- profile zone: compact 48px avatar + name lines ------------------
+        let avatar_size = 48.0;
+        let avatar_center = (rect.x + pad + avatar_size * 0.5, center_y);
         render_disc(
             f,
             "aegis-hud-avatar-backdrop",
             avatar_center,
-            72.0,
+            avatar_size,
             avatar_style.fallback_surface,
         );
-        render_ring(
-            f,
-            "aegis-hud-avatar-ring",
-            avatar_center,
-            80.0,
-            avatar_style.ring,
-            avatar_style.ring_width,
-        );
         let avatar_rect = Rect {
-            x: avatar_center.0 - 36.0,
-            y: avatar_center.1 - 36.0,
-            w: 72.0,
-            h: 72.0,
+            x: avatar_center.0 - avatar_size * 0.5,
+            y: avatar_center.1 - avatar_size * 0.5,
+            w: avatar_size,
+            h: avatar_size,
         };
         match &self.avatar {
             Some(avatar) => {
@@ -96,8 +80,8 @@ impl CommandPanel {
                     "aegis-hud-avatar",
                     &chrome_place(avatar_rect, transparent()),
                     |f| {
-                        f.row_ex(&sized(72.0, 72.0), |f| {
-                            unsafe { f.image(texture as *mut lens::sys::flux_image, 72.0, 72.0) };
+                        f.row_ex(&sized(avatar_size, avatar_size), |f| {
+                            unsafe { f.image(texture as *mut lens::sys::flux_image, avatar_size, avatar_size) };
                         });
                     },
                 );
@@ -110,8 +94,8 @@ impl CommandPanel {
                     |f| {
                         f.row_ex(
                             &LayoutOpts {
-                                width: 72.0,
-                                height: 72.0,
+                                width: avatar_size,
+                                height: avatar_size,
                                 cross: Align::Center,
                                 ..Default::default()
                             },
@@ -131,18 +115,18 @@ impl CommandPanel {
             }
         }
 
-        let text_x = rect.x + pad + 84.0 + 14.0;
-        let text_w = (rect.x + pad + 270.0 - text_x).max(40.0);
-        let display_name = truncate(&self.profile.display_name, (text_w / 9.0).max(4.0) as usize);
+        let text_x = rect.x + pad + avatar_size + 10.0;
+        let text_w = (rect.x + rect.w - pad - text_x).max(40.0);
+        let display_name = truncate(&self.profile.display_name, (text_w / 8.5).max(4.0) as usize);
         f.set_theme(base_theme);
         f.place(
             "aegis-hud-profile-name",
             &chrome_place(
                 Rect {
                     x: text_x,
-                    y: center_y - 21.0,
+                    y: center_y - 18.0,
                     w: text_w,
-                    h: 22.0,
+                    h: 20.0,
                 },
                 transparent(),
             ),
@@ -150,7 +134,7 @@ impl CommandPanel {
                 f.row_ex(
                     &LayoutOpts {
                         width: text_w,
-                        height: 22.0,
+                        height: 20.0,
                         cross: Align::Center,
                         ..Default::default()
                     },
@@ -163,14 +147,14 @@ impl CommandPanel {
             sub_line.push_str(" · ");
             sub_line.push_str(&self.profile.groups.join(", "));
         }
-        let sub_line = truncate(&sub_line, (text_w / 5.8).max(8.0) as usize);
+        let sub_line = truncate(&sub_line, (text_w / 5.5).max(6.0) as usize);
         f.set_theme(muted_theme);
         f.place(
             "aegis-hud-profile-sub",
             &chrome_place(
                 Rect {
                     x: text_x,
-                    y: center_y + 3.0,
+                    y: center_y + 2.0,
                     w: text_w,
                     h: 15.0,
                 },
@@ -188,33 +172,30 @@ impl CommandPanel {
                 );
             },
         );
+        f.set_theme(original);
+    }
 
-        // -- divider ---------------------------------------------------------
-        let divider_x = rect.x + pad + 270.0 + 12.0;
-        f.place(
-            "aegis-hud-header-divider",
-            &chrome_place(
-                Rect {
-                    x: divider_x,
-                    y: rect.y + 22.0,
-                    w: 1.0,
-                    h: (rect.h - 44.0).max(1.0),
-                },
-                LayoutOpts {
-                    bg: hud.border,
-                    border: Color::TRANSPARENT,
-                    radius: 0.0,
-                    pad: 0.0,
-                    ..surface_layout()
-                },
-            ),
-            |_| {},
-        );
+    /// The machine telemetry monitor: chassis glyph plus utilization gauges
+    /// (CPU/GPU/RAM with sparklines, NET, DISK, BAT).
+    #[allow(dead_code)]
+    pub(super) fn render_machine_panel(
+        &self,
+        f: &mut Frame,
+        rect: Rect,
+        i18n: &Localizer,
+    ) {
+        let hud = Hud::classic();
+        let type_scale = self.design.typography;
+        let pad = 16.0;
+        let inner_y = rect.y + pad;
+        let inner_h = (rect.h - pad * 2.0).max(1.0);
+        let base_theme = themes::hud(&hud);
+        let muted_theme = themes::hud_muted(base_theme, &hud);
+        let original = f.theme();
 
-        // -- machine zone: chassis glyph + gauge rows ------------------------
-        let machine_x = divider_x + 12.0;
+        let machine_x = rect.x + pad;
         let machine_right = rect.x + rect.w - pad;
-        if machine_right - machine_x < 200.0 {
+        if machine_right - machine_x < 120.0 {
             f.set_theme(original);
             return;
         }
@@ -377,7 +358,7 @@ impl CommandPanel {
                 charging: battery.charging,
             });
         }
-        // The band fits five 14px rows; when every source applies the
+        // The panel fits five 14px rows; when every source applies the
         // battery row (last in priority) is the one that yields.
         gauges.truncate(5);
 
@@ -408,6 +389,7 @@ impl CommandPanel {
 
     /// One gauge row of the header band's machine monitor: a 40px label
     /// cell, the bar/sparkline zone, and a 58px right-aligned value cell.
+    #[allow(dead_code)]
     pub(super) fn render_gauge_row(
         &self,
         f: &mut Frame,
@@ -592,10 +574,30 @@ impl CommandPanel {
         f.set_theme(original);
     }
 
-    /// The dark glass main panel: a flat tab bar (the System tab plus one
-    /// tab per available settings module, with the close button at the
-    /// right end) over the active tab's body, sliding up slightly as it
-    /// reveals.
+    /// Returns the dedicated icon for a navigation tab.
+    pub(super) fn tab_icon(tab: Tab) -> Icon {
+        match tab {
+            Tab::System => Icon::Sliders,
+            Tab::Settings(id) => match id.as_str() {
+                "display" => Icon::Activity,
+                "appearance" => Icon::PenTool,
+                "dock" => Icon::Sidebar,
+                "power" => Icon::Zap,
+                "touchpad" | "mouse" => Icon::MousePointer,
+                "keyboard" | "keybindings" => Icon::Edit,
+                "users" | "persona" => Icon::Users,
+                "window-rules" => Icon::Grid,
+                "network" | "wifi" => Icon::Globe,
+                "sound" | "audio" => Icon::VolumeHigh,
+                "bluetooth" => Icon::Radio,
+                _ => Icon::Settings,
+            },
+        }
+    }
+
+    /// The central command panel, split horizontally:
+    /// - Left: Capsule-shaped liquid glass navigation rail (icon + label).
+    /// - Right: Gaussian blur frosted glass tab page view.
     pub(super) fn render_main_panel(
         &mut self,
         f: &mut Frame,
@@ -605,79 +607,105 @@ impl CommandPanel {
         out: &mut ChromeEvents,
     ) {
         let hud = Hud::classic();
+        let type_scale = self.design.typography;
         let rise = (1.0 - progress) * 16.0;
         let rect = Rect {
             y: rect.y + rise,
             ..rect
         };
+
+        let nav_w = 190.0_f32.min(rect.w * 0.28).max(150.0);
+        let gap = 16.0;
+        let view_w = (rect.w - nav_w - gap).max(1.0);
+
+        let nav_rect = Rect {
+            x: rect.x,
+            y: rect.y,
+            w: nav_w,
+            h: rect.h,
+        };
+        let view_rect = Rect {
+            x: rect.x + nav_w + gap,
+            y: rect.y,
+            w: view_w,
+            h: rect.h,
+        };
+
+        // 1. Left Column: Individual Floating Capsule Liquid Glass Navigation Rail (NO outer bounding box)
+        self.render_nav_rail(f, nav_rect, i18n);
+
+        // 2. Right Column: Glass Page View (ProminentPanel physical liquid glass)
         f.place(
-            "aegis-hud-content-panel",
+            "aegis-hud-view-glass",
             &chrome_place(
-                rect,
-                LayoutOpts {
-                    bg: hud.surface,
-                    border: hud.border,
-                    border_width: 1.0,
-                    radius: 16.0,
-                    pad: 0.0,
-                    ..surface_layout()
-                },
+                view_rect,
+                materials::glass_panel(&self.design),
             ),
             |f| {
-                f.column_ex(&sized(rect.w, rect.h), |_| {});
+                f.column_ex(&sized(view_rect.w, view_rect.h), |_| {});
             },
         );
-        render_corner_brackets(f, "aegis-hud-content-panel-brackets", rect, hud.accent);
 
-        self.render_tab_bar(
-            f,
-            Rect {
-                x: rect.x + 10.0,
-                y: rect.y + 4.0,
-                w: rect.w - 20.0,
-                h: TAB_BAR_H - 4.0,
-            },
-            i18n,
-        );
-        // Hairline separating the tab bar from the tab body.
+        let pad_h = 20.0;
+        let pad_v = 18.0;
+        let header_h = 36.0;
+        let active_title = match self.tab {
+            Tab::System => i18n.text(Message::System),
+            Tab::Settings(id) => self
+                .modules
+                .metadata()
+                .find(|m| m.id == id)
+                .map(|m| i18n.text(m.title))
+                .unwrap_or("Settings"),
+        };
+
+        // Header inside Right View
+        let original = f.theme();
+        f.set_theme(themes::hud(&hud));
         f.place(
-            "aegis-hud-tab-divider",
+            "aegis-hud-view-header",
             &chrome_place(
                 Rect {
-                    x: rect.x + 12.0,
-                    y: rect.y + TAB_BAR_H,
-                    w: rect.w - 24.0,
-                    h: 1.0,
+                    x: view_rect.x + pad_h,
+                    y: view_rect.y + pad_v,
+                    w: (view_rect.w - pad_h * 2.0).max(1.0),
+                    h: header_h,
                 },
-                LayoutOpts {
-                    bg: hud.border,
-                    border: Color::TRANSPARENT,
-                    radius: 0.0,
-                    pad: 0.0,
-                    ..surface_layout()
-                },
+                transparent(),
             ),
-            |_| {},
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: (view_rect.w - pad_h * 2.0).max(1.0),
+                        height: header_h,
+                        cross: Align::Center,
+                        gap: 10.0,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.icon(Self::tab_icon(self.tab), 20.0);
+                        f.label_compact_sized(active_title, type_scale.headline);
+                    },
+                );
+            },
         );
+        f.set_theme(original);
 
-        let area = Rect {
-            x: rect.x + 18.0,
-            y: rect.y + TAB_BAR_H + 8.0,
-            w: rect.w - 36.0,
-            h: rect.h - TAB_BAR_H - 22.0,
+        let body_area = Rect {
+            x: view_rect.x + pad_h,
+            y: view_rect.y + pad_v + header_h + 10.0,
+            w: (view_rect.w - pad_h * 2.0).max(1.0),
+            h: (view_rect.h - pad_v * 2.0 - header_h - 10.0).max(1.0),
         };
         match self.tab {
-            Tab::System => self.render_system_section(f, area, i18n, out),
-            Tab::Settings(id) => self.render_settings_tab(f, id, area, i18n, out),
+            Tab::System => self.render_system_section(f, body_area, i18n, out),
+            Tab::Settings(id) => self.render_settings_tab(f, id, body_area, i18n, out),
         }
     }
 
-    /// The flat tab bar: one text tab for the System quick settings plus
-    /// one per available settings module in registry order, evenly sharing
-    /// the bar's width, with the panel's close button at the right end.
-    /// The active tab gets the accent label and an underline; hovered tabs
-    /// get the theme's soft disc. Clicks are applied after the render pass.
-    pub(super) fn render_tab_bar(&mut self, f: &mut Frame, rect: Rect, i18n: &Localizer) {
+    /// The capsule-shaped liquid glass navigation rail:
+    /// 100% semicircular pills with high translucency physical liquid glass.
+    pub(super) fn render_nav_rail(&mut self, f: &mut Frame, rect: Rect, i18n: &Localizer) {
         let hud = Hud::classic();
         let type_scale = self.design.typography;
         let mut tabs: Vec<(Tab, &'static str)> = vec![(Tab::System, i18n.text(Message::System))];
@@ -687,109 +715,84 @@ impl CommandPanel {
                 .filter(|module| module.availability == ModuleAvailability::Available)
                 .map(|module| (Tab::Settings(module.id), i18n.text(module.title))),
         );
-        let close_w = 34.0;
-        let tab_w = ((rect.w - close_w - 4.0 * tabs.len() as f32) / tabs.len() as f32).max(24.0);
-        let muted_theme = themes::hud_muted(themes::hud(&hud), &hud);
-        let active_theme = themes::hud(&hud).with_fg(hud.accent);
+
         let mut action: Option<TabAction> = None;
-        let mut underline: Option<Rect> = None;
         let original = f.theme();
+
+        const CAPSULE_H: f32 = 44.0;
+        const CAPSULE_RADIUS: f32 = CAPSULE_H * 0.5; // 100% semicircle ends
+        const TAB_GAP: f32 = 8.0;
+
+        let tab_theme = themes::hud(&hud)
+            .with_hover(Color::TRANSPARENT)
+            .with_active(Color::TRANSPARENT);
+
         f.place(
-            "aegis-hud-tab-bar",
+            "aegis-hud-nav-rail",
             &chrome_place(rect, transparent()),
             |f| {
-                f.row_ex(
+                f.column_ex(
                     &LayoutOpts {
                         width: rect.w,
                         height: rect.h,
-                        gap: 4.0,
-                        cross: Align::Center,
+                        gap: TAB_GAP,
+                        cross: Align::Stretch,
                         ..Default::default()
                     },
                     |f| {
                         for (index, (tab, label)) in tabs.iter().enumerate() {
                             let selected = self.tab == *tab;
-                            f.set_theme(if selected { active_theme } else { muted_theme });
-                            let label = truncate(label, ((tab_w - 16.0) / 6.5).max(4.0) as usize);
+
+                            // 100% pure physical liquid glass — ZERO 2D hover/active background paint!
+                            let (text_color, icon_color) = if selected {
+                                (
+                                    Color::rgba(255, 255, 255, 255), // Brilliant illuminated white text
+                                    hud.accent,                     // Glowing cyan accent icon
+                                )
+                            } else {
+                                (
+                                    Color::rgba(200, 208, 225, 220),
+                                    Color::rgba(165, 172, 195, 200),
+                                )
+                            };
+
+                            let icon = Self::tab_icon(*tab);
+                            let label_text = truncate(label, ((rect.w - 56.0) / 7.0).max(4.0) as usize);
+
+                            f.set_theme(tab_theme.with_fg(text_color));
                             let (response, _) = f.pressable_row(
                                 &format!("aegis-hud-tab-{index}"),
-                                &label,
+                                &label_text,
                                 &LayoutOpts {
-                                    flex: 1.0,
-                                    height: 30.0,
-                                    pad: 6.0,
-                                    radius: 8.0,
+                                    height: CAPSULE_H,
+                                    pad: 16.0,
+                                    radius: CAPSULE_RADIUS, // 100% semicircle
                                     cross: Align::Center,
+                                    gap: 12.0,
+                                    bg: Color::TRANSPARENT, // ZERO mask overlay!
+                                    border: Color::TRANSPARENT,
+                                    border_width: 0.0,
                                     ..Default::default()
                                 },
                                 |f, _| {
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
-                                    f.label_compact_sized(&label, type_scale.label);
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
+                                    f.set_theme(tab_theme.with_fg(icon_color));
+                                    f.icon(icon, 18.0);
+                                    f.set_theme(tab_theme.with_fg(text_color));
+                                    f.label_compact_sized(&label_text, type_scale.label);
                                 },
                             );
-                            if selected {
-                                underline = Some(response.rect);
-                            }
                             if response.clicked && !selected {
                                 action = Some(TabAction::Select(*tab));
                             }
-                        }
-                        // The close button at the bar's right end: the rail's X
-                        // glyph carried over as a flat button.
-                        f.set_theme(active_theme);
-                        let (response, _) = f.pressable_row(
-                            "aegis-hud-tab-close",
-                            "×",
-                            &LayoutOpts {
-                                width: close_w,
-                                height: 30.0,
-                                radius: 8.0,
-                                cross: Align::Center,
-                                ..Default::default()
-                            },
-                            |f, _| {
-                                f.flex(1.0);
-                                f.spacer(0.0);
-                                f.icon(Icon::X, 13.0);
-                                f.flex(1.0);
-                                f.spacer(0.0);
-                            },
-                        );
-                        if response.clicked {
-                            action = Some(TabAction::Close);
                         }
                     },
                 );
             },
         );
         f.set_theme(original);
-        if let Some(tab_rect) = underline {
-            f.place(
-                "aegis-hud-tab-underline",
-                &chrome_place(
-                    Rect {
-                        x: tab_rect.x + 10.0,
-                        y: tab_rect.y + tab_rect.h - 3.0,
-                        w: (tab_rect.w - 20.0).max(8.0),
-                        h: 2.0,
-                    },
-                    LayoutOpts {
-                        bg: hud.accent,
-                        border: Color::TRANSPARENT,
-                        radius: 1.0,
-                        pad: 0.0,
-                        ..surface_layout()
-                    },
-                ),
-                |_| {},
-            );
-        }
+
         match action {
             Some(TabAction::Select(tab)) => self.select_tab(tab),
-            Some(TabAction::Close) => self.close(),
             None => {}
         }
     }
@@ -876,55 +879,31 @@ impl CommandPanel {
         }
     }
 
-    /// The side column: the notification list in a flexible panel on top
-    /// and the StatusNotifierItem tray in a fixed-height panel pinned to
-    /// the bottom, each with a small muted section header.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn render_side_column(
+    /// The top-right notifications panel: notification stream in dark glass
+    /// with corner brackets. Slides in from the top-right.
+    pub(super) fn render_notifications_panel(
         &mut self,
         f: &mut Frame,
-        notifications: Rect,
-        tray: Rect,
+        rect: Rect,
         progress: f32,
-        cursor: (f32, f32),
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
-        let rise = (1.0 - progress) * 16.0;
-        let notifications = Rect {
-            y: notifications.y + rise,
-            ..notifications
+        let slide = (1.0 - ease_out_cubic(progress)) * 24.0;
+        let rect = Rect {
+            x: rect.x + slide,
+            ..rect
         };
-        let tray = Rect {
-            y: tray.y + rise,
-            ..tray
-        };
-        let body = self.render_side_panel(
-            f,
-            "aegis-hud-notifications-panel",
-            notifications,
-            i18n.text(Message::Notifications),
-        );
-        self.render_messages_section(f, body, i18n, out);
-        let body =
-            self.render_side_panel(f, "aegis-hud-tray-panel", tray, i18n.text(Message::Tray));
-        self.render_tray_section(f, body, cursor, i18n);
-    }
-
-    /// One dark glass side-column panel with a small muted section header
-    /// at its top; returns the body area below the header.
-    fn render_side_panel(&self, f: &mut Frame, id: &str, rect: Rect, title: &str) -> Rect {
-        let hud = Hud::classic();
-        let type_scale = self.design.typography;
+        // Notifications floating glass backing
         f.place(
-            id,
+            "aegis-hud-notifs-glass",
             &chrome_place(
                 rect,
                 LayoutOpts {
-                    bg: hud.surface,
-                    border: hud.border,
-                    border_width: 1.0,
-                    radius: 16.0,
+                    bg: Color::rgba(24, 26, 36, 38),
+                    border: Color::rgba(255, 255, 255, 16),
+                    border_width: 0.75,
+                    radius: self.design.radii.glass_panel,
                     pad: 0.0,
                     ..surface_layout()
                 },
@@ -933,7 +912,47 @@ impl CommandPanel {
                 f.column_ex(&sized(rect.w, rect.h), |_| {});
             },
         );
-        render_corner_brackets(f, &format!("{id}-brackets"), rect, hud.accent);
+        let body = self.render_side_panel(
+            f,
+            "aegis-hud-notifications-panel",
+            rect,
+            i18n.text(Message::Notifications),
+        );
+        self.render_messages_section(f, body, i18n, out);
+    }
+
+    /// The side column: the machine telemetry monitor over the
+    /// StatusNotifierItem tray in a fixed-height panel pinned to the bottom.
+    #[allow(dead_code)]
+    pub(super) fn render_side_column(
+        &mut self,
+        f: &mut Frame,
+        machine: Rect,
+        tray: Rect,
+        progress: f32,
+        cursor: (f32, f32),
+        i18n: &Localizer,
+    ) {
+        let rise = (1.0 - progress) * 16.0;
+        let machine = Rect {
+            y: machine.y + rise,
+            ..machine
+        };
+        let tray = Rect {
+            y: tray.y + rise,
+            ..tray
+        };
+        self.render_machine_panel(f, machine, i18n);
+        let body =
+            self.render_side_panel(f, "aegis-hud-tray-panel", tray, i18n.text(Message::Tray));
+        self.render_tray_section(f, body, cursor, i18n);
+    }
+
+    /// One boundless side-column section with a small muted section header
+    /// at its top; returns the body area below the header.
+    fn render_side_panel(&self, f: &mut Frame, id: &str, rect: Rect, title: &str) -> Rect {
+        let hud = Hud::classic();
+        let type_scale = self.design.typography;
         let original = f.theme();
         f.set_theme(themes::hud_muted(themes::hud(&hud), &hud));
         f.place(
@@ -1256,6 +1275,7 @@ impl CommandPanel {
 
     /// The interactive tray grid: left-click activates, right-click opens
     /// the host-rendered dbusmenu popover (or `SecondaryActivate`).
+    #[allow(dead_code)]
     pub(super) fn render_tray_section(
         &mut self,
         f: &mut Frame,
@@ -1514,12 +1534,11 @@ impl CommandPanel {
                                         &format!("aegis-hud-message-{}", notification.id),
                                         &summary,
                                         &LayoutOpts {
-                                            height: 58.0,
+                                            height: 52.0,
                                             gap: 2.0,
-                                            pad: 10.0,
-                                            radius: 12.0,
+                                            pad: 4.0,
+                                            radius: 8.0,
                                             cross: Align::Center,
-                                            bg: hud.surface_dim,
                                             ..Default::default()
                                         },
                                         |f, _| {

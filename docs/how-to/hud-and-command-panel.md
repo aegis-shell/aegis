@@ -39,10 +39,10 @@ keeps accumulating.
 ## Open the Command Panel
 
 Press `Super+S`, or swipe down on the touchpad with four fingers. The
-panel opens centered over a dark blurred scrim as a cluster of dark-glass
-surfaces: a header band across the top, the main panel at the bottom-left,
-and a side column at the right holding the notifications list above the
-tray grid. The HUD and Dock hide while the panel owns the screen and
+panel opens as a boundless floating HUD layout of dark-glass surfaces over a dark
+blurred scrim: the main control panel in the center, a compact profile chip at
+the top-left, notifications at the top-right, and the machine telemetry & tray
+column at the right. The HUD and Dock hide while the panel owns the screen and
 return after it has fully closed.
 
 Close it with `Super+S` again, `Escape`, a click on the scrim, the close
@@ -58,14 +58,20 @@ key = "d"
 action = "command_panel"
 ```
 
-## Read the Header Band
+## Read the Profile and Machine Monitors
 
-The header band shows your avatar, display name, and account groups on
-the left, and a live machine summary on the right: CPU load with a
-recent-history sparkline, GPU, memory, network rates, disk, and
-battery. Gauge rows appear only for hardware the machine actually has
-— a row without real data is simply absent. The gauges refresh every
-two seconds.
+The **profile chip (top-left)** shows your avatar (with live 3D VRM rendering
+and VRMA animation playback when configured), display name, and account groups.
+
+The **main control panel (center)** holds System quick controls (Sound, Brightness,
+Connectivity, Desktop) and modular settings tabs.
+
+The **machine monitor (right-center)** shows a live hardware summary: chassis
+pictogram, CPU load with a recent-history sparkline, GPU, memory, network
+rates, disk, and battery, pinned above the StatusNotifierItem tray.
+
+The **notifications panel (top-right)** presents retained notification history
+with click-to-dismiss.
 
 ## Switch Tabs
 

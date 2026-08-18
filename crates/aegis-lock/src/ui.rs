@@ -197,35 +197,29 @@ const BSOD_ULTRA_ABOVE_WIDTH: f32 = 2200.0;
 pub fn bsod_type_scale(width: f32) -> BsodTypeScale {
     if width < BSOD_COMPACT_BELOW_WIDTH {
         BsodTypeScale {
-            face: 64.0,
-            headline: 22.0,
-            counter: 15.0,
-            support: 11.0,
-            clock: 13.0,
+            face: 72.0,
+            headline: 18.0,
+            counter: 14.0,
+            support: 10.5,
+            clock: 12.0,
         }
     } else if width > BSOD_ULTRA_ABOVE_WIDTH {
         BsodTypeScale {
-            face: 168.0,
-            headline: 58.0,
-            counter: 40.0,
-            support: 29.0,
-            clock: 30.0,
+            face: 180.0,
+            headline: 38.0,
+            counter: 26.0,
+            support: 19.0,
+            clock: 22.0,
         }
     } else {
         BsodTypeScale {
-            face: 96.0,
-            headline: 34.0,
-            counter: 23.0,
-            support: 17.0,
-            clock: 18.0,
+            face: 120.0,
+            headline: 24.0,
+            counter: 17.0,
+            support: 12.0,
+            clock: 15.0,
         }
     }
-}
-
-/// Right edge available to the QR grid on compact panels (the full width
-/// minus the margin; the clock lives top-right, out of reach).
-fn qr_x_max(width: f32, margin_x: f32) -> f32 {
-    width - margin_x
 }
 
 #[must_use]
@@ -235,11 +229,15 @@ pub fn bsod_layout(width: f32, height: f32) -> BsodLayout {
     let scale = bsod_type_scale(width);
     let compact = width < BSOD_COMPACT_BELOW_WIDTH;
     let margin_x = if compact {
-        (width * 0.055).clamp(20.0, 32.0)
+        (width * 0.06).clamp(24.0, 36.0)
     } else {
-        (width * 0.085).clamp(48.0, 168.0)
+        (width * 0.12).clamp(96.0, 260.0)
     };
-    let bottom = (height * 0.075).clamp(28.0, 96.0);
+    let bottom = if compact {
+        (height * 0.07).clamp(28.0, 48.0)
+    } else {
+        (height * 0.15).clamp(80.0, 190.0)
+    };
     let clock_width = if compact { 120.0 } else { 200.0 };
     let clock_x = width - margin_x - clock_width;
     // Compact panels park the clock beside the sad face; wider outputs use
@@ -251,46 +249,43 @@ pub fn bsod_layout(width: f32, height: f32) -> BsodLayout {
         height - bottom - scale.clock * 1.2
     };
     let copy_width = (width - margin_x * 2.0)
-        .clamp(240.0, 680.0)
+        .clamp(240.0, 720.0)
         .min(if compact {
             f32::MAX
         } else {
             (clock_x - margin_x - 24.0).max(240.0)
         });
-    // The QR grid sits beside the support block; the whole bottom cluster
-    // (QR + copy) hugs the bottom margin. On wide outputs the QR stops left
-    // of the corner-clock column so the two never share the right edge;
-    // compact panels park the clock top-right where the QR cannot reach.
-    let qr_size = if compact { 88.0 } else { 120.0 };
-    let qr_right_limit = if compact {
-        qr_x_max(width, margin_x)
-    } else {
-        clock_x - 24.0
-    };
-    let qr_x = (qr_right_limit - qr_size).max(margin_x);
+
+    // In classic BSoD layout, the QR code is compact and sits on the left margin,
+    // and the support copy sits to its right.
+    let qr_size = if compact { 64.0 } else { 80.0 };
+    let qr_x = margin_x;
     let qr_y = height - bottom - qr_size;
+
+    let support_gap = if compact { 14.0 } else { 20.0 };
+    let support_x = qr_x + qr_size + support_gap;
     let support_width = (if compact {
-        qr_x - margin_x - 16.0
+        width - margin_x - support_x
     } else {
-        qr_x - margin_x - 24.0
+        clock_x - 24.0 - support_x
     })
     .max(160.0);
-    let support_x = margin_x;
-    let support_block_height = scale.support * 2.0 * 1.5;
-    let support_y = height - bottom - support_block_height;
-    let counter_gap = if compact { 22.0 } else { 34.0 };
-    let counter_y = (qr_y - counter_gap - scale.counter * 1.4).min(height * 0.62);
-    let marks_y = counter_y + scale.counter * 1.6;
-    let headline_lines = if compact { 3.0 } else { 2.0 };
-    let headline_gap = if compact { 26.0 } else { 34.0 };
-    let headline_top_gap = if compact { 26.0 } else { 36.0 };
+    let support_y = qr_y;
+
+    let counter_gap = if compact { 18.0 } else { 28.0 };
     let face_y = if compact {
-        (height * 0.055).clamp(20.0, 32.0)
+        (height * 0.08).clamp(24.0, 40.0)
     } else {
-        (height * 0.11).clamp(44.0, 148.0)
+        (height * 0.16).clamp(80.0, 200.0)
     };
-    let headline_y = (counter_y - headline_gap - scale.headline * 1.25 * headline_lines)
-        .max(scale.face + headline_top_gap);
+    let headline_gap = if compact { 18.0 } else { 28.0 };
+    let headline_y = face_y + scale.face * 1.0 + headline_gap;
+    let headline_step = scale.headline * 1.30;
+    let headline_total_height = headline_step + scale.headline;
+    let counter_y = (headline_y + headline_total_height + counter_gap)
+        .min(qr_y - scale.counter * 2.0);
+    let marks_y = counter_y + scale.counter * 1.4;
+
     BsodLayout {
         width,
         height,
@@ -364,7 +359,7 @@ mod tests {
         ] {
             let layout = bsod_layout(width, height);
             assert!(layout.margin_x >= 20.0, "{width}x{height} margin");
-            // Vertical stack: face, headline, counter, marks, support+QR.
+            // Vertical stack: face, headline, counter.
             assert!(
                 layout.headline_y > layout.face_y + layout.face_size * 0.75,
                 "{width}x{height} headline overlaps face"
@@ -374,25 +369,14 @@ mod tests {
                 "{width}x{height} counter above headline"
             );
             assert!(
-                layout.marks_y > layout.counter_y,
-                "{width}x{height} marks above counter"
-            );
-            assert!(
-                layout.support_y > layout.marks_y,
-                "{width}x{height} support overlaps marks"
-            );
-            assert!(
                 layout.support_y + layout.support_size * 2.0 * 1.5 <= layout.height,
                 "{width}x{height} support block bottom"
             );
-            // The QR grid never crosses into the support copy or the edge.
+            // The QR grid sits on the left margin, support copy beside it on the right.
+            assert_eq!(layout.qr_x, layout.margin_x, "{width}x{height} qr position");
             assert!(
-                layout.qr_x + layout.qr_size <= layout.width - layout.margin_x * 0.5,
-                "{width}x{height} qr right edge"
-            );
-            assert!(
-                layout.support_x + layout.support_width <= layout.qr_x - 8.0,
-                "{width}x{height} support copy overlaps qr"
+                layout.support_x >= layout.qr_x + layout.qr_size + 8.0,
+                "{width}x{height} support overlaps qr"
             );
             // The corner clock must never collide with the left column.
             // Wide outputs park it lower-right (horizontal separation);
@@ -409,7 +393,7 @@ mod tests {
                 );
             } else {
                 assert!(
-                    layout.clock_x > layout.support_x + layout.support_width,
+                    layout.clock_x >= layout.support_x + layout.support_width,
                     "{width}x{height} clock overlaps support"
                 );
                 assert!(

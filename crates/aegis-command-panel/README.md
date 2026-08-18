@@ -46,20 +46,21 @@ Surfaces:
 
 ## Layout
 
-One centered cluster of dark glass surfaces, each with its own reveal
+A boundless, floating HUD layout of dark glass surfaces, each with its own reveal
 animation:
 
-- **Header band** — the user's persona (ringed avatar, display name,
-  `@username · groups` from the local account record) beside a live machine
-  monitor: a chassis glyph (laptop/desktop) and CPU/GPU/RAM/NET/DISK/BAT
-  gauges fed by `ChromeUpdate::ResourceStats`, with btop-style sparklines
-  for CPU, GPU, and RAM.
-- **Main panel** — a flat tab bar (System plus one tab per available
-  settings module, close button at the right end) over the active tab's
-  body; tab bodies scroll when they overflow.
-- **Side column** — the notifications panel (flexible height) over the
-  fixed-height tray panel, both always visible regardless of the active
-  tab.
+- **Main Control Panel (Center)** — the primary focal point: a flat tab bar (System
+  plus one tab per available settings module, close button at the right end) over
+  the active tab's body; tab bodies scroll when they overflow.
+- **Profile chip (top-left)** — compact user persona (ringed 48px avatar orb with live
+  3D VRM rendering and VRMA animation playback, display name, and
+  `@username · groups` from the local account record).
+- **Notifications panel (top-right)** — the notification history with click-to-dismiss.
+  The queue retains one hour of entries; the frameless toast strip presents only a
+  three-second window of them (ADR-0083).
+- **Machine telemetry & Tray (right-center)** — the machine monitor (chassis glyph plus
+  CPU/GPU/RAM/NET/DISK/BAT gauges fed by `ChromeUpdate::ResourceStats`, with
+  btop-style sparklines for CPU, GPU, and RAM) over the fixed-height tray panel.
 
 ## Boundaries
 

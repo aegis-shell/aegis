@@ -524,7 +524,6 @@ impl BackdropCacheKey {
         model_active: bool,
         capture_regions: &[BackdropCaptureRegion],
         window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
-        live_previews: &[aegis_shell::LivePreviewPresentation],
     ) -> Self {
         fn push_rect(out: &mut Vec<u64>, rect: aegis_model::Rect) {
             out.extend([
@@ -550,18 +549,6 @@ impl BackdropCacheKey {
             }
         } else {
             scene_overlays.push(0);
-        }
-        scene_overlays.push(live_previews.len() as u64);
-        for preview in live_previews {
-            scene_overlays.push(u64::from(preview.focused.is_some()));
-            scene_overlays.push(preview.focused.map_or(0, |id| id.0));
-            scene_overlays.push(preview.inactive_content_brightness.to_bits() as u64);
-            scene_overlays.push(preview.cards.len() as u64);
-            for card in &preview.cards {
-                scene_overlays.push(card.window.0);
-                push_rect(&mut scene_overlays, card.geometry.preview);
-                scene_overlays.push(card.corner_radius.to_bits() as u64);
-            }
         }
         Self {
             capture_origin,
@@ -1680,11 +1667,8 @@ fn draw_workspace_rail_tiles(
 /// paint every visible window again into the shared horizontal preview strip.
 /// Shell chrome draws labels and the selected-card border over these targets.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn draw_window_switcher_scene(
+pub(super) fn draw_window_switcher_scrim(
     canvas: &flux::Canvas,
-    device: &flux::Device,
-    renderer: &mut aegis_render::Renderer,
-    server: &aegis_compositor::Server,
     logical_size: (u32, u32),
     scale: f32,
     presentation: &aegis_shell::WindowSwitcherPresentation,
@@ -1701,9 +1685,18 @@ pub(super) fn draw_window_switcher_scene(
         flux::rgba(scrim_r, scrim_g, scrim_b, scrim_alpha),
     );
     canvas.restore();
+}
 
+pub(super) fn draw_window_switcher_cards(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    server: &aegis_compositor::Server,
+    scale: f32,
+    presentation: &aegis_shell::WindowSwitcherPresentation,
+) {
     let windows = server.windows();
-    if windows.is_empty() {
+    if windows.is_empty() || presentation.visibility <= 0.001 {
         return;
     }
     canvas.save();
@@ -1716,13 +1709,18 @@ pub(super) fn draw_window_switcher_scene(
         presentation.panel.size.w as f32,
         presentation.panel.size.h as f32,
     );
-    let shm = server.client_preview_surface_frames();
-    let dmabuf = server.client_preview_surface_dmabuf_frames();
-    let surface_order = server.client_preview_surface_frame_order();
     for card in &presentation.cards {
         let Some(window) = windows.iter().find(|window| window.id == card.window) else {
             continue;
         };
+        let target_set: std::collections::HashSet<_> = [card.window].into_iter().collect();
+        let shm = server.client_preview_frames_for(&target_set);
+        let dmabuf = server.client_preview_dmabuf_frames_for(&target_set);
+        let surface_order = server.client_preview_frame_order_for(&target_set);
+        renderer.gc(shm
+            .iter()
+            .map(|frame| frame.id)
+            .chain(dmabuf.iter().map(|frame| frame.id)));
         let brightness = aegis_shell::preview::content_brightness(
             presentation.selected,
             card.window,
@@ -1744,6 +1742,21 @@ pub(super) fn draw_window_switcher_scene(
     canvas.restore();
 }
 
+#[allow(dead_code)]
+pub(super) fn draw_window_switcher_scene(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    server: &aegis_compositor::Server,
+    logical_size: (u32, u32),
+    scale: f32,
+    presentation: &aegis_shell::WindowSwitcherPresentation,
+    scheme: aegis_model::settings::ColorScheme,
+) {
+    draw_window_switcher_scrim(canvas, logical_size, scale, presentation, scheme);
+    draw_window_switcher_cards(canvas, device, renderer, server, scale, presentation);
+}
+
 /// Draw compositor-owned live-preview popovers contributed by ordinary shell
 /// chrome. Each card gets its own clip and mapping pass so a window's
 /// subsurfaces cannot bleed into a neighbouring card and unrelated windows
@@ -1760,23 +1773,27 @@ pub(super) fn draw_live_preview_scenes(
         return;
     }
     let windows = server.windows();
-    let shm = server.client_surface_frames();
-    let dmabuf = server.client_surface_dmabuf_frames();
-    let surface_order = server.client_surface_frame_order();
-    renderer.gc(shm
-        .iter()
-        .map(|frame| frame.id)
-        .chain(dmabuf.iter().map(|frame| frame.id)));
 
     canvas.save();
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
     for presentation in presentations {
+        if presentation.visibility <= 0.001 {
+            continue;
+        }
         for card in &presentation.cards {
             let Some(window) = windows.iter().find(|window| window.id == card.window) else {
                 continue;
             };
+            let target_set: std::collections::HashSet<_> = [card.window].into_iter().collect();
+            let shm = server.client_preview_frames_for(&target_set);
+            let dmabuf = server.client_preview_dmabuf_frames_for(&target_set);
+            let surface_order = server.client_preview_frame_order_for(&target_set);
+            renderer.gc(shm
+                .iter()
+                .map(|frame| frame.id)
+                .chain(dmabuf.iter().map(|frame| frame.id)));
             let brightness = aegis_shell::preview::content_brightness(
                 presentation.focused,
                 card.window,

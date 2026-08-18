@@ -15,104 +15,73 @@ component, so window tiling and Agent Workspaces are in scope while
 Interaction Domain lifecycle management is not. Every proposed tab,
 section, or status row justifies itself against this scope.
 
-Visually the panel is a three-surface cluster — a full-width header band,
-a main panel, and a side column — presented as one centered group above
-the dark blurred scrim. All three surfaces use the HUD material: the
-dark glass [HUD panel](surfaces.md) with the cyan accent, thin
-hairlines, and corner-bracket accents — the VR/AR personal-info-HUD
-language. Seams between surfaces are deliberate.
+Visually the panel is organized according to a **9-grid spatial anchor architecture**:
+- **Top-Left (左上)**: Compact user profile chip (48px avatar + name).
+- **Top-Right (右上)**: Floating notification stream.
+- **Center (中)**: Split Main Control Panel (Left Liquid Glass Nav Rail + Right Gaussian Blur Content View).
+- **Other Anchor Zones**: Peripheral zones remain open for frictionless focus. Machine resource telemetry is currently disabled.
 
-## Cluster Geometry
+## 9-Grid Anchor Spatial Geometry
 
-- The header band spans the full cluster width at 118 logical px. Below
-  it, the main panel (640×420 logical px at full size) sits at the left
-  and the 300 px side column at the right, separated by a 12 px gap.
-- The cluster centers on the output. On displays too small to host it,
-  the side column shrinks to its minimum first, then the main panel;
-  past those minima both yield down to their floors, so the cluster
-  always fits on-screen.
-- The scrim runs slightly deeper than the default blur so the dark
-  glass surfaces still separate from the desktop; it remains
-  click-to-dismiss.
+- **Top-Left (Profile Chip)**: Compact user identity badge (280×72 px) anchored at `(margin_x, margin_y)`
+  with a 48 px avatar orb (live 3D VRM rendering or fallback initials) and `@username` tagline.
+- **Top-Right (Notifications Stream)**: Floating notification stream (260×200 px) anchored at
+  `(display.w - margin_x - 260, margin_y)` displaying chronological notification rows with click-to-dismiss.
+- **Center (Main Split Control Panel)**: Centered interaction hub (720×460 px at full size)
+  horizontally split into a Left Navigation Rail and a Right Content View.
+- Clicking anywhere outside the active interactive controls dismisses the HUD.
 
-## Header Band
+## Profile Chip (Top-Left)
 
-The header band carries two zones separated by a vertical hairline:
-persona on the left, machine state on the right.
+- A compact 48 px avatar orb floats in the top-left corner.
+  Every avatar texture is circle-masked in its alpha channel — still photos,
+  live-rendered 3D VRM models with VRMA animation playback, and the
+  initials fallback all render cleanly. The orb follows the canonical
+  persona contract (`$XDG_DATA_HOME/aegis/avatars/avatar.vrm`).
+- Beside the orb, the display name sets in the headline role; a
+  secondary footnote line below reads `@username · group, group` in muted text.
 
-### Persona Zone
+## Notifications Stream (Top-Right)
 
-- A 72 px avatar orb sits in the persona ring. Every avatar texture is
-  circle-masked in its alpha channel — still photos, animated VRM
-  models, and the gradient orb fallback all render as discs. The orb
-  follows the same user-configured avatar sources as the lock screen.
-- Beside the orb, the display name sets in the primary text role; a
-  secondary line below reads `@username · group, group` in muted text.
+- The top-right notifications panel presents the active notification queue in
+  a frameless scroll view.
+- Notifications list newest first as pure floating text rows (summary plus body).
+  Clicking a row dismisses it immediately.
 
-### Machine Zone
+## Main Split Control Panel (Screen Center)
 
-- A thin-line vector chassis pictogram — laptop or desktop — opens the
-  zone. The pictogram reflects the detected chassis, with battery
-  presence as the fallback signal.
-- Beside it, live gauge rows report machine state: CPU, GPU, RAM,
-  network, disk, and battery, capped at five rows.
+The main control panel sits in the center of the display as the primary interaction hub,
+split into two functional columns:
 
-### Gauge Grammar
+### 1. Left Column: Individual Floating Semicircular Liquid Glass Capsules
+- Vertically stacked 100% semicircular ($r = h/2 = 22\text{px}$) **Liquid Glass** capsule pills with zero outer container boundaries and zero 2D stroke outlines.
+- Each tab features **Icon + Text** layout with horizontal padding preventing any subpixel viewport clipping.
+- Selected tab receives an intense **optical spotlight caustic focus beam** (`LiquidGlassFocus` with `strength: 1.25`), crystal clear illuminated refraction core (`frost_strength: 0.55`, `tint_strength: 1.35`), and brilliant white illuminated text.
+- Inactive tabs float in pure optical refraction without artificial 2D borders.
 
-- A gauge row is a label cell, a bar or sparkline zone, and a
-  right-aligned value cell. CPU, GPU, and RAM lead with a 48-sample
-  history sparkline alongside the current percent.
-- Rows are honest: a row appears only when backed by real data. No GPU
-  busy percent, no GPU row; no battery, no battery row. A charging
-  battery tints its row with the accent. Gauges sample on a two-second
-  cadence — live, not animated.
+### 2. Right Column: Gaussian Blur Content View
+- A frosted **Glass Page View** (`GlassRole::ProminentPanel`, radius: 20px) hosting the active tab content.
+- Header row renders the active section icon and headline.
+- Scrollable body renders System quick settings (Sound, Brightness, Connectivity, Desktop) or modular settings pages (`aegis-settings` registry).
 
-## Main Panel
+## Liquid Glass Physical Pipeline
 
-The main panel is a flat tab bar over the active tab's body.
-
-- The tab bar holds the **System** tab plus one tab per available
-  settings module, in registry order, with the close button at its
-  right end. The active tab gets the accent label and an underline;
-  hovered tabs take the soft accent wash. Modules without a working
-  backend render no tab.
-- The close button duplicates the scrim click and `Escape`, never
-  replaces them.
-- The **System** tab groups quick settings under muted group headers
-  (Sound, Brightness, Connectivity, Desktop, Agent Workspaces, Session)
-  inside a scroll view, ending in the display-only Agent Workspaces
-  status row.
-- Each settings tab renders the module's page from the `aegis-settings`
-  registry in place; explicit-apply modules stage edits behind their
-  Apply button.
-- Tab bodies scroll when they overflow.
-
-## Side Column
-
-The side column is always visible, regardless of the active tab: the
-notifications panel fills the flexible height on top, and the tray
-panel pins to the bottom at a fixed height. Each carries a small muted
-section header.
-
-- **Notifications** lists every retained notification as a card —
-  summary plus body — in a scroll view. Clicking a card dismisses it.
-  The list has no row cap.
-- **Tray** lays StatusNotifierItem icons in a grid whose column count
-  derives from the panel width, never a hard-coded count. Left-click
-  activates an item; right-click opens the host-rendered dbusmenu
-  popover anchored to the live cell rect. Switching tabs closes an open
-  popover even though the tray stays visible.
+The command panel connects directly to the compositor's analytic **Liquid Glass** pipeline (`prism` / `flux`), emitting `LiquidGlassRegion` descriptors with unified `GlassRole` tokens:
+- **Profile Chip (Top-Left)**: `GlassRole::Chip` — physical refraction, edge highlights, and adaptive backdrop scattering aligned with the HUD chips.
+- **Notifications Stream (Top-Right)**: `GlassRole::FloatingPanel` — physical glass body covering the notification stream.
+- **Left Navigation Capsules**: `GlassRole::Chip` — each capsule pill emits its own discrete `LiquidGlassRegion` ($r = 22\text{px}$) with targeted `capture_bounds`. Active pill attaches `LiquidGlassFocus` for spotlight beam projection.
+- **Right Content View**: `GlassRole::ProminentPanel` with `materials::glass_panel` minimal foreground over the physical liquid-glass body.
 
 ## Motion
 
-The cluster reveals with a stagger: the header band leads, the main
-panel lags behind it, and the side column lags furthest, rising into
-place. The corner brackets fade with each surface's reveal. Reduced
-motion resolves directly to the end state.
+The cluster reveals with clean HUD motion:
+- The top-left profile panel slides in from the left.
+- The top-right notifications panel slides in from the right.
+- The center main control panel rises upward into place.
+- Reduced motion resolves directly to the end state.
 
 ## Material Rules
 
-- Every surface in the cluster uses the HUD panel material; no surface
-  introduces a new material, tint, or border treatment.
-- The cyan accent belongs to active tabs, underlines, corner brackets,
-  and slider or gauge fills. It does not tint body text.
+- Physical refraction, edge lighting, and chromatic dispersion are provided by `prism` via `LiquidGlassRegion`.
+- Painted foregrounds stay deliberately minimal with **zero painted strokes/borders** to preserve raw optical refraction.
+- Background scrim quad is removed completely to guarantee seamless, boundless presentation and eliminate stencil invalidation flash on cursor movement.

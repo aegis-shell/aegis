@@ -581,7 +581,6 @@ impl CompositorRuntime {
                     backdrop_model_active,
                     &capture_regions,
                     window_switcher.as_ref(),
-                    &live_previews,
                 );
                 let backdrop_material_key = BackdropMaterialKey::new(
                     &frost_backdrop_regions,
@@ -773,27 +772,15 @@ impl CompositorRuntime {
                                     &mut self.renderer,
                                     &self.server,
                                     capture_scale,
-                                    window_switcher.is_some() || !live_previews.is_empty(),
+                                    window_switcher.is_some(),
                                 );
                                 if let Some(presentation) = window_switcher.as_ref() {
-                                    draw_window_switcher_scene(
+                                    draw_window_switcher_scrim(
                                         &self.canvas,
-                                        &self.device,
-                                        &mut self.renderer,
-                                        &self.server,
                                         logical_size,
                                         capture_scale,
                                         presentation,
                                         color_scheme,
-                                    );
-                                } else {
-                                    draw_live_preview_scenes(
-                                        &self.canvas,
-                                        &self.device,
-                                        &mut self.renderer,
-                                        &self.server,
-                                        capture_scale,
-                                        &live_previews,
                                     );
                                 }
                             }
@@ -961,7 +948,6 @@ impl CompositorRuntime {
                                 overview_active,
                                 overview_progress,
                                 window_switcher.as_ref(),
-                                &live_previews,
                                 color_scheme,
                             )?;
                         }
@@ -1009,7 +995,6 @@ impl CompositorRuntime {
                                 overview_active,
                                 overview_progress,
                                 window_switcher.as_ref(),
-                                &live_previews,
                                 color_scheme,
                             )?;
                         }
@@ -1148,7 +1133,6 @@ impl CompositorRuntime {
                                     overview_active,
                                     overview_progress,
                                     window_switcher.as_ref(),
-                                    &live_previews,
                                     color_scheme,
                                 )?;
                             }
@@ -1173,10 +1157,30 @@ impl CompositorRuntime {
                                 overview_active,
                                 overview_progress,
                                 window_switcher.as_ref(),
-                                &live_previews,
                                 color_scheme,
                             )?;
                         }
+                    }
+                }
+                if !session_locked && !self.screenshot_freeze.active() {
+                    if let Some(presentation) = window_switcher.as_ref() {
+                        draw_window_switcher_cards(
+                            &self.canvas,
+                            &self.device,
+                            &mut self.renderer,
+                            &self.server,
+                            scale,
+                            presentation,
+                        );
+                    } else {
+                        draw_live_preview_scenes(
+                            &self.canvas,
+                            &self.device,
+                            &mut self.renderer,
+                            &self.server,
+                            scale,
+                            &live_previews,
+                        );
                     }
                 }
                 // Hand the shell a snapshot of live toplevels so the chrome's

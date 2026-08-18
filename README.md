@@ -48,6 +48,9 @@ cargo run --locked -p aegis
 
 `AEGIS_BACKEND=auto` is the default. A terminal with `WAYLAND_DISPLAY` set
 opens a nested window; a login on a bare TTY selects direct DRM/KMS.
+When developing nested inside an active Aegis session, specify an isolated
+`XDG_DATA_HOME` (e.g. `XDG_DATA_HOME=/tmp/aegis-dev XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share`)
+to prevent audit store lock contention with the host compositor.
 
 Source-tree Cargo commands do not install systemd, D-Bus, portal, desktop, or
 icon metadata. The D-Bus-activated portal backend is built from the

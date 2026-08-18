@@ -195,8 +195,9 @@ mod tests {
 
     #[test]
     fn glass_panel_material_keeps_the_painted_layer_minimal() {
-        let material = glass_panel(&Design::dark());
-        assert_eq!(material.bg, Color::rgba(255, 255, 255, 12));
+        let dark = Design::dark();
+        let material = glass_panel(&dark);
+        assert_eq!(material.bg, dark.colors.glass_surface);
         assert_eq!(material.border, Color::rgba(255, 255, 255, 0));
         assert_eq!(material.border_width, 0.0);
         assert_eq!(material.radius, 18.0);

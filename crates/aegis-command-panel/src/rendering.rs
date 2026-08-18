@@ -63,6 +63,7 @@ pub(super) fn render_disc(
 }
 
 /// Ring (hollow circle) used for the header band's avatar keyline.
+#[allow(dead_code)]
 pub(super) fn render_ring(
     frame: &mut Frame,
     id: &str,
@@ -97,6 +98,7 @@ pub(super) fn render_ring(
 /// inside the four corners of a panel rect, like a VR visor's frame
 /// markers. The color arrives unfaded — the frame's context opacity fades
 /// the brackets like everything else built under it.
+#[allow(dead_code)]
 pub(super) fn render_corner_brackets(frame: &mut Frame, id: &str, rect: Rect, color: Color) {
     const ARM: f32 = 12.0;
     const THICK: f32 = 1.5;
@@ -333,6 +335,7 @@ impl History {
         self.samples.back().copied()
     }
 
+    #[allow(dead_code)]
     pub(super) fn samples(&self) -> impl Iterator<Item = f32> + '_ {
         self.samples.iter().copied()
     }
@@ -340,6 +343,7 @@ impl History {
 
 /// A thin horizontal gauge: rounded track with an accent fill of
 /// `fraction * width`.
+#[allow(dead_code)]
 pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32) {
     let hud = Hud::classic();
     f.place(
@@ -377,6 +381,7 @@ pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32) {
 
 /// A btop-style history strip: thin vertical bars right-aligned in `rect`,
 /// newest sample at the right, height proportional to the 0..=100 sample.
+#[allow(dead_code)]
 pub(super) fn render_sparkline(f: &mut Frame, metric: &str, history: &History, rect: Rect) {
     const BAR_W: f32 = 2.0;
     const BAR_GAP: f32 = 1.5;
@@ -412,6 +417,7 @@ pub(super) fn render_sparkline(f: &mut Frame, metric: &str, history: &History, r
 }
 
 /// SI throughput: "<10 → one decimal (`1.2M`), otherwise none (`340K`)".
+#[allow(dead_code)]
 pub(super) fn format_rate(bytes_per_sec: f64) -> String {
     const UNITS: [&str; 4] = ["B", "K", "M", "G"];
     let mut value = bytes_per_sec.max(0.0);
@@ -428,6 +434,7 @@ pub(super) fn format_rate(bytes_per_sec: f64) -> String {
 }
 
 /// A "used/total" GiB pair for the RAM gauge, one decimal each: `6.4/15.6G`.
+#[allow(dead_code)]
 pub(super) fn format_gib_pair(used: u64, total: u64) -> String {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     format!("{:.1}/{:.1}G", used as f64 / GIB, total as f64 / GIB)

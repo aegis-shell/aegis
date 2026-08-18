@@ -206,6 +206,41 @@ not hot-reloaded in-process. Repeat this explicit development cycle:
 Each run recreates windows, Wayland connections, IPC state, and other
 in-memory state.
 
+## Debug Chrome and Overlays (Command Panel)
+
+In nested sessions, the host compositor intercepts global `Super` shortcuts
+(such as `Super+S`), preventing them from reaching the nested window.
+
+Use one of two recommended workflows for overlay debugging:
+
+### 1. Auto-Open on Startup (Zero Keystrokes)
+
+Pass `AEGIS_COMMAND_PANEL_OPEN=1` to open the Command Panel automatically when
+the nested compositor starts in debug mode:
+
+```bash
+mkdir -p /tmp/aegis-dev/aegis
+AEGIS_COMMAND_PANEL_OPEN=1 \
+XDG_DATA_HOME=/tmp/aegis-dev \
+XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share \
+cargo run --locked -p aegis
+```
+
+### 2. Configure Non-Super Keybindings
+
+Non-Super key combinations (e.g. `Ctrl+Alt+S` or `F12`) are delivered directly to
+the focused nested window. Add a development keybinding in `config.toml`:
+
+```toml
+[[keybind]]
+mods = ["ctrl", "alt"]
+key = "s"
+action = "command_panel"
+```
+
+See [Development Environment Variables](environment-variables.md) for the complete
+reference of developer-facing flags.
+
 ## Choose the Validation Target
 
 Use nested mode for the broad development loop, then run focused DRM/KMS
@@ -258,3 +293,19 @@ a libinput device. Validate those controls under DRM/KMS.
 A direct `cargo run` process does not own the delegated cgroup hierarchy that
 Interaction Domain application sandboxes require. Use the packaged systemd service for
 Interaction Domain launch tests, as described in the [development setup](setup.md).
+
+### Audit Store Is Locked by Another Live Instance
+
+If the error `audit store is locked by another live instance: .../events-v2.jsonl`
+appears, an active Aegis host session is already running and owns an exclusive
+`flock` on the production audit log.
+
+Isolate the nested instance by setting `XDG_DATA_HOME=/tmp/aegis-dev` while
+retaining `XDG_DATA_DIRS=$HOME/.local/share:...` for asset discovery:
+
+```bash
+mkdir -p /tmp/aegis-dev/aegis
+XDG_DATA_HOME=/tmp/aegis-dev \
+XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share \
+cargo run --locked -p aegis
+```
