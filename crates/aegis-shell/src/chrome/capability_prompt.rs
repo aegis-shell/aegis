@@ -14,7 +14,7 @@
 
 use std::collections::BTreeSet;
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
+use lens::{Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -23,10 +23,15 @@ use crate::{
 use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::Window;
+use aegis_ui::{
+    ActionButtonStyle, DEFAULT_BACKDROP_BLUR_SIGMA, DEFAULT_BUTTON_HEIGHT, DEFAULT_BUTTON_WIDTH,
+    DEFAULT_MODAL_PAD, DEFAULT_MODAL_WIDTH, DEFAULT_TITLE_HEIGHT, contains, place_modal_panel,
+    place_modal_scrim, render_action_button, stretch, stretch_gap, stretch_pad,
+};
 
-const PANEL_W: f32 = 460.0;
-const PANEL_PAD: f32 = 16.0;
-const TITLE_H: f32 = 24.0;
+const PANEL_W: f32 = DEFAULT_MODAL_WIDTH;
+const PANEL_PAD: f32 = DEFAULT_MODAL_PAD;
+const TITLE_H: f32 = DEFAULT_TITLE_HEIGHT;
 const WARNING_H: f32 = 24.0;
 const ROW_H: f32 = 26.0;
 const MAX_VISIBLE_ROWS: usize = 14;
@@ -34,9 +39,9 @@ const LEGEND_H: f32 = 18.0;
 const CHEVRON_W: f32 = 18.0;
 const MEMBER_INDENT: f32 = 18.0;
 const CHECK: f32 = 15.0;
-const BUTTON_H: f32 = 30.0;
-const BUTTON_W: f32 = 96.0;
-const BACKDROP_BLUR_SIGMA: f32 = 18.0;
+const BUTTON_H: f32 = DEFAULT_BUTTON_HEIGHT;
+const BUTTON_W: f32 = DEFAULT_BUTTON_WIDTH;
+const BACKDROP_BLUR_SIGMA: f32 = DEFAULT_BACKDROP_BLUR_SIGMA;
 /// Rows scrolled per wheel detent over the list.
 const WHEEL_ROWS: f32 = 3.0;
 
@@ -443,33 +448,14 @@ impl Chrome for CapabilityPrompt {
         let design = self.design;
         let layout = self.layout(display);
 
-        frame.place(
-            "aegis-capability-prompt-scrim",
-            &materials::chrome_place(
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: display.0,
-                    h: display.1,
-                },
-                LayoutOpts {
-                    bg: design.colors.scrim,
-                    ..materials::surface_layout()
-                },
-            ),
-            |_| {},
-        );
+        place_modal_scrim(frame, "aegis-capability-prompt-scrim", display, &design);
 
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.place(
-            "aegis-capability-prompt-panel",
-            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
-            |_| {},
-        );
+        place_modal_panel(frame, "aegis-capability-prompt-panel", layout.panel, &design);
 
         let title = ellipsize(
             frame,
@@ -508,7 +494,7 @@ impl Chrome for CapabilityPrompt {
                     },
                 ),
                 |frame| {
-                    frame.row_ex(&stretch_pad(rect), |frame| {
+                    frame.row_ex(&stretch_pad(rect, 6.0), |frame| {
                         frame.label_compact_sized(&warning, design.typography.label);
                     });
                 },
@@ -634,7 +620,7 @@ impl Chrome for CapabilityPrompt {
                 &format!("aegis-capability-prompt-label-{pos}"),
                 &materials::chrome_place(text, materials::transparent()),
                 |frame| {
-                    frame.row_ex(&stretch_gap(text), |frame| {
+                    frame.row_ex(&stretch_gap(text, 6.0), |frame| {
                         frame.label_compact_sized(&label, design.typography.body);
                         if gated {
                             frame.label_compact_sized(GATED_MARK, design.typography.footnote);
@@ -657,43 +643,24 @@ impl Chrome for CapabilityPrompt {
         }
 
         let deny_hovered = contains(layout.deny, cursor.x, cursor.y);
-        frame.place(
+        let allow_hovered = contains(layout.allow, cursor.x, cursor.y);
+        render_action_button(
+            frame,
             "aegis-capability-prompt-deny",
-            &materials::chrome_place(
-                layout.deny,
-                LayoutOpts {
-                    bg: if deny_hovered {
-                        design.colors.application_hover
-                    } else {
-                        design.colors.card_surface
-                    },
-                    radius: design.radii.control,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |frame| {
-                frame.centered(layout.deny.w, layout.deny.h, |frame| {
-                    frame.label_compact_sized("Deny", design.typography.body);
-                });
-            },
+            layout.deny,
+            "Deny",
+            ActionButtonStyle::Subtle,
+            deny_hovered,
+            &design,
         );
-        frame.place(
+        render_action_button(
+            frame,
             "aegis-capability-prompt-allow",
-            &materials::chrome_place(
-                layout.allow,
-                LayoutOpts {
-                    bg: design.colors.application_accent,
-                    radius: design.radii.control,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |frame| {
-                frame.centered(layout.allow.w, layout.allow.h, |frame| {
-                    frame.label_compact_sized("Allow", design.typography.body);
-                });
-            },
+            layout.allow,
+            "Allow",
+            ActionButtonStyle::Accented,
+            allow_hovered,
+            &design,
         );
 
         frame.set_theme(original_theme);
@@ -850,10 +817,6 @@ impl Chrome for CapabilityPrompt {
     }
 }
 
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
 /// The `pos`-th visible row inside the list window.
 fn row_rect(list: Rect, pos: usize) -> Rect {
     Rect {
@@ -893,35 +856,6 @@ fn label_rect(row: Rect, indent: f32) -> Rect {
         y: row.y,
         w: (row.x + row.w - check.x - CHECK - 14.0).max(0.0),
         h: ROW_H,
-    }
-}
-
-fn stretch(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        cross: Align::Center,
-        ..Default::default()
-    }
-}
-
-fn stretch_pad(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        cross: Align::Center,
-        pad: 6.0,
-        ..Default::default()
-    }
-}
-
-fn stretch_gap(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        cross: Align::Center,
-        gap: 6.0,
-        ..Default::default()
     }
 }
 

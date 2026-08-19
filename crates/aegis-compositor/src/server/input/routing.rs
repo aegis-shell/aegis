@@ -842,6 +842,7 @@ impl Server {
                 origin: (*rec).position,
                 size: (*rec).window.size,
             };
+            consume_placement_nudge(&mut *rec, rect.origin);
             (*rec).position = rect.origin;
             (*rec).window.position = rect.origin;
             (*rec).window.size = size;

@@ -106,6 +106,8 @@ aegis-render = { path = "crates/aegis-render" }
 aegis-shell = { path = "crates/aegis-shell" }
 # Product-specific design tokens, themes, and materials shared by chrome.
 aegis-design = { path = "crates/aegis-design" }
+# Composite UI patterns, dialog scaffolding, and chrome widgets.
+aegis-ui = { path = "crates/aegis-ui" }
 # Chrome components promoted out of aegis-shell (ADR-0044).
 aegis-dock = { path = "crates/aegis-dock" }
 aegis-prism = { path = "crates/aegis-prism" }

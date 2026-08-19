@@ -20,16 +20,21 @@ use crate::{
 use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::Window;
+use aegis_ui::{
+    ActionButtonStyle, DEFAULT_BACKDROP_BLUR_SIGMA, DEFAULT_BUTTON_HEIGHT, DEFAULT_MODAL_PAD,
+    DEFAULT_TITLE_HEIGHT, contains, place_modal_panel, place_modal_scrim, render_action_button,
+    stretch,
+};
 use zeroize::Zeroize;
 
 const PANEL_W: f32 = 440.0;
-const PANEL_PAD: f32 = 16.0;
-const TITLE_H: f32 = 24.0;
+const PANEL_PAD: f32 = DEFAULT_MODAL_PAD;
+const TITLE_H: f32 = DEFAULT_TITLE_HEIGHT;
 const REASON_H: f32 = 18.0;
 const FIELD_H: f32 = 34.0;
-const BUTTON_H: f32 = 30.0;
+const BUTTON_H: f32 = DEFAULT_BUTTON_HEIGHT;
 const BUTTON_W: f32 = 88.0;
-const BACKDROP_BLUR_SIGMA: f32 = 18.0;
+const BACKDROP_BLUR_SIGMA: f32 = DEFAULT_BACKDROP_BLUR_SIGMA;
 /// The mask glyph drawn per typed character.
 const MASK: &str = "•";
 
@@ -197,33 +202,14 @@ impl Chrome for SecretPrompt {
         let design = self.design;
         let layout = PromptLayout::for_display(display, self.modal_reserved, self.reason.is_some());
 
-        frame.place(
-            "aegis-secret-prompt-scrim",
-            &materials::chrome_place(
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: display.0,
-                    h: display.1,
-                },
-                LayoutOpts {
-                    bg: design.colors.scrim,
-                    ..materials::surface_layout()
-                },
-            ),
-            |_| {},
-        );
+        place_modal_scrim(frame, "aegis-secret-prompt-scrim", display, &design);
 
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.place(
-            "aegis-secret-prompt-panel",
-            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
-            |_| {},
-        );
+        place_modal_panel(frame, "aegis-secret-prompt-panel", layout.panel, &design);
 
         let title = ellipsize(
             frame,
@@ -314,43 +300,23 @@ impl Chrome for SecretPrompt {
         let accept_hovered = contains(layout.accept, cursor.x, cursor.y);
         let clicked_cancel = pressed && cancel_hovered;
         let clicked_accept = pressed && accept_hovered;
-        frame.place(
+        render_action_button(
+            frame,
             "aegis-secret-prompt-cancel",
-            &materials::chrome_place(
-                layout.cancel,
-                LayoutOpts {
-                    bg: if cancel_hovered {
-                        design.colors.application_hover
-                    } else {
-                        design.colors.card_surface
-                    },
-                    radius: design.radii.control,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |frame| {
-                frame.centered(layout.cancel.w, layout.cancel.h, |frame| {
-                    frame.label_compact_sized("Cancel", design.typography.body);
-                });
-            },
+            layout.cancel,
+            "Cancel",
+            ActionButtonStyle::Subtle,
+            cancel_hovered,
+            &design,
         );
-        frame.place(
+        render_action_button(
+            frame,
             "aegis-secret-prompt-accept",
-            &materials::chrome_place(
-                layout.accept,
-                LayoutOpts {
-                    bg: design.colors.application_accent,
-                    radius: design.radii.control,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |frame| {
-                frame.centered(layout.accept.w, layout.accept.h, |frame| {
-                    frame.label_compact_sized("Unlock", design.typography.body);
-                });
-            },
+            layout.accept,
+            "Unlock",
+            ActionButtonStyle::Accented,
+            accept_hovered,
+            &design,
         );
 
         frame.set_theme(original_theme);
@@ -499,19 +465,6 @@ impl Chrome for SecretPrompt {
             self.design.radii.glass_panel,
             1.0,
         )]
-    }
-}
-
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-fn stretch(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        cross: Align::Center,
-        ..Default::default()
     }
 }
 

@@ -923,10 +923,13 @@ impl Server {
                         && let Some(app_id) = (*rec).window.app_id.as_deref()
                         && !app_id.is_empty()
                     {
-                        let rect = (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
-                            origin: (*rec).position,
-                            size: (*rec).window.size,
-                        });
+                        let rect = fold_nudged_origin(
+                            &*rec,
+                            (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
+                                origin: (*rec).position,
+                                size: (*rec).window.size,
+                            }),
+                        );
                         if rect.size.w > 0 && rect.size.h > 0 {
                             let ws_idx = self.state.workspace_number_for_window((*rec).window.id);
 

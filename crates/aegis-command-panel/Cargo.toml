@@ -11,6 +11,7 @@ build = "build.rs"
 [dependencies]
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
+aegis-ui = { workspace = true }
 # Settings module registry hosted in the main panel's module tabs.
 aegis-settings = { workspace = true }
 # Shared personalized profile plus the optional still/VRM portrait runtime.

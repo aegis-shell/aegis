@@ -1,6 +1,6 @@
 [package]
-name = "aegis-prism"
-description = "Spotlight-style application search chrome for the aegis compositor"
+name = "aegis-ui"
+description = "Composite UI component library and chrome scaffolding for aegis"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -11,12 +11,9 @@ build = "build.rs"
 [dependencies]
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
-aegis-ui = { workspace = true }
-aegis-shell = { workspace = true }
 lens = { workspace = true }
-# Direct dep purely so this crate's build script receives DEP_LENS_RPATHS
-# (published via the -sys crate's `links` metadata) and can re-emit the rpaths
-# for the test harness.
+# Direct dep so this crate's test harness receives DEP_LENS_RPATHS and can
+# resolve the selected Lens/Flux native libraries through build.rs.
 lens-sys = { workspace = true }
 
 [package.metadata.cargo-machete]

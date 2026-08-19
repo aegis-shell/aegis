@@ -11,87 +11,13 @@ pub(super) enum MenuRowAction {
     Click(i32),
 }
 
-pub(super) fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
+pub(super) use aegis_ui::{contains, ease_out_cubic, render_disc, stagger};
 
 /// Two settings actions are the same kind when they mutate the same
 /// settings section; the queue keeps only the newest draft of each kind
 /// (instant modules emit one action per control change while dragging).
 pub(super) fn same_action_kind(left: &SettingsAction, right: &SettingsAction) -> bool {
     std::mem::discriminant(left) == std::mem::discriminant(right)
-}
-
-pub(super) fn ease_out_cubic(value: f32) -> f32 {
-    let inverse = 1.0 - value.clamp(0.0, 1.0);
-    1.0 - inverse * inverse * inverse
-}
-
-/// Per-panel reveal after a stagger delay: 0 until `reveal` passes `delay`,
-/// then ramping to 1 at full reveal.
-pub(super) fn stagger(reveal: f32, delay: f32) -> f32 {
-    ((reveal - delay) / (1.0 - delay)).clamp(0.0, 1.0)
-}
-
-/// Filled circle used for the header band's avatar backdrop.
-pub(super) fn render_disc(
-    frame: &mut Frame,
-    id: &str,
-    center: (f32, f32),
-    diameter: f32,
-    color: Color,
-) {
-    let rect = Rect {
-        x: center.0 - diameter * 0.5,
-        y: center.1 - diameter * 0.5,
-        w: diameter,
-        h: diameter,
-    };
-    frame.place(
-        id,
-        &materials::chrome_place(
-            rect,
-            LayoutOpts {
-                bg: color,
-                border: Color::TRANSPARENT,
-                radius: diameter * 0.5,
-                ..materials::surface_layout()
-            },
-        ),
-        |_| {},
-    );
-}
-
-/// Ring (hollow circle) used for the header band's avatar keyline.
-#[allow(dead_code)]
-pub(super) fn render_ring(
-    frame: &mut Frame,
-    id: &str,
-    center: (f32, f32),
-    diameter: f32,
-    color: Color,
-    width: f32,
-) {
-    let rect = Rect {
-        x: center.0 - diameter * 0.5,
-        y: center.1 - diameter * 0.5,
-        w: diameter,
-        h: diameter,
-    };
-    frame.place(
-        id,
-        &materials::chrome_place(
-            rect,
-            LayoutOpts {
-                bg: Color::TRANSPARENT,
-                border: color,
-                border_width: width,
-                radius: diameter * 0.5,
-                ..materials::surface_layout()
-            },
-        ),
-        |_| {},
-    );
 }
 
 /// The HUD flourish: short L-shaped strokes (12px arms, 1.5px thick) just

@@ -339,6 +339,98 @@ pub(crate) fn centered_transient_position(
     }
 }
 
+/// Diagonal nudge step, in logical pixels, for resolving origin collisions
+/// between newly mapped windows (ADR-0131). Matches the legacy fallback
+/// cascade's step so staggered windows keep the familiar rhythm.
+pub(crate) const PLACEMENT_NUDGE_STEP: i32 = 32;
+
+/// Maximum nudge attempts before the collision is accepted as-is. Bounds the
+/// scan to a single output diagonal strip; a densely packed screen accepts
+/// the last candidate rather than failing the map.
+pub(crate) const PLACEMENT_NUDGE_MAX_STEPS: i32 = 8;
+
+/// Resolve a newly mapped root toplevel's origin when it exactly collides
+/// with a live window's origin (ADR-0131). Walks the diagonal from `base` in
+/// `PLACEMENT_NUDGE_STEP` increments and returns the first origin that no
+/// live mapped root toplevel occupies, clamped into `output`. `None` means
+/// the origin does not collide or every candidate collides; either way the
+/// window keeps `base`.
+///
+/// Pure and testable: `occupied` is the set of origins the caller considers
+/// taken, in compositor-logical coordinates. Note this is an origin test, not
+/// a rect-intersection test — remembered placement is per-application, so the
+/// realistic collision is an exact stack of same-app or same-rule windows,
+/// and a full overlap solver was rejected (see ADR-0116's rejection of
+/// relaxation layouts).
+pub(crate) fn nudged_origin_if_colliding(
+    base: aegis_model::Point,
+    occupied: &[aegis_model::Point],
+    output: aegis_model::Rect,
+) -> Option<aegis_model::Point> {
+    if !occupied.contains(&base) {
+        return None;
+    }
+    // Clamp bounds keep the title bar reachable: the same 100 px inset the
+    // remembered-position path uses.
+    let max_x = output
+        .origin
+        .x
+        .saturating_add(output.size.w)
+        .saturating_sub(100)
+        .max(output.origin.x);
+    let max_y = output
+        .origin
+        .y
+        .saturating_add(output.size.h)
+        .saturating_sub(100)
+        .max(output.origin.y);
+    let mut candidate = base;
+    for _ in 0..PLACEMENT_NUDGE_MAX_STEPS {
+        candidate = aegis_model::Point {
+            x: candidate.x.saturating_add(PLACEMENT_NUDGE_STEP).min(max_x),
+            y: candidate.y.saturating_add(PLACEMENT_NUDGE_STEP).min(max_y),
+        };
+        if !occupied.contains(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Fold a floating rect's origin back to its pre-nudge base (ADR-0131).
+/// Called by both persistence sites before `persist_app_geometry`: while the
+/// rect still rests exactly on the nudged origin — whether read from the
+/// live position or from a `saved_floating_rect` captured there — the
+/// compositor-invented offset is removed so it is never written to the
+/// remembered-geometry store or `last_app_geometries`. Any other origin
+/// (the user moved the window, or it was never nudged) passes through
+/// unchanged.
+pub(crate) fn fold_nudged_origin(
+    rec: &SurfaceRec,
+    mut rect: aegis_model::Rect,
+) -> aegis_model::Rect {
+    if let Some(nudge) = rec.placement_nudge
+        && rect.origin == nudge.nudged
+    {
+        rect.origin = nudge.base;
+    }
+    rect
+}
+
+/// Consume a placement nudge once the window is explicitly repositioned by
+/// the user or an agent (ADR-0131): interactive move, interactive resize,
+/// `set-geometry`. From that moment the operator owns the position, so the
+/// persistence fold-back no longer applies. A reposition to exactly the
+/// nudged origin is a no-op and keeps the fold-back armed; policy-driven
+/// moves (tiling, maximize/fullscreen, minimize) do not call this at all.
+pub(crate) fn consume_placement_nudge(rec: &mut SurfaceRec, new_origin: aegis_model::Point) {
+    if let Some(nudge) = rec.placement_nudge
+        && new_origin != nudge.nudged
+    {
+        rec.placement_nudge = None;
+    }
+}
+
 /// The live, mapped parent toplevel record behind a transient's protocol
 /// parent pointer. Verify that the protocol-object pointer still names a live
 /// surface before dereferencing it; a parent may be destroyed first.
@@ -368,12 +460,62 @@ unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_model::Rec
     }
 }
 
+/// Determine whether a newly mapped toplevel should receive initial focus and raise
+/// (`DirectFocus`) versus being placed passively in the background (`PassivePlacement`).
+///
+/// Focus Stealing Prevention (FSP): A newly mapped window only takes initial focus if
+/// it was explicitly launched by the user (pending launch placement), belongs to the
+/// currently focused client (in-app child window / dialog), is mapping to a previously
+/// empty workspace, or holds an explicit activation token. Unsolicited background
+/// windows are placed passively behind active windows without stealing focus.
 pub(crate) fn should_focus_mapped_toplevel(
     visible: bool,
     human_controls: bool,
     minimized: bool,
+    is_user_launch: bool,
+    is_focused_client: bool,
+    is_empty_workspace: bool,
+    has_pending_activation: bool,
 ) -> bool {
-    visible && human_controls && !minimized
+    visible
+        && human_controls
+        && !minimized
+        && (is_user_launch
+            || is_focused_client
+            || is_empty_workspace
+            || has_pending_activation)
+}
+
+/// Move a newly mapped background toplevel and its surface tree to the bottom
+/// of the stacking order (index 0 of normal windows, before any existing windows),
+/// so an un-focused background window never visually overlays or steals focus from
+/// an actively used foreground window.
+pub(crate) unsafe fn lower_toplevel_surfaces(
+    state: &mut State,
+    resource: *mut ffi::wl_resource,
+) {
+    let Some(pos) = state.surfaces.iter().position(|p| {
+        !p.is_null() && unsafe { (**p).resource == resource && !(**p).xdg_toplevel.is_null() }
+    }) else {
+        return;
+    };
+    let root = state.surfaces[pos];
+    let mut lowered = Vec::new();
+    let mut rest = Vec::with_capacity(state.surfaces.len());
+    for ptr in state.surfaces.drain(..) {
+        if !ptr.is_null() && unsafe { surface_root_toplevel(ptr) == root } {
+            lowered.push(ptr);
+        } else {
+            rest.push(ptr);
+        }
+    }
+    lowered.append(&mut rest);
+    state.surfaces = lowered;
+    for (index, ptr) in state.surfaces.iter().copied().enumerate() {
+        if !ptr.is_null() {
+            unsafe { (*ptr).index = index };
+        }
+    }
 }
 
 /// Return focus to the closest live, mapped transient parent after an
@@ -931,14 +1073,21 @@ pub(crate) unsafe extern "C" fn surface_commit(
             // `st` is borrowed below, because the guard re-dereferences state.
             let transient_parent_id = live_transient_parent(rec).map(|parent| (*parent).window.id);
 
+            // Resolve the placement origin (ADR-0131): rule position or
+            // remembered position, then the session's last geometry for this
+            // app, then the fallback diagonal cascade. Whatever origin this
+            // chain produces is the *base*; if it exactly collides with a
+            // live window's origin, nudge diagonally to a free origin. The
+            // nudge is session-scoped and never persisted (see
+            // `placement_nudge`).
+            let output = if !(*rec).state.is_null() {
+                (*(*rec).state).output_geometry.logical_rect()
+            } else {
+                aegis_model::Rect::new(0, 0, 1920, 1080)
+            };
             let target_pos =
                 rule_pos.or_else(|| remembered_store_entry.as_ref().and_then(|s| s.position));
-            if let Some(pos) = target_pos {
-                let output = if !(*rec).state.is_null() {
-                    (*(*rec).state).output_geometry.logical_rect()
-                } else {
-                    aegis_model::Rect::new(0, 0, 1920, 1080)
-                };
+            let base_pos = if let Some(pos) = target_pos {
                 let max_x = output
                     .origin
                     .x
@@ -951,15 +1100,12 @@ pub(crate) unsafe extern "C" fn surface_commit(
                     .saturating_add(output.size.h)
                     .saturating_sub(100)
                     .max(output.origin.y);
-                let clamped_pos = aegis_model::Point {
+                aegis_model::Point {
                     x: pos.x.clamp(output.origin.x, max_x),
                     y: pos.y.clamp(output.origin.y, max_y),
-                };
-                (*rec).position = clamped_pos;
-                (*rec).window.position = clamped_pos;
+                }
             } else if let Some(rect) = last_app_rect {
-                (*rec).position = rect.origin;
-                (*rec).window.position = rect.origin;
+                rect.origin
             } else if parent_rect.is_none() {
                 let count = if (*rec).state.is_null() {
                     0
@@ -970,11 +1116,40 @@ pub(crate) unsafe extern "C" fn surface_commit(
                         .count()
                 };
                 let idx = count.min(8) as i32;
-                (*rec).position = aegis_model::Point {
+                aegis_model::Point {
                     x: 60 + idx * 32,
                     y: 60 + idx * 32,
+                }
+            } else {
+                // Transients keep their eventual centered position; the
+                // parent-centering pass below owns them.
+                (*rec).position
+            };
+            (*rec).position = base_pos;
+            (*rec).window.position = base_pos;
+            if parent_rect.is_none() {
+                let occupied = if (*rec).state.is_null() {
+                    Vec::new()
+                } else {
+                    (*(*rec).state)
+                        .live_surfaces()
+                        .filter(|p| {
+                            *p != rec
+                                && !(**p).xdg_toplevel.is_null()
+                                && (**p).mapped
+                                && (**p).window.parent.is_none()
+                        })
+                        .map(|p| (*p).position)
+                        .collect::<Vec<_>>()
                 };
-                (*rec).window.position = (*rec).position;
+                if let Some(nudged) = nudged_origin_if_colliding(base_pos, &occupied, output) {
+                    (*rec).placement_nudge = Some(PlacementNudge {
+                        base: base_pos,
+                        nudged,
+                    });
+                    (*rec).position = nudged;
+                    (*rec).window.position = nudged;
+                }
             }
 
             let target_size =
@@ -1115,32 +1290,54 @@ pub(crate) unsafe extern "C" fn surface_commit(
                     .unwrap_or(false);
                 (*rec).window.layout_role =
                     resolve_layout_role(workspace_tiled, (*rec).window.parent.is_some(), rule_role);
+
+                let is_user_launch = launch_placement_applied;
+                let client = ffi::wl_resource_get_client((*rec).resource);
+                let is_focused_client = !st.keyboard_focus.is_null()
+                    && ffi::wl_resource_get_client(st.keyboard_focus) == client;
+                let target_ws = st.workspaces.workspace_of(id);
+                let is_empty_workspace = target_ws.is_some_and(|ws| {
+                    !st.surfaces.iter().any(|&p| {
+                        !p.is_null()
+                            && (*p).mapped
+                            && !(*p).xdg_toplevel.is_null()
+                            && (*p).window.id != id
+                            && st.workspaces.workspace_of((*p).window.id) == Some(ws)
+                    })
+                });
+                let has_pending_activation = st
+                    .pending_activation
+                    .is_some_and(|(_, pending)| pending == (*rec).resource);
+
+                let visible = st.workspaces.visible_toplevels().contains(&id);
+                let human_controls = st.authority.seat_controls_window(HUMAN_SEAT, id);
+
+                let should_focus = should_focus_mapped_toplevel(
+                    visible,
+                    human_controls,
+                    (*rec).window.minimized,
+                    is_user_launch,
+                    is_focused_client,
+                    is_empty_workspace,
+                    has_pending_activation,
+                );
+
+                if should_focus {
+                    if st.pending_activation.is_none() {
+                        st.pending_activation = Some((HUMAN_SEAT, (*rec).resource));
+                    }
+                } else {
+                    // Focus Stealing Prevention (FSP): place toplevel at the bottom
+                    // of its workspace and lower its surface tree in the stacking order.
+                    if let Some(ws) = target_ws {
+                        st.workspaces.place_toplevel_bottom(ws, id);
+                    }
+                    lower_toplevel_surfaces(st, (*rec).resource);
+                }
             }
             // Live-update the foreign-toplevel list so taskbars see the new window.
             if !(*rec).state.is_null() {
                 extensions::foreign_toplevel_added(rec, (*rec).state);
-                let state = &mut *(*rec).state;
-                let id = (*rec).window.id;
-                let visible = state.workspaces.visible_toplevels().contains(&id);
-                let human_controls = state.authority.seat_controls_window(HUMAN_SEAT, id);
-                // A window placed off the current workspace (launch placement,
-                // or a dialog following a moved parent) is invisible here, so
-                // `should_focus_mapped_toplevel` keeps it from taking
-                // `pending_activation`: it never steals the user's keyboard
-                // focus.
-                // Mapping happens inside libwayland's dispatch callback, where
-                // constructing a second mutable `Server` would alias state.
-                // Use the same deferred handoff as xdg-activation; `dispatch`
-                // applies it after protocol callbacks finish.
-                if state.pending_activation.is_none()
-                    && should_focus_mapped_toplevel(
-                        visible,
-                        human_controls,
-                        (*rec).window.minimized,
-                    )
-                {
-                    state.pending_activation = Some((HUMAN_SEAT, (*rec).resource));
-                }
             }
         } else if (*rec).mapped && !(*rec).xdg_toplevel.is_null() {
             (*rec).window.size = (*rec)
@@ -1527,10 +1724,13 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
                 && let Some(app_id) = (*rec).window.app_id.as_deref()
                 && !app_id.is_empty()
             {
-                let rect = (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
-                    origin: (*rec).position,
-                    size: (*rec).window.size,
-                });
+                let rect = fold_nudged_origin(
+                    &*rec,
+                    (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
+                        origin: (*rec).position,
+                        size: (*rec).window.size,
+                    }),
+                );
                 if rect.size.w > 0 && rect.size.h > 0 {
                     let ws_idx = state.workspace_number_for_window((*rec).window.id);
 

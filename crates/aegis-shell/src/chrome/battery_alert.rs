@@ -10,7 +10,7 @@
 //! [`ChromeCommand::StartBatteryAlert`] opens or updates the panel;
 //! [`ChromeCommand::CancelBatteryAlert`] closes it without a reply.
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
+use lens::{Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -19,18 +19,23 @@ use crate::{
 use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::Window;
+use aegis_ui::{
+    ActionButtonStyle, DEFAULT_BACKDROP_BLUR_SIGMA, DEFAULT_BUTTON_HEIGHT, DEFAULT_BUTTON_WIDTH,
+    DEFAULT_MODAL_PAD, DEFAULT_TITLE_HEIGHT, contains, place_modal_panel, place_modal_scrim,
+    render_action_button, stretch, stretch_top,
+};
 
 const PANEL_W: f32 = 400.0;
-const PANEL_PAD: f32 = 16.0;
+const PANEL_PAD: f32 = DEFAULT_MODAL_PAD;
 const GAUGE_H: f32 = 40.0;
 const GLYPH_W: f32 = 64.0;
 const GLYPH_H: f32 = 30.0;
 const GLYPH_NUB_W: f32 = 4.0;
-const TITLE_H: f32 = 24.0;
+const TITLE_H: f32 = DEFAULT_TITLE_HEIGHT;
 const BODY_H: f32 = 20.0;
-const BUTTON_H: f32 = 30.0;
-const BUTTON_W: f32 = 96.0;
-const BACKDROP_BLUR_SIGMA: f32 = 18.0;
+const BUTTON_H: f32 = DEFAULT_BUTTON_HEIGHT;
+const BUTTON_W: f32 = DEFAULT_BUTTON_WIDTH;
+const BACKDROP_BLUR_SIGMA: f32 = DEFAULT_BACKDROP_BLUR_SIGMA;
 
 /// Parameters of one low-battery alert, produced by the compositor runtime
 /// when a configured threshold fires.
@@ -188,33 +193,14 @@ impl Chrome for BatteryAlert {
         let design = self.design;
         let layout = AlertLayout::for_display(display, self.modal_reserved);
 
-        frame.place(
-            "aegis-battery-alert-scrim",
-            &materials::chrome_place(
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: display.0,
-                    h: display.1,
-                },
-                LayoutOpts {
-                    bg: design.colors.scrim,
-                    ..materials::surface_layout()
-                },
-            ),
-            |_| {},
-        );
+        place_modal_scrim(frame, "aegis-battery-alert-scrim", display, &design);
 
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.place(
-            "aegis-battery-alert-panel",
-            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
-            |_| {},
-        );
+        place_modal_panel(frame, "aegis-battery-alert-panel", layout.panel, &design);
 
         // The gauge: a rounded outline with a charge-proportional fill and
         // the battery's terminal nub. The fill carries the meaning: accent
@@ -331,22 +317,14 @@ impl Chrome for BatteryAlert {
             },
         );
 
-        frame.place(
+        render_action_button(
+            frame,
             "aegis-battery-alert-ok",
-            &materials::chrome_place(
-                layout.ok,
-                LayoutOpts {
-                    bg: design.colors.application_accent,
-                    radius: design.radii.control,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |frame| {
-                frame.centered(layout.ok.w, layout.ok.h, |frame| {
-                    frame.label_compact_sized("OK", design.typography.body);
-                });
-            },
+            layout.ok,
+            "OK",
+            ActionButtonStyle::Accented,
+            contains(layout.ok, cursor.x, cursor.y),
+            &design,
         );
 
         frame.set_theme(original_theme);
@@ -480,27 +458,6 @@ impl Chrome for BatteryAlert {
             self.design.radii.glass_panel,
             1.0,
         )]
-    }
-}
-
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-fn stretch(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        cross: Align::Center,
-        ..Default::default()
-    }
-}
-
-fn stretch_top(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        ..Default::default()
     }
 }
 

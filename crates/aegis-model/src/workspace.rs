@@ -383,6 +383,28 @@ impl WorkspaceModel {
         }
     }
 
+    /// Place `toplevel` at the bottom (index 0) of workspace `wid`, moving it
+    /// from wherever it was. Used for passive background window placement to
+    /// prevent focus/layer hijacking.
+    pub fn place_toplevel_bottom(&mut self, wid: WorkspaceId, toplevel: WindowId) {
+        let src = self.workspace_of(toplevel);
+        let src_oi = src.and_then(|s| self.output_of_workspace(s));
+        if let Some(s) = src
+            && let Some(ws) = self.workspaces.get_mut(&s)
+        {
+            ws.toplevels.retain(|&t| t != toplevel);
+        }
+        if let Some(ws) = self.workspaces.get_mut(&wid) {
+            ws.toplevels.insert(0, toplevel);
+        }
+        if let Some(oi) = self.output_of_workspace(wid) {
+            self.ensure_trailing_empty(oi);
+        }
+        if let Some(oi) = src_oi {
+            self.reap_output(oi);
+        }
+    }
+
     /// Move `toplevel` onto `target`; convenience over
     /// [`Self::place_toplevel`].
     pub fn move_toplevel(&mut self, toplevel: WindowId, target: WorkspaceId) {
@@ -974,5 +996,23 @@ mod tests {
                 assert!(seen.insert(*t), "toplevel {t:?} on two workspaces");
             }
         }
+    }
+
+    #[test]
+    fn place_toplevel_bottom_places_window_at_beginning_of_workspace() {
+        let (mut m, _oid, cur) = one_output();
+        m.place_toplevel(cur, WindowId(1));
+        m.place_toplevel(cur, WindowId(2));
+        assert_eq!(
+            m.workspace(cur).unwrap().toplevels,
+            vec![WindowId(1), WindowId(2)]
+        );
+
+        // Placing WindowId(3) at the bottom inserts at index 0
+        m.place_toplevel_bottom(cur, WindowId(3));
+        assert_eq!(
+            m.workspace(cur).unwrap().toplevels,
+            vec![WindowId(3), WindowId(1), WindowId(2)]
+        );
     }
 }

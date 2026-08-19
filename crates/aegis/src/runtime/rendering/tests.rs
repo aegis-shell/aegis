@@ -307,6 +307,79 @@ fn capture_bounds_align_to_downsample() {
 }
 
 #[test]
+fn material_fingerprints_track_each_frame_slot_independently() {
+    let frost = [region(0.0, 0.0, 0.0, 0.0)];
+    let glass = aegis_shell::LiquidGlassRegion {
+        bounds: region(400.0, 100.0, 320.0, 74.0),
+        ..Default::default()
+    };
+    let base = BackdropMaterialKey::new(&frost, &[glass], [255, 255, 255]);
+    let restyled = BackdropMaterialKey::new(
+        &frost,
+        &[aegis_shell::LiquidGlassRegion {
+            frost_strength: 2.0,
+            ..glass
+        }],
+        [255, 255, 255],
+    );
+
+    // Ring warm-up: three slots each accept the base material once.
+    let mut slots = Vec::new();
+    for slot in 0..3 {
+        assert!(slot_material_changed(&mut slots, slot, &base));
+    }
+    for slot in 0..3 {
+        assert!(!slot_material_changed(&mut slots, slot, &base));
+    }
+
+    // A material change lands on slot 0 only. Slots 1 and 2 still serve the
+    // old composite: their fingerprints must stay pending so each observes
+    // the change on its own next frame instead of being told the change was
+    // already consumed (which would present the stale shadow/glass composite
+    // every time the ring rotates).
+    assert!(slot_material_changed(&mut slots, 0, &restyled));
+    assert!(!slot_material_changed(&mut slots, 0, &restyled));
+    assert!(slot_material_changed(&mut slots, 1, &restyled));
+    assert!(slot_material_changed(&mut slots, 2, &restyled));
+    for slot in 0..3 {
+        assert!(!slot_material_changed(&mut slots, slot, &restyled));
+    }
+}
+
+#[test]
+fn a_material_change_widens_a_partial_refresh_to_every_capture_region() {
+    let full = vec![
+        BackdropCaptureRegion {
+            origin: (0, 0),
+            extent: (1920, 80),
+        },
+        BackdropCaptureRegion {
+            origin: (0, 1000),
+            extent: (1920, 80),
+        },
+    ];
+    let partial = vec![full[1].clone()];
+
+    // Without a material change the source-damage plan passes through.
+    assert_eq!(
+        refresh_regions_covering_material_change(false, partial.clone(), &full),
+        partial
+    );
+    // With one, the refresh must cover every capture region so no composite
+    // region keeps the previous material.
+    assert_eq!(
+        refresh_regions_covering_material_change(true, partial, &full),
+        full
+    );
+    // An already-complete refresh and an empty (Recompute) plan pass through.
+    assert_eq!(
+        refresh_regions_covering_material_change(true, full.clone(), &full),
+        full
+    );
+    assert!(refresh_regions_covering_material_change(true, Vec::new(), &full).is_empty());
+}
+
+#[test]
 fn capture_bounds_respect_output_scale() {
     // scale=2: regions are logical, bounds physical (16 logical px bar
     // = 32 physical px; margin is 3σ in physical pixels).

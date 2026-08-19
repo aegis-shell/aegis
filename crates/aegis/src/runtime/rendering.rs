@@ -577,10 +577,17 @@ pub(super) struct LauncherBackdrop {
     /// independent from output/chrome damage.
     source_slot_damage: Vec<FrameDamage>,
     config: Option<BackdropCacheKey>,
-    /// The effect-side fingerprint. A material-only change (a tooltip fade,
-    /// an adaptation step) rebuilds the composite from the still-valid
-    /// capture instead of re-rendering the scene into it.
-    material: Option<BackdropMaterialKey>,
+    /// Effect-side fingerprint **per frame slot**. The composite image the
+    /// fingerprint describes is itself per slot (`BackdropCapture::composite`),
+    /// so a material-only change must dirty each slot independently: a
+    /// `Recompute` rewrites only the recording slot, and the other in-flight
+    /// slots keep serving their previous composite until each in turn
+    /// observes the new key. A single global fingerprint here would mark the
+    /// change consumed after the first slot, leaving the rest presenting a
+    /// stale shadow/glass composite on their next `Cached` frame — visible as
+    /// the composite flickering between two versions every time the slots
+    /// rotate.
+    material: Vec<Option<BackdropMaterialKey>>,
     was_active: bool,
     failed_session: bool,
     unsupported: bool,
@@ -625,6 +632,46 @@ fn backdrop_refresh_regions(
         .collect()
 }
 
+/// Record `material` as the fingerprint this slot's composite will be built
+/// with, returning whether the slot was previously serving a different one.
+///
+/// The fingerprint lifetime matches the composite image it describes — one
+/// per frame slot — so a material change seen by one slot stays pending for
+/// the other in-flight slots until each rebuilds its own composite. A single
+/// shared fingerprint would mark the change consumed after the first slot
+/// rebuilt, leaving the rest presenting a stale composite on their next
+/// `Cached` frame — visible as the effect (notably the glass drop shadow)
+/// flickering between two versions while the slots rotate.
+pub(super) fn slot_material_changed(
+    slots: &mut Vec<Option<BackdropMaterialKey>>,
+    slot: usize,
+    material: &BackdropMaterialKey,
+) -> bool {
+    if slots.len() <= slot {
+        slots.resize_with(slot + 1, || None);
+    }
+    let changed = slots[slot].as_ref() != Some(material);
+    slots[slot] = Some(material.clone());
+    changed
+}
+
+/// A material change must rewrite the *entire* effect composite, not only the
+/// source-damaged subset: undamaged regions would otherwise keep the previous
+/// shadow/glass material indefinitely. The empty case passes through so the
+/// planner can still emit `Recompute` (which already covers every capture
+/// region).
+pub(super) fn refresh_regions_covering_material_change(
+    material_changed: bool,
+    refresh_regions: Vec<BackdropCaptureRegion>,
+    capture_regions: &[BackdropCaptureRegion],
+) -> Vec<BackdropCaptureRegion> {
+    if material_changed && !refresh_regions.is_empty() && refresh_regions != capture_regions {
+        capture_regions.to_vec()
+    } else {
+        refresh_regions
+    }
+}
+
 impl LauncherBackdrop {
     pub(super) fn new(device: &flux::Device) -> Result<Self, flux::Error> {
         Ok(Self {
@@ -633,7 +680,7 @@ impl LauncherBackdrop {
             captures: Vec::new(),
             source_slot_damage: Vec::new(),
             config: None,
-            material: None,
+            material: Vec::new(),
             was_active: false,
             failed_session: false,
             unsupported: false,
@@ -659,7 +706,7 @@ impl LauncherBackdrop {
             self.was_active = false;
             self.failed_session = false;
             self.config = None;
-            self.material = None;
+            self.material.clear();
             for capture in self.captures.iter_mut().flatten() {
                 capture.valid = false;
             }
@@ -676,7 +723,8 @@ impl LauncherBackdrop {
             return BackdropPlan::Direct;
         }
 
-        let material_changed = self.material.as_ref() != Some(&material);
+        let slot = frame.index() as usize;
+        let material_changed = slot_material_changed(&mut self.material, slot, &material);
         if self.config.as_ref() != Some(&config) {
             self.config = Some(config.clone());
             for capture in self.captures.iter_mut().flatten() {
@@ -686,7 +734,7 @@ impl LauncherBackdrop {
                 *pending = FrameDamage::Full;
             }
         }
-        self.material = Some(material);
+        self.material[slot] = Some(material);
         let format = match surface.format() {
             flux::Format::FLUX_FORMAT_RGBA8_UNORM | flux::Format::FLUX_FORMAT_BGRA8_UNORM => {
                 flux::Format::FLUX_FORMAT_RGBA8_UNORM
@@ -704,7 +752,6 @@ impl LauncherBackdrop {
             extent.0.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
             extent.1.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
         );
-        let slot = frame.index() as usize;
         if self.captures.len() <= slot {
             self.captures.resize_with(slot + 1, || None);
         }
@@ -748,6 +795,11 @@ impl LauncherBackdrop {
             &missed,
             &config.capture_regions,
         );
+        let refresh_regions = refresh_regions_covering_material_change(
+            material_changed,
+            refresh_regions,
+            &config.capture_regions,
+        );
         if refresh_regions.is_empty() {
             // The capture still holds the current scene; a material-only
             // change (fade, adaptation step, focus field) rebuilds just the
@@ -758,6 +810,9 @@ impl LauncherBackdrop {
                 BackdropPlan::Cached
             }
         } else {
+            // `finish_refresh` rebuilds every capture region's composite with
+            // the current material, so the fingerprint written above is
+            // already satisfied for this slot.
             BackdropPlan::Refresh(refresh_regions)
         }
     }
@@ -1063,6 +1118,7 @@ impl LauncherBackdrop {
         for pending in &mut self.source_slot_damage {
             *pending = FrameDamage::Full;
         }
+        self.material.clear();
     }
 
     /// Advance source-damage history only after the output was successfully

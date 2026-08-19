@@ -23,6 +23,7 @@ use aegis_model::app::Entry;
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::launcher::{Launch, Launcher as Brain};
 use aegis_model::window::Window;
+use aegis_ui::{contains, ease_out_cubic};
 
 use super::app_menu::AppMenu;
 
@@ -929,14 +930,6 @@ impl Chrome for Launcher {
 
 fn page_count(items: usize, capacity: usize) -> usize {
     items.div_ceil(capacity.max(1)).max(1)
-}
-
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-fn ease_out_cubic(t: f32) -> f32 {
-    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
 fn icon_visibility_scale(progress: f32) -> f32 {

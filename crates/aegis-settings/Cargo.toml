@@ -10,5 +10,6 @@ rust-version.workspace = true
 [dependencies]
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
+aegis-ui = { workspace = true }
 aegis-shell = { workspace = true }
 lens = { workspace = true }

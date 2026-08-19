@@ -3,6 +3,10 @@
 use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::app::Entry;
 use aegis_model::window::{Window, WindowId};
+use aegis_ui::{
+    DEFAULT_MENU_HEADER_HEIGHT, DEFAULT_MENU_PAD, DEFAULT_MENU_ROW_HEIGHT,
+    DEFAULT_MENU_SECTION_HEIGHT, DEFAULT_MENU_WIDTH, contains,
+};
 use lens::{Frame, Input, LayoutOpts, Rect};
 
 use crate::{
@@ -10,11 +14,11 @@ use crate::{
     WindowAction, ellipsize, liquid_glass_region_id, place_popup_side,
 };
 
-const MENU_WIDTH: f32 = 236.0;
-const MENU_PAD: f32 = 7.0;
-const ROW_HEIGHT: f32 = 28.0;
-const HEADER_HEIGHT: f32 = 23.0;
-const SECTION_HEIGHT: f32 = 7.0;
+const MENU_WIDTH: f32 = DEFAULT_MENU_WIDTH;
+const MENU_PAD: f32 = DEFAULT_MENU_PAD;
+const ROW_HEIGHT: f32 = DEFAULT_MENU_ROW_HEIGHT;
+const HEADER_HEIGHT: f32 = DEFAULT_MENU_HEADER_HEIGHT;
+const SECTION_HEIGHT: f32 = DEFAULT_MENU_SECTION_HEIGHT;
 const MAX_WINDOW_ROWS: usize = 6;
 
 #[derive(Clone)]
@@ -485,10 +489,6 @@ fn always_on_top_row(window: &Window, i18n: &Localizer) -> Row {
         },
         action: MenuAction::SetAlwaysOnTop(window.id, !window.always_on_top),
     }
-}
-
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ use aegis_shell::{
     AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
     IconSet, LiquidGlassRegion, Localizer, Message, ellipsize,
 };
+use aegis_ui::{DEFAULT_BACKDROP_BLUR_SIGMA, contains};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 const PANEL_MAX_WIDTH: f32 = 680.0;
@@ -31,7 +32,7 @@ const RESULT_HEIGHT: f32 = 58.0;
 const EMPTY_HEIGHT: f32 = 72.0;
 const MAX_VISIBLE_RESULTS: usize = 6;
 const ICON_SIZE: f32 = 38.0;
-const BACKDROP_BLUR_SIGMA: f32 = 18.0;
+const BACKDROP_BLUR_SIGMA: f32 = DEFAULT_BACKDROP_BLUR_SIGMA;
 const ANIMATION_SPEED: f32 = 22.0;
 
 /// Spotlight-style application search, opened by the default
@@ -623,10 +624,6 @@ fn render_icon(frame: &mut Frame, icon: Option<*mut c_void>, progress: f32) {
             );
         }
     });
-}
-
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
 }
 
 #[cfg(test)]

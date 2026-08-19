@@ -9,7 +9,7 @@
 //! [`ChromeEvents::confirm_pick_answered`]. Ordinary modal chrome over the
 //! live scene: no freeze, no screen-content capture.
 
-use lens::{Align, Frame, Input, LayoutOpts, Rect};
+use lens::{Frame, Input, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -18,25 +18,25 @@ use crate::{
 use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::Window;
+use aegis_ui::{
+    ActionButtonStyle, DEFAULT_BACKDROP_BLUR_SIGMA, DEFAULT_BUTTON_HEIGHT, DEFAULT_BUTTON_WIDTH,
+    DEFAULT_MODAL_PAD, DEFAULT_MODAL_WIDTH, DEFAULT_TITLE_HEIGHT, contains, place_modal_panel,
+    place_modal_scrim, render_action_button, render_grant_action_buttons, stretch, stretch_top,
+};
 
-const PANEL_W: f32 = 460.0;
-const PANEL_PAD: f32 = 16.0;
-const TITLE_H: f32 = 24.0;
+const PANEL_W: f32 = DEFAULT_MODAL_WIDTH;
+const PANEL_PAD: f32 = DEFAULT_MODAL_PAD;
+const TITLE_H: f32 = DEFAULT_TITLE_HEIGHT;
 const BODY_LINE_H: f32 = 18.0;
-const BUTTON_H: f32 = 30.0;
-const BUTTON_W: f32 = 96.0;
-const BACKDROP_BLUR_SIGMA: f32 = 18.0;
-
-/// Grant-style buttons, left to right (ADR-0088). "Allow once" — the least
-/// persistent affirmative — is the accented, keyboard-default choice.
-const GRANT_LABELS: [&str; 4] = ["Deny", "Allow once", "This session", "Always"];
+const BUTTON_H: f32 = DEFAULT_BUTTON_HEIGHT;
+const BUTTON_W: f32 = DEFAULT_BUTTON_WIDTH;
+const BACKDROP_BLUR_SIGMA: f32 = DEFAULT_BACKDROP_BLUR_SIGMA;
 const GRANT_ANSWERS: [ConfirmAnswer; 4] = [
     ConfirmAnswer::Cancelled,
     ConfirmAnswer::AllowOnce,
     ConfirmAnswer::AllowSession,
     ConfirmAnswer::AllowAlways,
 ];
-const GRANT_ACCENT: usize = 1;
 
 /// The dialog style: a plain yes/no consent, or the four-option
 /// runtime-grant consent (ADR-0088).
@@ -261,33 +261,14 @@ impl Chrome for ConfirmPrompt {
         let design = self.design;
         let layout = self.layout(display);
 
-        frame.place(
-            "aegis-confirm-prompt-scrim",
-            &materials::chrome_place(
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: display.0,
-                    h: display.1,
-                },
-                LayoutOpts {
-                    bg: design.colors.scrim,
-                    ..materials::surface_layout()
-                },
-            ),
-            |_| {},
-        );
+        place_modal_scrim(frame, "aegis-confirm-prompt-scrim", display, &design);
 
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.place(
-            "aegis-confirm-prompt-panel",
-            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
-            |_| {},
-        );
+        place_modal_panel(frame, "aegis-confirm-prompt-panel", layout.panel, &design);
 
         let title = ellipsize(
             frame,
@@ -333,80 +314,34 @@ impl Chrome for ConfirmPrompt {
         match self.style {
             ConfirmPickStyle::YesNo => {
                 let cancel_hovered = contains(layout.cancel, cursor.x, cursor.y);
-                frame.place(
+                let accept_hovered = contains(layout.accept, cursor.x, cursor.y);
+                render_action_button(
+                    frame,
                     "aegis-confirm-prompt-cancel",
-                    &materials::chrome_place(
-                        layout.cancel,
-                        LayoutOpts {
-                            bg: if cancel_hovered {
-                                design.colors.application_hover
-                            } else {
-                                design.colors.card_surface
-                            },
-                            radius: design.radii.control,
-                            pad: 0.0,
-                            ..materials::surface_layout()
-                        },
-                    ),
-                    |frame| {
-                        frame.centered(layout.cancel.w, layout.cancel.h, |frame| {
-                            frame.label_compact_sized("Cancel", design.typography.body);
-                        });
-                    },
+                    layout.cancel,
+                    "Cancel",
+                    ActionButtonStyle::Subtle,
+                    cancel_hovered,
+                    &design,
                 );
-                frame.place(
+                render_action_button(
+                    frame,
                     "aegis-confirm-prompt-accept",
-                    &materials::chrome_place(
-                        layout.accept,
-                        LayoutOpts {
-                            bg: design.colors.application_accent,
-                            radius: design.radii.control,
-                            pad: 0.0,
-                            ..materials::surface_layout()
-                        },
-                    ),
-                    |frame| {
-                        frame.centered(layout.accept.w, layout.accept.h, |frame| {
-                            frame.label_compact_sized(
-                                &self.accept_label.clone(),
-                                design.typography.body,
-                            );
-                        });
-                    },
+                    layout.accept,
+                    &self.accept_label,
+                    ActionButtonStyle::Accented,
+                    accept_hovered,
+                    &design,
                 );
             }
             ConfirmPickStyle::Grant => {
-                for (index, (rect, label)) in layout.grant.iter().zip(GRANT_LABELS).enumerate() {
-                    let hovered = contains(*rect, cursor.x, cursor.y);
-                    let opts = if index == GRANT_ACCENT {
-                        LayoutOpts {
-                            bg: design.colors.application_accent,
-                            radius: design.radii.control,
-                            pad: 0.0,
-                            ..materials::surface_layout()
-                        }
-                    } else {
-                        LayoutOpts {
-                            bg: if hovered {
-                                design.colors.application_hover
-                            } else {
-                                design.colors.card_surface
-                            },
-                            radius: design.radii.control,
-                            pad: 0.0,
-                            ..materials::surface_layout()
-                        }
-                    };
-                    frame.place(
-                        &format!("aegis-confirm-prompt-grant-{index}"),
-                        &materials::chrome_place(*rect, opts),
-                        |frame| {
-                            frame.centered(rect.w, rect.h, |frame| {
-                                frame.label_compact_sized(label, design.typography.body);
-                            });
-                        },
-                    );
-                }
+                render_grant_action_buttons(
+                    frame,
+                    "aegis-confirm-prompt",
+                    &layout.grant,
+                    (cursor.x, cursor.y),
+                    &design,
+                );
             }
         }
 
@@ -554,27 +489,6 @@ impl Chrome for ConfirmPrompt {
             self.design.radii.glass_panel,
             1.0,
         )]
-    }
-}
-
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-fn stretch(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        cross: Align::Center,
-        ..Default::default()
-    }
-}
-
-fn stretch_top(rect: Rect) -> LayoutOpts {
-    LayoutOpts {
-        width: rect.w,
-        height: rect.h,
-        ..Default::default()
     }
 }
 

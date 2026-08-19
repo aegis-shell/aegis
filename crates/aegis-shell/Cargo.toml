@@ -29,6 +29,7 @@ required-features = ["persona"]
 [dependencies]
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
+aegis-ui = { workspace = true }
 aegis-desktop-entries = { workspace = true, optional = true }
 fastrand = { workspace = true, optional = true }
 # Agent-feedback sprites: SVG rasterization (resvg/usvg/tiny-skia, same

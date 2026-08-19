@@ -637,7 +637,7 @@ unsafe extern "C" fn popup_grab(
     client: *mut ffi::wl_client,
     popup: *mut ffi::wl_resource,
     seat: *mut ffi::wl_resource,
-    _serial: u32,
+    serial: u32,
 ) {
     unsafe {
         let rec = ffi::wl_resource_get_user_data(popup) as *mut SurfaceRec;
@@ -652,6 +652,29 @@ unsafe extern "C" fn popup_grab(
         if ffi::wl_resource_get_client((*rec).resource) != client {
             return;
         }
+
+        // xdg-shell specification:
+        // A popup grab requires that the client holds active focus or provides a
+        // valid recent user interaction serial. Background clients without user
+        // interaction must be rejected and dismissed with popup_done.
+        let seat_id = (*state).active_seat;
+        let client_focused = (*state)
+            .seats
+            .get(&seat_id)
+            .is_some_and(|runtime| {
+                let k = runtime.keyboard_focus;
+                let p = runtime.pointer_focus;
+                (!k.is_null() && ffi::wl_resource_get_client(k) == client)
+                    || (!p.is_null() && ffi::wl_resource_get_client(p) == client)
+            });
+        let serial_valid = serial != 0 && serial == (*state).last_button_serial;
+        if !client_focused && !serial_valid {
+            if !(*rec).xdg_popup.is_null() {
+                ffi::wl_resource_post_event((*rec).xdg_popup, ffi::XDG_POPUP_POPUP_DONE);
+            }
+            return;
+        }
+
         (*rec).popup_grabbed = true;
         (*rec).popup_grab_seat = Some((*state).active_seat);
         // xdg_popup.grab is requested before the first mapping commit. The
@@ -1355,6 +1378,7 @@ impl Server {
                     y: new_y.round() as i32,
                 };
                 unsafe {
+                    consume_placement_nudge(&mut *rec_ptr, pos);
                     (*rec_ptr).position = pos;
                     (*rec_ptr).window.position = pos;
                 }
@@ -1430,6 +1454,7 @@ impl Server {
                 // client reallocates its buffer.
                 unsafe {
                     let pos = aegis_model::Point { x: new_x, y: new_y };
+                    consume_placement_nudge(&mut *rec_ptr, pos);
                     (*rec_ptr).position = pos;
                     (*rec_ptr).window.position = pos;
                     (*rec_ptr).window.size = aegis_model::Size { w: new_w, h: new_h };

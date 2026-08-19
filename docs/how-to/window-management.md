@@ -96,6 +96,20 @@ the Dock. The flag is compositor-internal and session-scoped: it is not
 written to the configuration and clears when the session ends. The Dock row
 is unavailable for minimized and fullscreen windows.
 
+## Where a New Window Opens
+
+A new window opens at its window-rule position, its remembered position from
+a previous session, or — failing both — a staggered diagonal position. When
+the resolved position is already exactly occupied by a live window (a second
+window of the same application most commonly), the new window steps
+diagonally down-right in 32-pixel increments until it finds a free spot, so
+both title areas stay visible instead of the new window hiding the old one.
+
+The stagger lasts only for the current session. It is not written to the
+remembered-position store: close the window where it opened and the next
+session opens it at the original position again. Move or resize the window
+and the position you chose is what gets remembered.
+
 ## Pick a Window in the Overview
 
 Press `Super+O` (or run `aegis overview`) to open the overview: every

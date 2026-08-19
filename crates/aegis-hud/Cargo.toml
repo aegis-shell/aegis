@@ -11,6 +11,7 @@ build = "build.rs"
 [dependencies]
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
+aegis-ui = { workspace = true }
 aegis-shell = { workspace = true }
 # SNI system tray service (watcher/host on the session bus), shared with the
 # command panel through a single spawn in the composition root (ADR-0080).

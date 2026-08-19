@@ -1,6 +1,5 @@
 use super::*;
 use aegis_design::materials::{chrome_place, surface_layout};
-use lens::Style;
 use std::ffi::c_void;
 
 /// The current local time as `HH:MM` — the same string `date +%H:%M`
@@ -193,63 +192,15 @@ pub(super) fn hud_contour_color(design: &Design) -> Color {
     design.hud_foreground.contour
 }
 
-/// The `(color, width)` pair behind [`hud_text_outline`], factored out so the
-/// contour policy stays testable now that `lens::Style` is opaque.
-pub(super) fn hud_text_outline_params(design: &Design) -> (Color, f32) {
-    let hud = design.hud_foreground;
-    (hud.contour, hud.text_contour_width)
-}
-
-pub(super) fn hud_text_outline(design: &Design) -> Style {
-    let (color, width) = hud_text_outline_params(design);
-    Style::new()
-        .with_outline_color(color)
-        .with_outline_width(width)
-}
-
-/// The `(color, width)` pair behind [`hud_glyph_outline`]; see
-/// [`hud_text_outline_params`].
-pub(super) fn hud_glyph_outline_params(design: &Design) -> (Color, f32) {
-    let hud = design.hud_foreground;
-    (hud.contour, hud.glyph_contour_width)
-}
-
-pub(super) fn hud_glyph_outline(design: &Design) -> Style {
-    let (color, width) = hud_glyph_outline_params(design);
-    Style::new()
-        .with_outline_color(color)
-        .with_outline_width(width)
-}
-
-/// The floating HUD chip foreground tint. The compositor's SDF glass pass now
-/// supplies the body, refraction and rim; this intentionally stays subtle so
-/// it does not turn the physical glass back into an opaque dark pill. The
-/// whisper is scheme-invariant: the scheme-aware pieces are the glass body
-/// and the HUD foreground/contour pair, not this tint.
-pub(super) fn chip_opts(design: &Design) -> LayoutOpts {
-    LayoutOpts {
-        bg: Color::rgba(24, 26, 36, 42),
-        border: Color::rgba(255, 255, 255, 18),
-        border_width: 0.75,
-        radius: design.radii.chip,
-        pad: 0.0,
-        ..surface_layout()
-    }
-}
-
-pub(super) fn workspace_dot_color(design: &Design, intensity: f32) -> Color {
-    let primary = design.hud_foreground.primary;
-    let intensity = intensity.clamp(0.0, 1.0);
-    let alpha = (78.0 + (248.0 - 78.0) * intensity).round() as u8;
-    primary.with_alpha(alpha)
-}
+pub(super) use aegis_ui::{
+    chip_opts, contains, hud_glyph_outline, hud_text_outline, workspace_dot_color,
+    workspace_dot_intensity,
+};
+#[cfg(test)]
+pub(super) use aegis_ui::{hud_glyph_outline_params, hud_text_outline_params};
 
 pub(super) fn workspace_dot_diameter() -> f32 {
     WORKSPACE_DOT_DIAMETER
-}
-
-pub(super) fn workspace_dot_intensity(index: usize, position: f32) -> f32 {
-    (1.0 - (index as f32 - position).abs()).clamp(0.0, 1.0)
 }
 
 pub(super) fn centered_layer() -> LayoutOpts {
@@ -262,8 +213,4 @@ pub(super) fn centered_layer() -> LayoutOpts {
         cross: Align::Center,
         ..surface_layout()
     }
-}
-
-pub(super) fn contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
 }

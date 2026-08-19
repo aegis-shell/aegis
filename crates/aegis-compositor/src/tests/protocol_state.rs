@@ -552,10 +552,51 @@ fn state_only_configures_preserve_a_mapped_window_size() {
 
 #[test]
 fn newly_mapped_focus_policy_excludes_hidden_read_only_and_minimized_windows() {
-    assert!(should_focus_mapped_toplevel(true, true, false));
-    assert!(!should_focus_mapped_toplevel(false, true, false));
-    assert!(!should_focus_mapped_toplevel(true, false, false));
-    assert!(!should_focus_mapped_toplevel(true, true, true));
+    // Active / user-initiated launches or focused client maps take focus
+    assert!(should_focus_mapped_toplevel(true, true, false, true, false, false, false));
+    assert!(should_focus_mapped_toplevel(true, true, false, false, true, false, false));
+    assert!(should_focus_mapped_toplevel(true, true, false, false, false, true, false));
+    assert!(should_focus_mapped_toplevel(true, true, false, false, false, false, true));
+
+    // Hidden, non-human, or minimized never take focus even if user launch
+    assert!(!should_focus_mapped_toplevel(false, true, false, true, false, false, false));
+    assert!(!should_focus_mapped_toplevel(true, false, false, true, false, false, false));
+    assert!(!should_focus_mapped_toplevel(true, true, true, true, false, false, false));
+
+    // Background unsolicited window on non-empty workspace without token is rejected by FSP
+    assert!(!should_focus_mapped_toplevel(true, true, false, false, false, false, false));
+}
+
+#[test]
+fn lower_toplevel_surfaces_places_entire_surface_tree_at_stack_bottom() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut foreground = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    foreground.xdg_toplevel = foreground.resource;
+    foreground.mapped = true;
+
+    let mut background = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    background.xdg_toplevel = background.resource;
+    background.mapped = true;
+
+    let mut background_sub = Box::new(SurfaceRec::new(0x210usize as *mut ffi::wl_resource));
+    background_sub.mapped = true;
+    background_sub.parent = background.as_mut();
+    background.children = vec![background_sub.as_mut()];
+
+    state.surfaces = vec![foreground.as_mut(), background.as_mut(), background_sub.as_mut()];
+
+    unsafe {
+        lower_toplevel_surfaces(&mut state, background.resource);
+    }
+
+    assert_eq!(
+        state.surfaces,
+        vec![
+            background.as_mut() as *mut SurfaceRec,
+            background_sub.as_mut() as *mut SurfaceRec,
+            foreground.as_mut() as *mut SurfaceRec,
+        ]
+    );
 }
 
 #[test]
@@ -934,4 +975,114 @@ fn minimize_flight_falls_back_to_the_screen_edge_stub_without_an_icon() {
 
     let transition = minimize_transition(&state, window, window_rect);
     assert_eq!(transition.effect, None);
+}
+
+#[test]
+fn nudged_origin_resolves_exact_collisions_diagonally() {
+    let output = aegis_model::Rect::new(0, 0, 1920, 1080);
+
+    // No collision: the resolved origin is kept as-is.
+    assert_eq!(
+        nudged_origin_if_colliding(
+            aegis_model::Point { x: 40, y: 40 },
+            &[aegis_model::Point { x: 60, y: 60 }],
+            output
+        ),
+        None
+    );
+
+    // An exact collision steps diagonally by 32 to the first free origin.
+    let occupied = [aegis_model::Point { x: 60, y: 60 }];
+    assert_eq!(
+        nudged_origin_if_colliding(aegis_model::Point { x: 60, y: 60 }, &occupied, output),
+        Some(aegis_model::Point { x: 92, y: 92 })
+    );
+
+    // Two stacked windows: the third map resolves past both.
+    let occupied = [
+        aegis_model::Point { x: 60, y: 60 },
+        aegis_model::Point { x: 92, y: 92 },
+    ];
+    assert_eq!(
+        nudged_origin_if_colliding(aegis_model::Point { x: 60, y: 60 }, &occupied, output),
+        Some(aegis_model::Point { x: 124, y: 124 })
+    );
+
+    // A candidate beyond the right edge is clamped back inside the output;
+    // the clamped origin is free, so it wins.
+    let near_edge = aegis_model::Point { x: 1850, y: 500 };
+    assert_eq!(
+        nudged_origin_if_colliding(
+            near_edge,
+            &[near_edge, aegis_model::Point { x: 1820, y: 470 }],
+            output
+        ),
+        Some(aegis_model::Point { x: 1820, y: 532 })
+    );
+
+    // Every candidate on the diagonal collides: the base origin is kept
+    // (bounded scan, never fails the map).
+    let occupied: Vec<aegis_model::Point> = (0..=8)
+        .map(|i| aegis_model::Point {
+            x: 60 + i * 32,
+            y: 60 + i * 32,
+        })
+        .collect();
+    assert_eq!(
+        nudged_origin_if_colliding(aegis_model::Point { x: 60, y: 60 }, &occupied, output),
+        None
+    );
+}
+
+#[test]
+fn placement_nudge_folds_back_only_while_resting_at_the_nudged_origin() {
+    let nudge = PlacementNudge {
+        base: aegis_model::Point { x: 60, y: 60 },
+        nudged: aegis_model::Point { x: 92, y: 92 },
+    };
+
+    // Resting exactly at the nudged origin: persistence records the base.
+    let resting = fold_nudged_origin(&with_nudge(nudge), aegis_model::Rect::new(92, 92, 800, 600));
+    assert_eq!(resting.origin, aegis_model::Point { x: 60, y: 60 });
+    assert_eq!(resting.size, aegis_model::Size { w: 800, h: 600 });
+
+    // The user moved the window: the actual position passes through.
+    let moved = fold_nudged_origin(
+        &with_nudge(nudge),
+        aegis_model::Rect::new(400, 300, 800, 600),
+    );
+    assert_eq!(moved.origin, aegis_model::Point { x: 400, y: 300 });
+
+    // Never nudged: pass through.
+    let plain = SurfaceRec::new(std::ptr::null_mut());
+    assert_eq!(
+        fold_nudged_origin(&plain, aegis_model::Rect::new(92, 92, 800, 600)).origin,
+        aegis_model::Point { x: 92, y: 92 }
+    );
+}
+
+#[test]
+fn explicit_reposition_consumes_the_placement_nudge() {
+    let nudge = PlacementNudge {
+        base: aegis_model::Point { x: 60, y: 60 },
+        nudged: aegis_model::Point { x: 92, y: 92 },
+    };
+
+    // Moving to any other origin consumes the nudge.
+    let mut moved = with_nudge(nudge);
+    consume_placement_nudge(&mut moved, aegis_model::Point { x: 400, y: 300 });
+    assert_eq!(moved.placement_nudge, None);
+
+    // Repositioning to exactly the nudged origin is a no-op (a set-geometry
+    // that changes nothing), so the fold-back stays armed.
+    let mut returned = with_nudge(nudge);
+    consume_placement_nudge(&mut returned, aegis_model::Point { x: 92, y: 92 });
+    assert_eq!(returned.placement_nudge, Some(nudge));
+}
+
+/// A `SurfaceRec` carrying a placement nudge, for fold-back tests.
+fn with_nudge(nudge: PlacementNudge) -> SurfaceRec {
+    let mut rec = SurfaceRec::new(std::ptr::null_mut());
+    rec.placement_nudge = Some(nudge);
+    rec
 }

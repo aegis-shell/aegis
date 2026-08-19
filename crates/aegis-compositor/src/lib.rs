@@ -347,6 +347,21 @@ pub(crate) unsafe fn libc_close(fd: i32) {
     }
 }
 
+/// A compositor-invented placement offset (ADR-0131). Recorded when a newly
+/// mapped toplevel's resolved origin exactly collides with a live window's
+/// origin and the window was shifted diagonally to a free origin instead.
+/// Session-scoped by construction: never serialized, and folded back before
+/// any geometry is persisted, so the nudge cannot drift across sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacementNudge {
+    /// The origin the placement policy resolved before nudging. This is the
+    /// position persistence remembers.
+    pub base: aegis_model::Point,
+    /// The shifted origin actually assigned at map. Persistence folds back to
+    /// `base` only while the window still rests exactly here.
+    pub nudged: aegis_model::Point,
+}
+
 /// A client surface: its pending buffer, the last committed contents copied out
 /// of shm, and its xdg role.
 pub struct SurfaceRec {
@@ -363,8 +378,10 @@ pub struct SurfaceRec {
     /// space. For surfaces without a client-declared window geometry this is
     /// also the buffer's draw origin; for CSD surfaces that exclude shadows
     /// via `set_window_geometry` the buffer is drawn up-left of this point
-    /// (see `surface_draw_origin`). M1 assigns a placeholder cascade on
-    /// map; M3's window manager will own placement policy.
+    /// (see `surface_draw_origin`). Assigned at map by the inline placement
+    /// policy: rule/remembered/session geometry, a fallback diagonal cascade,
+    /// and a collision nudge when the resolved origin is already taken
+    /// (ADR-0131).
     pub position: aegis_model::Point,
     /// Last committed contents, tightly packed BGRA8, copied out of the client
     /// shm buffer at commit so the buffer can be released immediately.
@@ -452,6 +469,16 @@ pub struct SurfaceRec {
     /// Saved floating position and size prior to maximizing or full-screening,
     /// restored when unmaximized/unfullscreened.
     pub saved_floating_rect: Option<aegis_model::Rect>,
+    /// Session-scoped placement nudge (ADR-0131): the window was placed with a
+    /// compositor-invented diagonal offset because its resolved origin collided
+    /// with a live window's origin, and `(base, nudged)` is the fold-back pair.
+    /// The offset is never persisted: both persistence sites fold the origin
+    /// back to `base` while the window still rests at `nudged`. A user- or
+    /// agent-driven reposition (interactive move/resize, `set-geometry`)
+    /// consumes it, because from then on the user owns the position. Policy
+    /// moves (tiling, maximize/fullscreen, minimize) leave it set; the
+    /// fold-back's exact-origin guard keeps a stale record inert.
+    pub placement_nudge: Option<PlacementNudge>,
     // ----- wp_viewport state -----
     /// Source rectangle in surface pixel coords, or None for "whole buffer".
     /// Set by `wp_viewport.set_source`. Coordinates arrive as 24.8
@@ -603,6 +630,7 @@ impl SurfaceRec {
             // only when the target moves, so steady state sends no configures.
             layout_target: None,
             saved_floating_rect: None,
+            placement_nudge: None,
         }
     }
 }
