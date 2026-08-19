@@ -7,6 +7,33 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.36] - 2026-08-19
+
+### Added
+
+- `aegis-ui` composite component library and chrome scaffolding for modal security prompts, settings rows, HUD chips, popup menus, and candidate pickers (ADR-0132).
+
+### Fixed
+
+- Duplicate windows no longer open exactly on top of each other. A newly
+  mapped root toplevel whose resolved origin (window rule, remembered
+  position, or session geometry) exactly collides with a live window's
+  origin is shifted diagonally to the first free origin on the fallback
+  cascade's diagonal (+32/+32 logical pixels per step, at most 8 steps,
+  clamped into the output). The stagger is session-scoped: it is folded back
+  before remembered geometry is persisted, so it never reaches
+  `window_state.json` and placement does not drift across sessions. Moving
+  or resizing the window adopts the chosen position as the remembered one (ADR-0131).
+- Command Panel liquid-glass shadow flicker: the backdrop effect-composite
+  fingerprint is now tracked per swapchain frame slot, matching the
+  per-slot composite image it describes. A material-only change (tab
+  switch, appearance change, adaptation step) previously marked itself
+  consumed after rebuilding only one slot, so the remaining in-flight slots
+  kept presenting the previous shadow/glass composite and the visible
+  shadow alternated between two versions while the ring rotated. A material
+  change during a partial capture refresh now also widens the refresh to
+  every capture region so no composite area retains the old material.
+
 ## [0.0.35] - 2026-08-18
 
 ### Added

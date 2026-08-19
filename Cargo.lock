@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aegis"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-backend",
  "aegis-command-panel",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-atspi"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-ipc",
  "aegis-ipc-client",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-backend"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "aegis-wayland-protocols",
@@ -92,13 +92,14 @@ dependencies = [
 
 [[package]]
 name = "aegis-command-panel"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-design",
  "aegis-model",
  "aegis-settings",
  "aegis-shell",
  "aegis-tray",
+ "aegis-ui",
  "flux",
  "flux-scene-graph-sys",
  "lens",
@@ -108,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-commands"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-config",
  "aegis-ipc",
@@ -124,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-compositor"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "aegis-semantic",
@@ -141,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-config"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "dirs",
@@ -155,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-design"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "lens",
@@ -164,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-desktop-entries"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "dirs",
@@ -176,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-dock"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -187,12 +188,13 @@ dependencies = [
 
 [[package]]
 name = "aegis-hud"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-design",
  "aegis-model",
  "aegis-shell",
  "aegis-tray",
+ "aegis-ui",
  "flux",
  "lens",
  "lens-sys",
@@ -202,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-idle"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-ipc",
  "aegis-logging",
@@ -216,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "aegis-security",
@@ -229,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc-client"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-ipc",
  "aegis-model",
@@ -242,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-launcher"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-desktop-entries",
  "aegis-model",
@@ -254,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-lock"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-config",
  "aegis-design",
@@ -280,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-logging"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "tracing-log",
  "tracing-subscriber",
@@ -288,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-mcp"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-desktop-entries",
  "aegis-ipc",
@@ -304,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-model"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "serde",
  "serde_json",
@@ -312,18 +314,19 @@ dependencies = [
 
 [[package]]
 name = "aegis-prism"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-design",
  "aegis-model",
  "aegis-shell",
+ "aegis-ui",
  "lens",
  "lens-sys",
 ]
 
 [[package]]
 name = "aegis-render"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "flux",
@@ -334,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-security"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "getrandom 0.4.3",
@@ -349,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-semantic"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-model",
  "serde",
@@ -358,21 +361,23 @@ dependencies = [
 
 [[package]]
 name = "aegis-settings"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-design",
  "aegis-model",
  "aegis-shell",
+ "aegis-ui",
  "lens",
 ]
 
 [[package]]
 name = "aegis-shell"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-design",
  "aegis-desktop-entries",
  "aegis-model",
+ "aegis-ui",
  "fastrand",
  "flux",
  "flux-scene-graph",
@@ -396,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-tray"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "aegis-desktop-entries",
  "image",
@@ -405,8 +410,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aegis-ui"
+version = "0.0.36"
+dependencies = [
+ "aegis-design",
+ "aegis-model",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
 name = "aegis-wallpaper"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "flux",
  "flux-scene-graph",
@@ -419,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-wayland-protocols"
-version = "0.0.35"
+version = "0.0.36"
 dependencies = [
  "cc",
 ]
