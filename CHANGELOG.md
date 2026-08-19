@@ -7,6 +7,73 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.37] - 2026-08-19
+
+### Added
+
+- `ext_data_control_manager_v1`: clipboard managers such as `wl-clipboard`
+  can set and read the selection without a focused surface. Both clipboard
+  protocol families (`wl_data_device` and ext-data-control) now view and
+  mutate the same per-seat selection, and selection changes notify both
+  symmetrically (ADR-0133).
+
+### Fixed
+
+- Clipboard transfers between the two protocol families no longer corrupt
+  the source client's protocol stream. `wl_data_source` and
+  `ext_data_control_source_v1` use *different* event opcodes for the same
+  logical `send`/`cancelled` events; when a clipboard manager
+  (`wl-paste`) read a selection a GUI application had set through
+  `wl_data_device` (every Ctrl+C), the data-control offer posted a
+  data-control opcode to the app's `wl_data_source`, desynchronising its
+  stream instead of transferring the payload. Every selection and every
+  offer now carries the interface family of its source and marshals
+  events accordingly; the reverse direction (a focused app pasting a
+  `wl-copy` selection) is fixed symmetrically. Both directions are verified
+  end-to-end against real binaries: a `wl_data_device` GUI client against
+  `wl-paste`, and a focused GUI client against `wl-copy`
+  (`tests/clipboard_probe.c`).
+- Destroying a clipboard source no longer leaves dangling back-pointers in
+  offers built by the other protocol family: a `wl_data_source` teardown
+  now also nulls matching `ext_data_control_offer_v1` records (and vice
+  versa), so a late `receive` fails closed instead of addressing freed
+  memory. An Interaction Domain migration additionally revokes the
+  migrated client's data-control devices and offers, matching the
+  existing wl_data_device revocation. A data-control device destroyed
+  after its seat was quiesced is likewise scrubbed from every runtime
+  list, so a later selection change cannot post to a freed resource.
+- Clearing the primary selection (`wl-copy -p --clear`) no longer clears
+  the regular clipboard. aegis models one selection per seat and does not
+  send `primary_selection`; the `set_primary_selection` request was
+  incorrectly aliased onto the regular selection, so a manager's
+  primary-clear also wiped the user's Ctrl+C clipboard. The request is now
+  ignored, which is the protocol-conformant "primary unsupported"
+  behaviour.
+- Popups no longer detach from their parent window. Moving, tiling,
+  maximizing, fullscreening, minimizing, or restoring a toplevel now carries
+  its whole popup subtree (menus, tooltips, combo boxes, nested submenus)
+  by the same delta, so an open menu stays anchored to the window it
+  belongs to instead of floating at a stale absolute position over other
+  windows.
+- Newly launched applications no longer open behind every existing window
+  without focus. The focus-stealing-prevention change in 0.0.36 only
+  recognized launch placements, the focused client's own windows, empty
+  workspaces, and activation tokens — so a first launch from the app grid
+  or dock (which registers no launch placement) was demoted to the bottom
+  of the stack. A first map of an app that was not running, and any dialog
+  with a live parent (including cross-client portal permission prompts
+  wired through `zxdg_importer_v2`), now takes initial focus as the user
+  expects. Background second windows of an already-running app still do
+  not steal focus, and FSP rejection no longer reorders the stacking at
+  all (ADR-0133).
+- `wl-copy` no longer hangs and `wl-clipboard` windows no longer appear in
+  the window switcher. wl-clipboard needs keyboard focus to set the
+  clipboard through `wl_data_device` and creates an invisible 1x1 toplevel
+  to get it; under the 0.0.36 focus policy that toplevel was demoted
+  instead of focused, so the selection was never accepted. With
+  ext-data-control-v1 advertised, wl-clipboard uses it and never creates
+  the helper window (ADR-0133).
+
 ## [0.0.36] - 2026-08-19
 
 ### Added
