@@ -54,6 +54,11 @@ fn main() {
             "staging/ext-foreign-toplevel-list",
             "ext-foreign-toplevel-list-v1",
         ),
+        // ext-data-control-v1: manager-managed clipboard read/write without a
+        // focused surface. wl-clipboard & co. prefer it over wl_data_device,
+        // which removes their need for the invisible focus-stealing helper
+        // window entirely (ADR-0133).
+        ("staging/ext-data-control", "ext-data-control-v1"),
         ("staging/cursor-shape", "cursor-shape-v1"),
         ("staging/xdg-activation", "xdg-activation-v1"),
         ("staging/color-management", "color-management-v1"),

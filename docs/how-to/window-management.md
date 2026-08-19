@@ -110,6 +110,21 @@ remembered-position store: close the window where it opened and the next
 session opens it at the original position again. Move or resize the window
 and the position you chose is what gets remembered.
 
+## Which New Windows Get Focus
+
+A newly opened window takes focus and comes to the front when it is the
+first window of an application that was not running (any launch: the Dock,
+the launcher, a terminal, D-Bus activation, or a portal), when it is a
+dialog of a live parent window (including permission prompts from the
+portal, which belong to the app that asked), when the launch was directed
+to a specific workspace, when its workspace was empty, or when the
+application presented an activation token.
+
+Additional windows an already-running background application opens on their
+own do not steal your keyboard focus — they appear without taking focus,
+and you can reach them from the switcher, the overview, or the Dock. They
+are never buried below existing windows; they simply wait for you.
+
 ## Pick a Window in the Overview
 
 Press `Super+O` (or run `aegis overview`) to open the overview: every

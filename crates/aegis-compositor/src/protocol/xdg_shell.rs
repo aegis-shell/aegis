@@ -658,15 +658,12 @@ unsafe extern "C" fn popup_grab(
         // valid recent user interaction serial. Background clients without user
         // interaction must be rejected and dismissed with popup_done.
         let seat_id = (*state).active_seat;
-        let client_focused = (*state)
-            .seats
-            .get(&seat_id)
-            .is_some_and(|runtime| {
-                let k = runtime.keyboard_focus;
-                let p = runtime.pointer_focus;
-                (!k.is_null() && ffi::wl_resource_get_client(k) == client)
-                    || (!p.is_null() && ffi::wl_resource_get_client(p) == client)
-            });
+        let client_focused = (*state).seats.get(&seat_id).is_some_and(|runtime| {
+            let k = runtime.keyboard_focus;
+            let p = runtime.pointer_focus;
+            (!k.is_null() && ffi::wl_resource_get_client(k) == client)
+                || (!p.is_null() && ffi::wl_resource_get_client(p) == client)
+        });
         let serial_valid = serial != 0 && serial == (*state).last_button_serial;
         if !client_focused && !serial_valid {
             if !(*rec).xdg_popup.is_null() {
@@ -950,8 +947,7 @@ pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
             }
             if !(*rec).state.is_null() {
                 let rect = (*(*rec).state).output_geometry.logical_rect();
-                (*rec).position = rect.origin;
-                (*rec).window.position = rect.origin;
+                reposition_toplevel_with_popups(rec, rect.origin);
                 (*rec).window.size = rect.size;
                 (*rec).layout_target = Some(rect);
                 (rect.size.w, rect.size.h)
@@ -972,8 +968,7 @@ pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
                 } else {
                     (*(*rec).state).output_geometry.logical_rect()
                 };
-                (*rec).position = rect.origin;
-                (*rec).window.position = rect.origin;
+                reposition_toplevel_with_popups(rec, rect.origin);
                 (*rec).window.size = rect.size;
                 (*rec).layout_target = Some(rect);
                 (rect.size.w, rect.size.h)
@@ -982,8 +977,7 @@ pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
             }
         } else {
             if let Some(saved) = (*rec).saved_floating_rect.take() {
-                (*rec).position = saved.origin;
-                (*rec).window.position = saved.origin;
+                reposition_toplevel_with_popups(rec, saved.origin);
                 (*rec).window.size = saved.size;
             }
             (*rec).layout_target = None;
@@ -1175,8 +1169,10 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
             let window_id = (*rec).window.id;
             let target = minimize_flight_target(&*state, window_id, old);
             (*rec).window.transition = Some(minimize_transition(&*state, window_id, old));
-            (*rec).position = target.origin;
-            (*rec).window.position = target.origin;
+            // The flight target moves the window toward the dock; popups are
+            // unmapped by the minimize path's focus loss in practice, but keep
+            // the subtree coherent if one is still up.
+            reposition_toplevel_with_popups(rec, target.origin);
             (*rec).window.size = target.size;
         }
         (*rec).window.minimized = true;
@@ -1379,8 +1375,7 @@ impl Server {
                 };
                 unsafe {
                     consume_placement_nudge(&mut *rec_ptr, pos);
-                    (*rec_ptr).position = pos;
-                    (*rec_ptr).window.position = pos;
+                    reposition_toplevel_with_popups(rec_ptr, pos);
                 }
                 self.state.damaged_windows.insert(interactive.window_id());
                 true
@@ -1455,8 +1450,7 @@ impl Server {
                 unsafe {
                     let pos = aegis_model::Point { x: new_x, y: new_y };
                     consume_placement_nudge(&mut *rec_ptr, pos);
-                    (*rec_ptr).position = pos;
-                    (*rec_ptr).window.position = pos;
+                    reposition_toplevel_with_popups(rec_ptr, pos);
                     (*rec_ptr).window.size = aegis_model::Size { w: new_w, h: new_h };
                     if !(*rec_ptr).xdg_toplevel.is_null() {
                         let mut arr = ffi::wl_array::empty();

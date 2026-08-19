@@ -552,19 +552,65 @@ fn state_only_configures_preserve_a_mapped_window_size() {
 
 #[test]
 fn newly_mapped_focus_policy_excludes_hidden_read_only_and_minimized_windows() {
-    // Active / user-initiated launches or focused client maps take focus
-    assert!(should_focus_mapped_toplevel(true, true, false, true, false, false, false));
-    assert!(should_focus_mapped_toplevel(true, true, false, false, true, false, false));
-    assert!(should_focus_mapped_toplevel(true, true, false, false, false, true, false));
-    assert!(should_focus_mapped_toplevel(true, true, false, false, false, false, true));
+    use MappedToplevelFocusInputs as Inputs;
+    let base = Inputs {
+        visible: true,
+        human_controls: true,
+        minimized: false,
+        is_user_launch: false,
+        is_focused_client: false,
+        is_dialog: false,
+        is_first_app_window: false,
+        is_empty_workspace: false,
+        has_pending_activation: false,
+    };
+    let policy = |patch: fn(Inputs) -> Inputs| should_focus_mapped_toplevel(patch(base));
 
-    // Hidden, non-human, or minimized never take focus even if user launch
-    assert!(!should_focus_mapped_toplevel(false, true, false, true, false, false, false));
-    assert!(!should_focus_mapped_toplevel(true, false, false, true, false, false, false));
-    assert!(!should_focus_mapped_toplevel(true, true, true, true, false, false, false));
+    // Each solicitation clause alone grants focus.
+    assert!(policy(|i| Inputs {
+        is_user_launch: true,
+        ..i
+    }));
+    assert!(policy(|i| Inputs {
+        is_focused_client: true,
+        ..i
+    }));
+    assert!(policy(|i| Inputs {
+        is_dialog: true,
+        ..i
+    }));
+    assert!(policy(|i| Inputs {
+        is_first_app_window: true,
+        ..i
+    }));
+    assert!(policy(|i| Inputs {
+        is_empty_workspace: true,
+        ..i
+    }));
+    assert!(policy(|i| Inputs {
+        has_pending_activation: true,
+        ..i
+    }));
+
+    // The eligibility gates veto even an explicit user launch.
+    assert!(!policy(|i| Inputs {
+        visible: false,
+        is_user_launch: true,
+        ..i
+    }));
+    assert!(!policy(|i| Inputs {
+        human_controls: false,
+        is_user_launch: true,
+        ..i
+    }));
+    assert!(!policy(|i| Inputs {
+        minimized: true,
+        is_user_launch: true,
+        ..i
+    }));
 
     // Background unsolicited window on non-empty workspace without token is rejected by FSP
-    assert!(!should_focus_mapped_toplevel(true, true, false, false, false, false, false));
+    assert!(!should_focus_mapped_toplevel(base));
 }
 
 #[test]
@@ -583,7 +629,11 @@ fn lower_toplevel_surfaces_places_entire_surface_tree_at_stack_bottom() {
     background_sub.parent = background.as_mut();
     background.children = vec![background_sub.as_mut()];
 
-    state.surfaces = vec![foreground.as_mut(), background.as_mut(), background_sub.as_mut()];
+    state.surfaces = vec![
+        foreground.as_mut(),
+        background.as_mut(),
+        background_sub.as_mut(),
+    ];
 
     unsafe {
         lower_toplevel_surfaces(&mut state, background.resource);
@@ -596,6 +646,159 @@ fn lower_toplevel_surfaces_places_entire_surface_tree_at_stack_bottom() {
             background_sub.as_mut() as *mut SurfaceRec,
             foreground.as_mut() as *mut SurfaceRec,
         ]
+    );
+}
+
+#[test]
+fn toplevel_has_live_parent_detects_cross_client_dialogs() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut parent = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    parent.xdg_toplevel = 0x101usize as *mut ffi::wl_resource;
+    parent.mapped = true;
+
+    // The portal prompter: a *different* client's toplevel whose parent was
+    // wired through zxdg_importer_v2. Only the live-parent link matters, not
+    // client identity.
+    let mut prompter = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    prompter.state = &mut state;
+    prompter.xdg_toplevel = 0x201usize as *mut ffi::wl_resource;
+    prompter.window.parent = Some(parent.as_mut() as *mut SurfaceRec as usize);
+    prompter.mapped = true;
+
+    state.surfaces = vec![parent.as_mut(), prompter.as_mut()];
+
+    assert!(
+        unsafe { toplevel_has_live_parent(prompter.as_mut()) },
+        "a cross-client imported-parent dialog counts as a dialog"
+    );
+    assert!(
+        !unsafe { toplevel_has_live_parent(parent.as_mut()) },
+        "a root toplevel is not a dialog"
+    );
+
+    // The parent going away dissolves the dialog relationship.
+    parent.mapped = false;
+    assert!(!unsafe { toplevel_has_live_parent(prompter.as_mut()) });
+}
+
+#[test]
+fn first_toplevel_of_app_is_detected_by_app_id_only() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut first = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    first.state = &mut state;
+    first.xdg_toplevel = 0x101usize as *mut ffi::wl_resource;
+    first.window.app_id = Some("org.example.App".to_string());
+    first.mapped = true;
+
+    let mut other_app = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    other_app.xdg_toplevel = 0x301usize as *mut ffi::wl_resource;
+    other_app.window.app_id = Some("org.example.Other".to_string());
+    other_app.mapped = true;
+
+    state.surfaces = vec![other_app.as_mut(), first.as_mut()];
+
+    assert!(
+        unsafe { is_first_toplevel_of_app(first.as_mut()) },
+        "no other live root toplevel shares the app_id"
+    );
+
+    // A second window of the same app (the classic focus-stealing case, e.g.
+    // a background "download finished" window) must not claim a first map.
+    let mut second = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    second.state = &mut state;
+    second.xdg_toplevel = 0x201usize as *mut ffi::wl_resource;
+    second.window.app_id = Some("org.example.App".to_string());
+    second.mapped = true;
+    state.surfaces.push(second.as_mut());
+
+    assert!(!unsafe { is_first_toplevel_of_app(second.as_mut()) });
+
+    // Transients of the same app never suppress the first-map read: the
+    // prompter's own helper windows are not "the app running".
+    // (Covered by the parent.is_none() guard: dialogs are excluded above.)
+    assert!(first.window.parent.is_none());
+}
+
+#[test]
+fn toplevel_without_app_id_is_never_a_first_map() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut anonymous = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    anonymous.state = &mut state;
+    anonymous.xdg_toplevel = 0x101usize as *mut ffi::wl_resource;
+    anonymous.mapped = true;
+    assert!(!unsafe { is_first_toplevel_of_app(anonymous.as_mut()) });
+}
+
+#[test]
+fn moving_a_toplevel_carries_its_popup_subtree() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut toplevel = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    toplevel.state = &mut state;
+    toplevel.xdg_toplevel = 0x101usize as *mut ffi::wl_resource;
+    toplevel.position = aegis_model::Point { x: 100, y: 100 };
+    toplevel.window.position = toplevel.position;
+    toplevel.mapped = true;
+
+    // A menu popup anchored at parent-local (20, 10) → absolute (120, 110),
+    // and a nested submenu popup at parent-local (30, 5) of the menu.
+    let mut menu = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    menu.state = &mut state;
+    menu.xdg_popup = 0x201usize as *mut ffi::wl_resource;
+    menu.popup_parent = toplevel.as_mut();
+    menu.position = aegis_model::Point { x: 120, y: 110 };
+    menu.mapped = true;
+
+    let mut submenu = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    submenu.state = &mut state;
+    submenu.xdg_popup = 0x301usize as *mut ffi::wl_resource;
+    submenu.popup_parent = menu.as_mut();
+    submenu.position = aegis_model::Point { x: 150, y: 115 };
+    submenu.mapped = true;
+
+    // An unrelated window's popup must not move.
+    let mut other = Box::new(SurfaceRec::new(0x400usize as *mut ffi::wl_resource));
+    other.state = &mut state;
+    other.xdg_toplevel = 0x401usize as *mut ffi::wl_resource;
+    other.position = aegis_model::Point { x: 900, y: 500 };
+    other.mapped = true;
+
+    state.surfaces = vec![
+        toplevel.as_mut(),
+        menu.as_mut(),
+        submenu.as_mut(),
+        other.as_mut(),
+    ];
+
+    unsafe {
+        reposition_toplevel_with_popups(toplevel.as_mut(), aegis_model::Point { x: 240, y: 260 });
+    }
+
+    assert_eq!(toplevel.position, aegis_model::Point { x: 240, y: 260 });
+    assert_eq!(
+        menu.position,
+        aegis_model::Point { x: 260, y: 270 },
+        "the menu keeps its parent-relative offset (+140,+160 delta)"
+    );
+    assert_eq!(
+        submenu.position,
+        aegis_model::Point { x: 290, y: 275 },
+        "the nested submenu follows through its popup parent"
+    );
+    assert_eq!(
+        other.position,
+        aegis_model::Point { x: 900, y: 500 },
+        "an unrelated toplevel does not move"
+    );
+
+    // An unmapped popup is skipped: it will be re-positioned when it maps.
+    menu.mapped = false;
+    unsafe {
+        reposition_toplevel_with_popups(toplevel.as_mut(), aegis_model::Point { x: 0, y: 0 });
+    }
+    assert_eq!(
+        menu.position,
+        aegis_model::Point { x: 260, y: 270 },
+        "an unmapped popup keeps its stale position until remap"
     );
 }
 
@@ -1085,4 +1288,38 @@ fn with_nudge(nudge: PlacementNudge) -> SurfaceRec {
     let mut rec = SurfaceRec::new(std::ptr::null_mut());
     rec.placement_nudge = Some(nudge);
     rec
+}
+
+/// A data-control device whose seat was quiesced (`finished` posted, seat
+/// nulled) must still be scrubbed from the runtime's device list when the
+/// client destroys it. Otherwise the next selection change posts events to a
+/// freed wl_resource — the same fail-closed contract the wl_data_device
+/// destroy path enforces.
+#[test]
+fn destroying_a_finished_data_control_device_is_scrubbed_from_the_runtime() {
+    let mut state = State::new(std::ptr::null_mut());
+    // A device the runtime still lists, owned by a rec whose seat is gone
+    // (the quiesce path nulled it). The resource itself is opaque to the
+    // scrub; only list membership matters.
+    let stale_device = 0x1234_5678usize as *mut ffi::wl_resource;
+    let stale_offer = 0x8765_4321usize as *mut ffi::wl_resource;
+    {
+        let runtime = state.seat_runtime_mut(HUMAN_SEAT).expect("human seat");
+        runtime.data_control_devices.push(stale_device);
+        runtime.data_control_offers.push(stale_offer);
+    }
+    // Simulate the destroy-path scrub the handler performs: entries must be
+    // removable without the original seat (the rec's seat is None here).
+    unsafe {
+        crate::protocol::scrub_data_control_device_for_test(&mut state, stale_device);
+    }
+    let runtime = state.seat_runtime(HUMAN_SEAT).expect("human seat");
+    assert!(
+        !runtime.data_control_devices.contains(&stale_device),
+        "a finished device must not linger in the runtime list"
+    );
+    assert!(
+        runtime.data_control_offers.contains(&stale_offer),
+        "the offer is untouched by the device scrub"
+    );
 }

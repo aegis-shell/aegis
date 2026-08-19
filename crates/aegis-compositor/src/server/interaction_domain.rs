@@ -1109,6 +1109,11 @@ impl Server {
         runtime.cursor_surface = std::ptr::null_mut();
         runtime.cursor_hidden = false;
         runtime.cursor_shape = 1;
+        // Clipboard managers bound to this seat must hear `finished` and
+        // release their devices; the seat's selection slot is going away.
+        unsafe {
+            crate::protocol::finish_data_control_devices(self.state.as_mut(), seat);
+        }
     }
 
     /// Process pending client events and flush queued events. Non-blocking.

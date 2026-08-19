@@ -808,8 +808,7 @@ impl Server {
                             origin: (*rec).position,
                             size: (*rec).window.size,
                         };
-                        (*rec).position = screen_rect.origin;
-                        (*rec).window.position = screen_rect.origin;
+                        reposition_toplevel_with_popups(rec, screen_rect.origin);
                         (*rec).window.size = screen_rect.size;
                         (*rec).layout_target = Some(screen_rect);
                         self.note_transition(rec, old);
@@ -831,8 +830,7 @@ impl Server {
                             origin: (*rec).position,
                             size: (*rec).window.size,
                         };
-                        (*rec).position = work_area.origin;
-                        (*rec).window.position = work_area.origin;
+                        reposition_toplevel_with_popups(rec, work_area.origin);
                         (*rec).window.size = work_area.size;
                         (*rec).layout_target = Some(work_area);
                         self.note_transition(rec, old);
@@ -890,8 +888,7 @@ impl Server {
                     origin: (*rec).position,
                     size: (*rec).window.size,
                 };
-                (*rec).position = rect.origin;
-                (*rec).window.position = rect.origin;
+                reposition_toplevel_with_popups(rec, rect.origin);
                 (*rec).window.size = rect.size;
                 (*rec).window.layout_role = aegis_model::layout::LayoutRole::Tiled;
                 (*rec).layout_target = Some(*rect);

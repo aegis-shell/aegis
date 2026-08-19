@@ -460,40 +460,176 @@ unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_model::Rec
     }
 }
 
+/// A cross-client or in-client dialog: a toplevel with a live mapped parent
+/// (an `xdg_toplevel.set_parent` child, or a portal prompter that imported the
+/// app's surface through `zxdg_importer_v2`). Dialogs are answers to
+/// something the focused window asked for, so they are always user-solicited
+/// from the seat's point of view.
+///
+/// Re-resolves the live parent here rather than trusting the caller: the
+/// `transient_parent_id` captured before the `st` borrow can go stale if an
+/// earlier branch of this dispatch reaped the parent.
+pub(crate) unsafe fn toplevel_has_live_parent(rec: *mut SurfaceRec) -> bool {
+    unsafe { live_transient_parent(rec).is_some() }
+}
+
+/// Move a toplevel to `new_origin`, carrying its whole popup subtree with
+/// the same delta so menus, tooltips, and combo boxes stay anchored to the
+/// window they belong to. Subsurfaces need no handling here: their draw
+/// origin is already derived from the parent's position at render time.
+///
+/// This is the xdg-shell contract for a compositor that does not implement
+/// `xdg_positioner.set_reactive` (v3): without reconstraint, the popup must
+/// at minimum keep its position *relative to the parent* — leaving it at a
+/// stale absolute origin is how menus end up floating over other windows.
+///
+/// Only `position` (the compositor-side origin) moves; no configure is sent,
+/// because popup coordinates in `xdg_popup.configure` are parent-relative
+/// and have not changed.
+pub(crate) unsafe fn reposition_toplevel_with_popups(
+    rec: *mut SurfaceRec,
+    new_origin: aegis_model::Point,
+) {
+    unsafe {
+        if rec.is_null() {
+            return;
+        }
+        let old = (*rec).position;
+        if old == new_origin {
+            return;
+        }
+        let delta = aegis_model::Point {
+            x: new_origin.x.saturating_sub(old.x),
+            y: new_origin.y.saturating_sub(old.y),
+        };
+        (*rec).position = new_origin;
+        (*rec).window.position = new_origin;
+        shift_popup_subtree(rec, delta, 0);
+    }
+}
+
+/// Recursively shift every live popup anchored (directly or through another
+/// popup) to `rec`, preserving the parent-relative placement the positioner
+/// computed at `get_popup` time. The depth cap breaks reference cycles
+/// defensively; the destroy path detaches popups, so live chains are short.
+unsafe fn shift_popup_subtree(rec: *mut SurfaceRec, delta: aegis_model::Point, depth: u32) {
+    unsafe {
+        if rec.is_null() || depth >= 32 || (*rec).state.is_null() {
+            return;
+        }
+        for ptr in (*(*rec).state).live_surfaces_pub().filter(|p| {
+            let p = *p;
+            !p.is_null() && !(*p).popup_parent.is_null() && (*p).popup_parent == rec && (*p).mapped
+        }) {
+            (*ptr).position = aegis_model::Point {
+                x: (*ptr).position.x.saturating_add(delta.x),
+                y: (*ptr).position.y.saturating_add(delta.y),
+            };
+            shift_popup_subtree(ptr, delta, depth + 1);
+        }
+    }
+}
+
+/// Inputs to [`should_focus_mapped_toplevel`], one per policy question.
+/// Grouped as a struct so the call site reads as a policy record and the
+/// predicate signature stays clippy-clean as the policy grows.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MappedToplevelFocusInputs {
+    /// The toplevel is on a currently visible workspace.
+    pub(crate) visible: bool,
+    /// The human seat controls the window (not read-only / observed).
+    pub(crate) human_controls: bool,
+    /// The toplevel is minimized.
+    pub(crate) minimized: bool,
+    /// A pending launch placement matched this map (explicit user launch).
+    pub(crate) is_user_launch: bool,
+    /// The mapping client already owns keyboard focus (in-app child window).
+    pub(crate) is_focused_client: bool,
+    /// A live mapped parent exists (dialog, incl. cross-client portal
+    /// prompters via `zxdg_importer_v2`).
+    pub(crate) is_dialog: bool,
+    /// No other live root toplevel shares this app_id: the app was not
+    /// running, so this map is the user launching it.
+    pub(crate) is_first_app_window: bool,
+    /// The target workspace has no other mapped toplevel.
+    pub(crate) is_empty_workspace: bool,
+    /// An xdg-activation token already targets this surface.
+    pub(crate) has_pending_activation: bool,
+}
+
 /// Determine whether a newly mapped toplevel should receive initial focus and raise
 /// (`DirectFocus`) versus being placed passively in the background (`PassivePlacement`).
 ///
 /// Focus Stealing Prevention (FSP): A newly mapped window only takes initial focus if
 /// it was explicitly launched by the user (pending launch placement), belongs to the
-/// currently focused client (in-app child window / dialog), is mapping to a previously
+/// currently focused client (in-app child window / dialog), is a dialog of a live
+/// parent (including cross-client portal prompters), is the first window of an
+/// application not yet running this session (a launch the user just performed by any
+/// means — dock, launcher, terminal, D-Bus activation), is mapping to a previously
 /// empty workspace, or holds an explicit activation token. Unsolicited background
-/// windows are placed passively behind active windows without stealing focus.
-pub(crate) fn should_focus_mapped_toplevel(
-    visible: bool,
-    human_controls: bool,
-    minimized: bool,
-    is_user_launch: bool,
-    is_focused_client: bool,
-    is_empty_workspace: bool,
-    has_pending_activation: bool,
-) -> bool {
+/// windows are placed passively without stealing focus.
+pub(crate) fn should_focus_mapped_toplevel(input: MappedToplevelFocusInputs) -> bool {
+    let MappedToplevelFocusInputs {
+        visible,
+        human_controls,
+        minimized,
+        is_user_launch,
+        is_focused_client,
+        is_dialog,
+        is_first_app_window,
+        is_empty_workspace,
+        has_pending_activation,
+    } = input;
     visible
         && human_controls
         && !minimized
         && (is_user_launch
             || is_focused_client
+            || is_dialog
+            || is_first_app_window
             || is_empty_workspace
             || has_pending_activation)
 }
 
+/// Whether this map is the first live toplevel of its application in the
+/// session. An app that is not running cannot have just decided to spawn a
+/// window on its own: a first map is, by construction, the consequence of the
+/// user launching that app (dock, launcher, terminal, D-Bus activation, or a
+/// portal spawn whose launch placement did not match). Focusing it is what
+/// every mainstream compositor does and what the user expects from "open an
+/// app"; FSP demotion stays reserved for *additional* windows of an app that
+/// is already running and is not the focused client.
+pub(crate) unsafe fn is_first_toplevel_of_app(rec: *mut SurfaceRec) -> bool {
+    unsafe {
+        let app_id = (*rec).window.app_id.as_deref();
+        match app_id {
+            Some(app_id) if !app_id.is_empty() => {
+                let state = (*rec).state;
+                if state.is_null() {
+                    return false;
+                }
+                !(*state).live_surfaces().any(|p| {
+                    p != rec
+                        && (*p).mapped
+                        && !(*p).xdg_toplevel.is_null()
+                        && (*p).window.parent.is_none()
+                        && (*p).window.app_id.as_deref() == Some(app_id)
+                })
+            }
+            // No app_id (X11-ish or bespoke clients): keep the conservative
+            // FSP read. Such clients are rarely user launches through the
+            // launcher, and a wrong demotion here is recoverable by clicking.
+            _ => false,
+        }
+    }
+}
+
 /// Move a newly mapped background toplevel and its surface tree to the bottom
-/// of the stacking order (index 0 of normal windows, before any existing windows),
-/// so an un-focused background window never visually overlays or steals focus from
-/// an actively used foreground window.
-pub(crate) unsafe fn lower_toplevel_surfaces(
-    state: &mut State,
-    resource: *mut ffi::wl_resource,
-) {
+/// of the stacking order (index 0 of normal windows, before any existing windows).
+/// Retained for callers that explicitly want a bottom-of-stack placement; the
+/// first-map FSP path no longer uses it (ADR-0133).
+#[cfg(test)]
+pub(crate) unsafe fn lower_toplevel_surfaces(state: &mut State, resource: *mut ffi::wl_resource) {
     let Some(pos) = state.surfaces.iter().position(|p| {
         !p.is_null() && unsafe { (**p).resource == resource && !(**p).xdg_toplevel.is_null() }
     }) else {
@@ -1295,6 +1431,11 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 let client = ffi::wl_resource_get_client((*rec).resource);
                 let is_focused_client = !st.keyboard_focus.is_null()
                     && ffi::wl_resource_get_client(st.keyboard_focus) == client;
+                // Re-resolve the live parent here: `transient_parent_id` was
+                // captured before the `st` borrow and can go stale within
+                // this dispatch batch.
+                let is_dialog = toplevel_has_live_parent(rec);
+                let is_first_app_window = is_first_toplevel_of_app(rec);
                 let target_ws = st.workspaces.workspace_of(id);
                 let is_empty_workspace = target_ws.is_some_and(|ws| {
                     !st.surfaces.iter().any(|&p| {
@@ -1312,28 +1453,27 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 let visible = st.workspaces.visible_toplevels().contains(&id);
                 let human_controls = st.authority.seat_controls_window(HUMAN_SEAT, id);
 
-                let should_focus = should_focus_mapped_toplevel(
+                let should_focus = should_focus_mapped_toplevel(MappedToplevelFocusInputs {
                     visible,
                     human_controls,
-                    (*rec).window.minimized,
+                    minimized: (*rec).window.minimized,
                     is_user_launch,
                     is_focused_client,
+                    is_dialog,
+                    is_first_app_window,
                     is_empty_workspace,
                     has_pending_activation,
-                );
+                });
 
-                if should_focus {
-                    if st.pending_activation.is_none() {
-                        st.pending_activation = Some((HUMAN_SEAT, (*rec).resource));
-                    }
-                } else {
-                    // Focus Stealing Prevention (FSP): place toplevel at the bottom
-                    // of its workspace and lower its surface tree in the stacking order.
-                    if let Some(ws) = target_ws {
-                        st.workspaces.place_toplevel_bottom(ws, id);
-                    }
-                    lower_toplevel_surfaces(st, (*rec).resource);
+                if should_focus && st.pending_activation.is_none() {
+                    st.pending_activation = Some((HUMAN_SEAT, (*rec).resource));
                 }
+                // FSP rejection keeps the window out of `pending_activation`
+                // (no focus steal) but leaves its stacking alone: the map path
+                // above already appended it on top of its workspace, and a
+                // deliberate demotion-to-bottom proved too aggressive — it
+                // buried dialogs and freshly launched apps behind every
+                // existing window (see ADR-0133).
             }
             // Live-update the foreign-toplevel list so taskbars see the new window.
             if !(*rec).state.is_null() {

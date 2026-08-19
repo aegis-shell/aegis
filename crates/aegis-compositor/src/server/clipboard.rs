@@ -126,6 +126,9 @@ fn build_owned_selection_shared(
 
     Ok(Selection {
         source: std::ptr::null_mut(),
+        // Irrelevant for a compositor-owned selection (nothing is ever
+        // posted to a null source), but set explicitly for clarity.
+        source_kind: SelectionSourceKind::WlDataSource,
         mime_types,
         owned: Some(OwnedSelection {
             payloads: std::sync::Arc::new(owned),

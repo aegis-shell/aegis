@@ -593,6 +593,37 @@ impl State {
                         (*record).source = std::ptr::null_mut();
                     }
                 }
+                // Same revocation for the data-control family: a migrated
+                // client's pending offers must not remain usable across the
+                // authority boundary, and a later `receive` must not reach a
+                // source it may no longer address.
+                for device in runtime
+                    .data_control_devices
+                    .iter()
+                    .copied()
+                    .filter(|resource| {
+                        !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
+                    })
+                {
+                    ffi::wl_resource_post_event(
+                        device,
+                        ffi::EXT_DATA_CONTROL_DEVICE_V1_SELECTION,
+                        std::ptr::null_mut::<ffi::wl_resource>(),
+                    );
+                }
+                for offer in runtime
+                    .data_control_offers
+                    .iter()
+                    .copied()
+                    .filter(|resource| {
+                        !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
+                    })
+                {
+                    let record = ffi::wl_resource_get_user_data(offer) as *mut DataControlOfferRec;
+                    if !record.is_null() {
+                        (*record).source = std::ptr::null_mut();
+                    }
+                }
             }
 
             macro_rules! migrate {
@@ -626,6 +657,8 @@ impl State {
             migrate!(keyboard_resources);
             migrate!(touch_resources);
             migrate!(data_devices);
+            migrate!(data_control_devices);
+            migrate!(data_control_offers);
             migrate!(relative_pointers);
             migrate!(pointer_constraints);
             migrate!(pointer_gesture_swipes);
@@ -697,6 +730,8 @@ impl State {
             restore!(keyboard_resources);
             restore!(touch_resources);
             restore!(data_devices);
+            restore!(data_control_devices);
+            restore!(data_control_offers);
             restore!(relative_pointers);
             restore!(pointer_constraints);
             restore!(pointer_gesture_swipes);

@@ -547,6 +547,10 @@ fn registry_exposes_clipboard_and_host_ime_protocols() {
         "standard clipboard global missing:\n{stdout}"
     );
     assert!(
+        stdout.contains("interface: 'ext_data_control_manager_v1'"),
+        "ext-data-control clipboard-manager global missing:\n{stdout}"
+    );
+    assert!(
         stdout.contains("interface: 'zwp_text_input_manager_v3'"),
         "application text-input global missing:\n{stdout}"
     );
@@ -573,9 +577,5 @@ fn registry_exposes_clipboard_and_host_ime_protocols() {
     assert!(
         !stdout.contains("zwp_primary_selection_device_manager_v1"),
         "Primary Selection must not be advertised:\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("ext_data_control_manager_v1"),
-        "unimplemented primary-capable data-control must not be advertised:\n{stdout}"
     );
 }

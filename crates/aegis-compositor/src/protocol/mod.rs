@@ -1,5 +1,6 @@
 mod common;
 mod compositor;
+mod data_control;
 mod data_device;
 mod dmabuf;
 mod output;
@@ -10,6 +11,7 @@ mod xdg_shell;
 
 pub(crate) use common::*;
 pub(crate) use compositor::*;
+pub(crate) use data_control::*;
 pub(crate) use data_device::*;
 pub(crate) use dmabuf::*;
 pub(crate) use output::*;

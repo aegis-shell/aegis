@@ -126,6 +126,17 @@ impl Server {
                 data,
                 ddm_bind,
             );
+            // ext-data-control-v1 (ADR-0133): clipboard managers set and read
+            // the selection without a focused surface. wl-clipboard prefers
+            // this global and then skips its invisible focus-stealing helper
+            // window entirely.
+            ffi::wl_global_create(
+                display,
+                &ffi::ext_data_control_manager_v1_interface,
+                1,
+                data,
+                data_control_manager_bind,
+            );
             if dmabuf_supported {
                 let version = if state.dmabuf_main_device.is_some() {
                     4

@@ -134,6 +134,20 @@ unsafe extern "C" fn data_source_resource_destroy(resource: *mut ffi::wl_resourc
                     (*offer_rec).source = std::ptr::null_mut();
                 }
             }
+            // A data-control offer may have been built from this wl_data_source
+            // (a manager reading a GUI app's selection); its back-pointer must
+            // go inert too, for the same freed-memory reason.
+            for offer in (*state)
+                .data_control_offers
+                .iter()
+                .copied()
+                .filter(|p| !p.is_null())
+            {
+                let offer_rec = ffi::wl_resource_get_user_data(offer) as *mut DataControlOfferRec;
+                if !offer_rec.is_null() && (*offer_rec).source == resource {
+                    (*offer_rec).source = std::ptr::null_mut();
+                }
+            }
             (*state).untrack_seat_resource(resource);
         }
         drop(Box::from_raw(rec));
@@ -292,12 +306,14 @@ pub(crate) unsafe fn replace_clipboard_selection(
             .map(|selection| selection.source)
             .unwrap_or(std::ptr::null_mut());
         if let Some(old) = std::mem::replace(&mut (*state).selection, replacement)
-            && !old.source.is_null()
             && old.source != replacement_source
         {
-            ffi::wl_resource_post_event(old.source, ffi::WL_DATA_SOURCE_CANCELLED);
+            old.post_cancelled();
         }
         notify_selection_changed(state);
+        // ext-data-control devices see the same change immediately; the two
+        // protocol families are views of one per-seat selection.
+        notify_data_control_selection(state, (*state).active_seat);
     }
 }
 
@@ -343,6 +359,7 @@ unsafe extern "C" fn ddev_set_selection(
         };
         let sel = Selection {
             source,
+            source_kind: SelectionSourceKind::WlDataSource,
             mime_types: mimes,
             owned: None,
         };
@@ -403,6 +420,7 @@ unsafe fn create_data_offer(
     state: *mut State,
     dev: *mut ffi::wl_resource,
     source: *mut ffi::wl_resource,
+    source_kind: SelectionSourceKind,
     mime_types: &[String],
     owned: Option<OwnedSelection>,
     is_drag: bool,
@@ -417,6 +435,7 @@ unsafe fn create_data_offer(
         let rec = Box::into_raw(Box::new(DataOfferRec {
             state,
             source,
+            source_kind,
             owned,
             is_drag,
             accepted: false,
@@ -468,6 +487,7 @@ unsafe fn advertise_selection_offer(dev: *mut ffi::wl_resource, sel: &Selection)
             state,
             dev,
             sel.source,
+            sel.source_kind,
             &sel.mime_types,
             sel.owned.clone(),
             false,
@@ -669,7 +689,15 @@ unsafe extern "C" fn data_offer_receive(
             }
             return;
         }
-        ffi::wl_resource_post_event(source, ffi::WL_DATA_SOURCE_SEND, mime_type, fd);
+        // Marshal `send` for the interface the source actually is: a
+        // data-control source's send event has a different opcode than
+        // wl_data_source's, and posting the wrong one desynchronises the
+        // client's protocol stream (the fd would be read as garbage).
+        let opcode = match (*rec).source_kind {
+            SelectionSourceKind::WlDataSource => ffi::WL_DATA_SOURCE_SEND,
+            SelectionSourceKind::DataControl => ffi::EXT_DATA_CONTROL_SOURCE_V1_SEND,
+        };
+        ffi::wl_resource_post_event(source, opcode, mime_type, fd);
         // The source owns writing to fd; close our copy.
         if fd >= 0 {
             libc_close(fd);
@@ -849,8 +877,17 @@ pub(crate) unsafe fn update_drag_focus(
                 }
             };
             if !drag.source.is_null() {
-                drag.offer =
-                    create_data_offer(state, target_device, drag.source, &mime_types, None, true);
+                drag.offer = create_data_offer(
+                    state,
+                    target_device,
+                    drag.source,
+                    // DnD sources are always wl_data_source; data-control has
+                    // no drag-and-drop.
+                    SelectionSourceKind::WlDataSource,
+                    &mime_types,
+                    None,
+                    true,
+                );
             }
             let surface = ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec;
             if !surface.is_null() {

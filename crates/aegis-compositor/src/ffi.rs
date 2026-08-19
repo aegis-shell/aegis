@@ -36,6 +36,8 @@ pub use aegis_wayland_protocols::{
 
 // ----- extension protocol interface tables -----
 pub use aegis_wayland_protocols::{
+    ext_data_control_device_v1_interface, ext_data_control_manager_v1_interface,
+    ext_data_control_offer_v1_interface, ext_data_control_source_v1_interface,
     ext_foreign_toplevel_handle_v1_interface, ext_foreign_toplevel_list_v1_interface,
     ext_idle_notification_v1_interface, ext_idle_notifier_v1_interface,
     ext_session_lock_manager_v1_interface, ext_session_lock_surface_v1_interface,
@@ -283,6 +285,20 @@ pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE: u32 = 1;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE: u32 = 2;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID: u32 = 3;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER: u32 = 4;
+
+// ext_data_control_device_v1 event opcodes: data_offer, selection, finished,
+// primary_selection.
+pub const EXT_DATA_CONTROL_DEVICE_V1_DATA_OFFER: u32 = 0;
+pub const EXT_DATA_CONTROL_DEVICE_V1_SELECTION: u32 = 1;
+pub const EXT_DATA_CONTROL_DEVICE_V1_FINISHED: u32 = 2;
+pub const EXT_DATA_CONTROL_DEVICE_V1_PRIMARY_SELECTION: u32 = 3;
+pub const EXT_DATA_CONTROL_DEVICE_V1_ERROR_USED_SOURCE: u32 = 1;
+// ext_data_control_source_v1
+pub const EXT_DATA_CONTROL_SOURCE_V1_SEND: u32 = 0;
+pub const EXT_DATA_CONTROL_SOURCE_V1_CANCELLED: u32 = 1;
+pub const EXT_DATA_CONTROL_SOURCE_V1_ERROR_INVALID_OFFER: u32 = 1;
+// ext_data_control_offer_v1
+pub const EXT_DATA_CONTROL_OFFER_V1_OFFER: u32 = 0;
 
 // xdg-foreign-unstable-v2
 pub const ZXDG_EXPORTER_V2_ERROR_INVALID_SURFACE: u32 = 0;
@@ -650,6 +666,40 @@ pub struct wl_data_offer_interface_impl {
     pub set_actions: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32),
 }
 
+/// `ext_data_control_manager_v1` requests: create_data_source, get_data_device,
+/// destroy.
+#[repr(C)]
+pub struct ext_data_control_manager_v1_interface_impl {
+    pub create_data_source: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub get_data_device:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_data_control_device_v1` requests: set_selection, destroy,
+/// set_primary_selection.
+#[repr(C)]
+pub struct ext_data_control_device_v1_interface_impl {
+    pub set_selection: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_primary_selection:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+}
+
+/// `ext_data_control_source_v1` requests: offer, destroy.
+#[repr(C)]
+pub struct ext_data_control_source_v1_interface_impl {
+    pub offer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_data_control_offer_v1` requests: receive, destroy.
+#[repr(C)]
+pub struct ext_data_control_offer_v1_interface_impl {
+    pub receive: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
 /// `wl_seat` requests: get_pointer, get_keyboard, get_touch, release.
 #[repr(C)]
 pub struct wl_seat_interface_impl {
@@ -792,6 +842,10 @@ assert_impl_opcode_count!(wl_data_device_manager_interface_impl, 2);
 assert_impl_opcode_count!(wl_data_device_interface_impl, 3);
 assert_impl_opcode_count!(wl_data_source_interface_impl, 3);
 assert_impl_opcode_count!(wl_data_offer_interface_impl, 5);
+assert_impl_opcode_count!(ext_data_control_manager_v1_interface_impl, 3);
+assert_impl_opcode_count!(ext_data_control_device_v1_interface_impl, 3);
+assert_impl_opcode_count!(ext_data_control_source_v1_interface_impl, 2);
+assert_impl_opcode_count!(ext_data_control_offer_v1_interface_impl, 2);
 assert_impl_opcode_count!(wl_seat_interface_impl, 4);
 assert_impl_opcode_count!(wl_pointer_interface_impl, 2);
 assert_impl_opcode_count!(wl_keyboard_interface_impl, 1);

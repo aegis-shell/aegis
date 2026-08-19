@@ -250,15 +250,58 @@ struct RetiredBufferRelease {
     explicit_release: *mut ffi::wl_resource,
 }
 
+/// Which protocol interface the selection's `source` resource belongs to.
+/// The two clipboard families define *different* event opcodes for the same
+/// logical operations (`send`/`cancelled`), so every event posted to a
+/// selection source must be marshalled for the interface the client actually
+/// bound — posting a `wl_data_source` opcode to an
+/// `ext_data_control_source_v1` (or vice versa) desynchronises the client's
+/// protocol stream. Selections may be created by either family and read by
+/// either family; the kind travels with the selection and with every offer
+/// built from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SelectionSourceKind {
+    /// `wl_data_source` — events: target=0, send=1, cancelled=2.
+    #[default]
+    WlDataSource,
+    /// `ext_data_control_source_v1` — events: send=0, cancelled=1.
+    DataControl,
+}
+
 /// The active clipboard selection and its advertised MIME types. A selection
-/// is owned either by a client's `wl_data_source` or by immutable compositor
-/// payloads, and is advertised to the focused client through `wl_data_offer`.
+/// is owned either by a client's `wl_data_source` / data-control source, or
+/// by immutable compositor payloads, and is advertised to the focused client
+/// through `wl_data_offer` and to clipboard managers through
+/// `ext_data_control_offer_v1`.
 struct Selection {
     source: *mut ffi::wl_resource,
+    /// Interface family of `source`; decides event opcodes. `WlDataSource`
+    /// is the default so a null-source (compositor-owned) selection needs no
+    /// special casing — nothing is ever posted to a null source.
+    source_kind: SelectionSourceKind,
     mime_types: Vec<String>,
     /// Immutable compositor-owned payloads. Client-owned selections leave
-    /// this unset and transfer through `wl_data_source.send` instead.
+    /// this unset and transfer through the source's `send` instead.
     owned: Option<OwnedSelection>,
+}
+
+impl Selection {
+    /// Post `cancelled` to the owning source, marshalled for its actual
+    /// interface. No-op for compositor-owned selections. Send marshalling
+    /// lives with the offers (each carries its own `source_kind` copy),
+    /// because an offer can outlive the selection it was built from.
+    pub(crate) unsafe fn post_cancelled(&self) {
+        unsafe {
+            if self.source.is_null() {
+                return;
+            }
+            let opcode = match self.source_kind {
+                SelectionSourceKind::WlDataSource => ffi::WL_DATA_SOURCE_CANCELLED,
+                SelectionSourceKind::DataControl => ffi::EXT_DATA_CONTROL_SOURCE_V1_CANCELLED,
+            };
+            ffi::wl_resource_post_event(self.source, opcode);
+        }
+    }
 }
 
 /// One immutable snapshot of compositor-owned clipboard data. Offers retain
@@ -293,6 +336,11 @@ struct DataSourceRec {
 struct DataOfferRec {
     state: *mut State,
     source: *mut ffi::wl_resource,
+    /// Interface family of `source` — see [`SelectionSourceKind`]. The offer
+    /// outlives the selection it was built from, so the kind is copied here
+    /// at creation; a `receive` after the source is destroyed sees a null
+    /// `source` and fails closed regardless of kind.
+    source_kind: SelectionSourceKind,
     owned: Option<OwnedSelection>,
     is_drag: bool,
     accepted: bool,
@@ -977,6 +1025,13 @@ pub(crate) struct SeatRuntime {
     touch_resources: Vec<*mut ffi::wl_resource>,
     data_devices: Vec<*mut ffi::wl_resource>,
     data_offers: Vec<*mut ffi::wl_resource>,
+    /// `ext_data_control_device_v1` resources bound to this seat. Kept
+    /// alongside `data_devices` so selection changes reach both clipboard
+    /// protocol families symmetrically.
+    pub(crate) data_control_devices: Vec<*mut ffi::wl_resource>,
+    /// Live `ext_data_control_offer_v1` resources issued by this seat's
+    /// devices; cleaned up on resource destroy.
+    pub(crate) data_control_offers: Vec<*mut ffi::wl_resource>,
     selection: Option<Selection>,
     drag: Option<DragState>,
     relative_pointers: Vec<*mut ffi::wl_resource>,
@@ -1055,6 +1110,8 @@ impl SeatRuntime {
             touch_resources: Vec::new(),
             data_devices: Vec::new(),
             data_offers: Vec::new(),
+            data_control_devices: Vec::new(),
+            data_control_offers: Vec::new(),
             selection: None,
             drag: None,
             relative_pointers: Vec::new(),

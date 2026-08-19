@@ -149,6 +149,12 @@ unsafe extern "C" {
     pub static ext_foreign_toplevel_list_v1_interface: wl_interface;
     pub static ext_foreign_toplevel_handle_v1_interface: wl_interface;
 
+    // ext-data-control-v1
+    pub static ext_data_control_manager_v1_interface: wl_interface;
+    pub static ext_data_control_device_v1_interface: wl_interface;
+    pub static ext_data_control_source_v1_interface: wl_interface;
+    pub static ext_data_control_offer_v1_interface: wl_interface;
+
     // cursor-shape-v1
     pub static wp_cursor_shape_manager_v1_interface: wl_interface;
     pub static wp_cursor_shape_device_v1_interface: wl_interface;

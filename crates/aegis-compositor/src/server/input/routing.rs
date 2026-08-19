@@ -843,8 +843,7 @@ impl Server {
                 size: (*rec).window.size,
             };
             consume_placement_nudge(&mut *rec, rect.origin);
-            (*rec).position = rect.origin;
-            (*rec).window.position = rect.origin;
+            reposition_toplevel_with_popups(rec, rect.origin);
             (*rec).window.size = size;
             (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
             (*rec).layout_target = None;
@@ -966,8 +965,7 @@ impl Server {
             // the minimize flight landed on.
             let from = minimize_flight_target(&self.state, window_id, saved);
             let styled = self.state.minimize_targets.contains_key(&window_id);
-            (*rec).position = saved.origin;
-            (*rec).window.position = saved.origin;
+            reposition_toplevel_with_popups(rec, saved.origin);
             (*rec).window.size = saved.size;
             (*rec).window.minimized = false;
             if styled && !self.state.reduced_motion {
