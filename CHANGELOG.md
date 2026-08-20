@@ -7,7 +7,22 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
-## [0.0.40] - 2026-08-20
+## [0.0.41] - 2026-08-20
+
+### Added
+
+- HDR and color pipeline: `[[output]]` config entries now support
+  `sdr_white_nits` (80.0–500.0 nits, ITU-R BT.2408 default 203.0) and pass it
+  to the Flux HDR surface. Optics upgraded to v0.0.21 featuring BT.2390 EDR
+  highlight rolloff for HDR destinations.
+
+### Changed
+
+- Application icon scanner: rescanning interval increased from 5s to 30s with
+  catalog/snapshot change debouncing to skip redundant icon decoding on the
+  worker thread when the installed desktop applications are unchanged.
+- Compositor presentation and lifecycle: renderer garbage collection and frame
+  start are triggered across direct-scanout and no-damage presentation paths.
 
 ### Fixed
 
