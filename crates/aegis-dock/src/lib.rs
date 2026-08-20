@@ -116,6 +116,10 @@ const TOOLTIP_DWELL: f32 = 0.30;
 const TOOLTIP_FADE_SPEED: f32 = 18.0;
 const TOOLTIP_HEIGHT: f32 = 28.0;
 const TOOLTIP_GAP: f32 = 9.0;
+/// Partial-repaint band for a fading tooltip: the strip envelope extended
+/// toward the screen centre by the tallest tooltip plus its gap. Wider than
+/// any label the tooltip can render, so the fade never outgrows it.
+const TOOLTIP_BAND: f32 = TOOLTIP_HEIGHT + TOOLTIP_GAP;
 /// Pointer travel (logical px) from the press point that promotes a held
 /// left-button press into a drag — a tile reorder or a panel edge drag.
 const DRAG_THRESHOLD: f32 = 6.0;

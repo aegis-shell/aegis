@@ -416,6 +416,27 @@ impl CursorCache {
         (self.preference_theme.clone(), self.preference_size)
     }
 
+    /// Half-extent bound of the largest cursor sprite the active shape can
+    /// show at `scale`, in logical pixels — the damage footprint of the
+    /// pointer position for pointer-only partial repaints. Uses the cached
+    /// rasterization when present (no GPU work) and falls back to a generous
+    /// multiple of the preference size otherwise, since the true sprite is
+    /// only known after `get` has rasterized it at least once.
+    pub fn sprite_extent(&self, shape: u32, scale: f32) -> Option<f32> {
+        let key = (shape, (scale * 4.0).round() as u32);
+        if let Some(Some(loaded)) = self.cursors.get(&key) {
+            // The hotspot can sit anywhere in the sprite, so the position
+            // plus this half-extent always contains the drawn pixels.
+            return Some(
+                loaded.width.max(loaded.height).max(loaded.xhot.max(loaded.yhot) * 2.0) / 2.0
+                    + 2.0,
+            );
+        }
+        // Unrasterized yet (first frames, a hidden cursor): the preference
+        // size scaled up with a wide safety factor covers theme variation.
+        Some(self.preference_size as f32 * scale.clamp(1.0, 3.0) * 2.0)
+    }
+
     /// The cursor for a `wp_cursor_shape` value at `scale`. The bundled
     /// Aegis theme guarantees a result for every standard shape, so this
     /// returns `None` only if rasterization itself fails.

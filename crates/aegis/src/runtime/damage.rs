@@ -117,10 +117,21 @@ pub(super) struct AssessedFrameDamage {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DamageAssessment {
     pub had_input: bool,
+    /// `had_input` came from pointer motion alone (no buttons, keys, or
+    /// touch). Pointer motion is the one input class whose visual effect is
+    /// exactly the cursor sprite plus the chrome band it hovers, so the
+    /// assessment can degrade its repaint to those regions instead of a
+    /// full-output composite.
+    pub input_pointer_only: bool,
     pub session_locked: bool,
     pub cursor_hidden: bool,
     pub cursor_shape: u32,
     pub software_cursor: bool,
+    /// Current cursor position in output-logical coordinates.
+    pub cursor_position: (f32, f32),
+    /// Largest cursor sprite edge in logical pixels for the active theme and
+    /// scale (hotspot included).
+    pub cursor_extent: f32,
     pub scale: f32,
     pub physical_size: (u32, u32),
 }
@@ -285,6 +296,26 @@ fn logical_to_physical(
         (x1 - x0) as i32,
         (y1 - y0) as i32,
     ))
+}
+
+/// Map logical damage rectangles into a [`FrameDamage`], degrading to `Full`
+/// when any rectangle cannot be represented on the physical framebuffer —
+/// the same policy as client damage mapping.
+fn logical_rects_to_frame(
+    logical: Vec<aegis_model::Rect>,
+    scale: f32,
+    physical_size: (u32, u32),
+) -> FrameDamage {
+    let mut physical = Vec::with_capacity(logical.len());
+    for rect in logical {
+        match logical_to_physical(rect, scale, physical_size) {
+            Some(mapped) => physical.push(mapped),
+            // Unmappable means "cannot express this damage as rectangles";
+            // the only safe output is a full repaint.
+            None => return FrameDamage::Full,
+        }
+    }
+    FrameDamage::from_rects(physical)
 }
 
 /// Wall-clock minute, used to keep the status-bar clock honest: chrome draws
@@ -482,10 +513,13 @@ impl CompositorRuntime {
     ) -> AssessedFrameDamage {
         let DamageAssessment {
             had_input,
+            input_pointer_only,
             session_locked,
             cursor_hidden,
             cursor_shape,
             software_cursor,
+            cursor_position,
+            cursor_extent,
             scale,
             physical_size,
         } = assessment;
@@ -504,13 +538,9 @@ impl CompositorRuntime {
         );
         let base_full = self.frame_count == 0
             || self.damage.force_full_redraw
-            // Any input event may start a chrome hover/press redraw or move
-            // the software cursor; input is rare while truly idle, so treat
-            // it as full damage rather than tracking hover precisely.
             || session_locked != self.damage.last_session_locked
             || (software_cursor
                 && self.damage.last_presented_cursor != Some((cursor_shape, cursor_hidden)))
-            || self.shell.anim_pending()
             || self.server.transitions_pending()
             // A live 3D model changes on its own animation clock. Media
             // wallpaper contributes damage only when its absolute source
@@ -574,7 +604,77 @@ impl CompositorRuntime {
                     .map(|(_, switcher, _, _)| switcher)
                     .unwrap_or(false);
 
-        let output_full = base_full || had_input;
+        // Chrome animations repaint only the band they animate in when the
+        // shell can state it; `None` (an animated component without a
+        // footprint, or lens's own eased state) keeps the conservative
+        // full-output repaint. The region is damage in its own right — a
+        // ticking dock spring advances every frame with no input and no
+        // client commit — so it joins the output rects below, not just the
+        // pointer-path union.
+        let chrome_anim_region = if self.shell.anim_pending() {
+            self.shell.anim_damage_region(self.input_acc.display_size)
+        } else {
+            None
+        };
+        let base_full = base_full || (self.shell.anim_pending() && chrome_anim_region.is_none());
+
+        // Pointer-only input repaints the cursor sprite's swept area plus
+        // the chrome region that reacts to the pointer (hover highlights,
+        // the software cursor, magnify tooltips). Any other input keeps the
+        // conservative full damage: a click can press a chrome control, a
+        // key can change focus, and those effects are not localized.
+        let input_damage: Option<Vec<aegis_model::Rect>> = if had_input && !base_full {
+            if input_pointer_only {
+                let display = self.input_acc.display_size;
+                // The union of the previous and current cursor footprints —
+                // a moving sprite leaves stale pixels at its old position
+                // that must repaint even though nothing draws there anymore.
+                let extent = cursor_extent.max(1.0);
+                let swept = |position: (f32, f32)| {
+                    let x0 = (position.0 - extent).max(0.0).floor() as i32;
+                    let y0 = (position.1 - extent).max(0.0).floor() as i32;
+                    let x1 = (position.0 + extent).min(display.0).ceil() as i32;
+                    let y1 = (position.1 + extent).min(display.1).ceil() as i32;
+                    aegis_model::Rect::new(x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+                };
+                let mut rect = swept(cursor_position);
+                if let Some(previous) = self.damage.last_presented_cursor_position {
+                    // The baseline stores physical pixels; the swept
+                    // footprint here is logical. Convert back.
+                    let logical = (
+                        previous.0 as f32 / scale.max(0.001),
+                        previous.1 as f32 / scale.max(0.001),
+                    );
+                    rect = rect.union(swept(logical));
+                }
+                // Chrome hover state can change anywhere along the pointer's
+                // path; union the animated-chrome footprint when one is
+                // known, and the pointer-capture band when it is not (the
+                // shell reports no footprint only when it cannot localize,
+                // which then falls back to full below).
+                match chrome_anim_region {
+                    Some(region) => Some(vec![rect.union(region)]),
+                    None => {
+                        if self.shell.captures_pointer_at(
+                            cursor_position.0,
+                            cursor_position.1,
+                            display,
+                        ) {
+                            // The pointer is over chrome that could not
+                            // localize its animation: conservative full.
+                            None
+                        } else {
+                            Some(vec![rect])
+                        }
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let output_full = base_full || input_damage.is_none() && had_input;
 
         self.damage.last_session_locked = session_locked;
         self.damage.last_notif_revision = Some(notif_revision);
@@ -616,7 +716,27 @@ impl CompositorRuntime {
         let output = if output_full {
             FrameDamage::Full
         } else {
-            map_client(client.unwrap_or(ClientDamage::None))
+            // Pointer-only input and localized chrome animations join the
+            // client damage as additional physical rectangles. The chrome
+            // animation region is independent damage: a ticking spring
+            // advances the frame with no input and no client commit.
+            let mut extra: Vec<aegis_model::Rect> = Vec::new();
+            if let Some(region) = chrome_anim_region {
+                extra.push(region);
+            }
+            if let Some(rects) = input_damage {
+                extra.extend(rects);
+            }
+            let base = map_client(client.unwrap_or(ClientDamage::None));
+            if extra.is_empty() {
+                base
+            } else {
+                let extra = logical_rects_to_frame(extra, scale, physical_size);
+                match base {
+                    FrameDamage::Full => FrameDamage::Full,
+                    other => union_frame_damage(extra, other),
+                }
+            }
         };
         AssessedFrameDamage {
             output,

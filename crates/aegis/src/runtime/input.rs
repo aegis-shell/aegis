@@ -8,6 +8,10 @@ pub(super) struct FrameState {
     /// Any host input (physical, gesture, or text) or synthetic input was
     /// applied this iteration; conservatively forces a full-damage frame.
     pub(super) had_input: bool,
+    /// `had_input` came from pointer motion alone (no buttons, keys, touch,
+    /// or synthetic input). Lets the damage assessment localize the repaint
+    /// to the cursor footprint and the chrome band it hovers.
+    pub(super) input_pointer_only: bool,
     pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
@@ -1355,6 +1359,7 @@ impl CompositorRuntime {
             cursor_hidden,
             cursor_shape,
             had_input,
+            input_pointer_only: pointer_motion_only && !non_cursor_input,
             pending_screenshots,
         })
     }
@@ -1375,6 +1380,7 @@ mod tests {
             cursor_hidden: false,
             cursor_shape: 1,
             had_input,
+            input_pointer_only: false,
             pending_screenshots: Vec::new(),
         }
     }

@@ -1052,6 +1052,11 @@ impl Renderer {
     ) {
         let map = options.map;
         let mapped_style = options.mapped_style;
+        // One upload batch per composite: every SHM texture refresh and
+        // recreation recorded in this pass reaches the queue through a
+        // single vkQueueSubmit instead of one submit (plus command-pool
+        // recycle) per surface. See `Device::uploads_begin`.
+        let _uploads = device.uploads_begin();
         let shm_ids = shm.iter().map(|frame| frame.id).collect::<Vec<_>>();
         let dmabuf_ids = dmabuf.iter().map(|frame| frame.id).collect::<Vec<_>>();
         let shadow_windows = options.window_shadows.map(|windows| {
@@ -1108,6 +1113,9 @@ impl Renderer {
         canvas: &flux::Canvas,
         ghosts: &[aegis_model::ClosingGhostView],
     ) {
+        // One upload batch for all ghost uploads; see
+        // `draw_surfaces_ordered_impl`.
+        let _uploads = device.uploads_begin();
         for ghost in ghosts {
             let alpha = (ghost.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
             if alpha == 0 {
@@ -1219,6 +1227,8 @@ impl Renderer {
         >,
         mapped_style: Option<MappedSurfaceStyle>,
     ) {
+        // One upload batch per composite; see `draw_surfaces_ordered_impl`.
+        let _uploads = device.uploads_begin();
         for f in frames.iter() {
             self.retire_dmabuf_surface(f.id);
             // Upload gating has two layers:
@@ -1250,20 +1260,35 @@ impl Renderer {
                     .get(&f.id)
                     .is_none_or(|c| c.generation != f.generation);
             if !dims_match || new_contents {
-                // Incremental refresh is valid whenever the texture dims are
-                // unchanged, the buffer is upright (a rotated/reflected buffer
-                // needs real geometric damage remapping, not a scale multiply),
-                // and the server supplied usable surface-local damage. Unlike
-                // the historical guard, a buffer_scale > 1 is NOT a barrier:
-                // the server already normalises buffer damage to surface-local
+                // Refresh strategy, cheapest first:
+                //
+                // 1. An upright, same-tag texture whose cached size still
+                //    matches can be refreshed **in place** with a full
+                //    `update_region`. The pixel copy is the same staging
+                //    upload `flux_image_create` performs, but it skips
+                //    re-allocating the VkImage, re-registering it in the
+                //    bindless heap, retiring the old texture through the
+                //    deferred-release queue, and the per-upload queue
+                //    submit churn that dominated CPU profiles for
+                //    continuously-updating SHM clients (terminals, browser
+                //    tabs) on HiDPI outputs. This also covers the
+                //    "no information" commit (empty damage) — the whole
+                //    texture is rewritten either way.
+                // 2. Same conditions *plus* usable surface-local damage:
+                //    upload only the damage bounding box.
+                // 3. Anything else (first frame, resize, color-tag change,
+                //    rotated buffer): recreate through `flux_image_create`.
+                let upright = f.geometry.transform == Transform::Normal;
+                let in_place = dims_match && !tag_changed && upright && self.cache.contains_key(&f.id);
+                // Incremental refresh additionally requires the server to
+                // have supplied usable surface-local damage. Unlike the
+                // historical guard, a buffer_scale > 1 is NOT a barrier: the
+                // server already normalises buffer damage to surface-local
                 // logical coordinates at commit, so we only have to scale
                 // those coordinates into buffer pixels (buffer_scale, or the
                 // viewport-implied factor for fractional-scale clients).
-                let incremental = dims_match
-                    && !tag_changed
-                    && f.geometry.transform == Transform::Normal
-                    && !f.damage.is_empty();
-                if incremental {
+                let incremental = in_place && !f.damage.is_empty();
+                if in_place || incremental {
                     // Union of the damage rects mapped from surface-local
                     // logical coordinates to buffer pixels (rounded outward so
                     // no edge pixel is dropped), then clamped to the buffer
@@ -1274,35 +1299,42 @@ impl Renderer {
                     // logical→buffer scale — fractional-scale clients keep
                     // buffer_scale at 1 and carry the density in a wp_viewport
                     // destination, which buffer_scale alone under-covers.
-                    let (scale_x, scale_y) = f.geometry.logical_to_buffer_scale(f.width, f.height);
-                    let mut x0 = i32::MAX;
-                    let mut y0 = i32::MAX;
-                    let mut x1 = i32::MIN;
-                    let mut y1 = i32::MIN;
-                    for d in f.damage {
-                        // Outward rounding so a partially-covered buffer pixel
-                        // is always included (mirrors the server's
-                        // buffer_damage_to_surface division).
-                        let sx0 = ((d.origin.x as f32 * scale_x).floor() as i32)
-                            .max(0)
-                            .min(f.width);
-                        let sy0 = ((d.origin.y as f32 * scale_y).floor() as i32)
-                            .max(0)
-                            .min(f.height);
-                        let sx1 = (((d.origin.x + d.size.w) as f32 * scale_x).ceil() as i32)
-                            .max(0)
-                            .min(f.width);
-                        let sy1 = (((d.origin.y + d.size.h) as f32 * scale_y).ceil() as i32)
-                            .max(0)
-                            .min(f.height);
-                        if sx1 <= sx0 || sy1 <= sy0 {
-                            continue;
+                    let (x0, y0, x1, y1) = if incremental {
+                        let (scale_x, scale_y) =
+                            f.geometry.logical_to_buffer_scale(f.width, f.height);
+                        let mut x0 = i32::MAX;
+                        let mut y0 = i32::MAX;
+                        let mut x1 = i32::MIN;
+                        let mut y1 = i32::MIN;
+                        for d in f.damage {
+                            // Outward rounding so a partially-covered buffer
+                            // pixel is always included (mirrors the server's
+                            // buffer_damage_to_surface division).
+                            let sx0 = ((d.origin.x as f32 * scale_x).floor() as i32)
+                                .max(0)
+                                .min(f.width);
+                            let sy0 = ((d.origin.y as f32 * scale_y).floor() as i32)
+                                .max(0)
+                                .min(f.height);
+                            let sx1 = (((d.origin.x + d.size.w) as f32 * scale_x).ceil() as i32)
+                                .max(0)
+                                .min(f.width);
+                            let sy1 = (((d.origin.y + d.size.h) as f32 * scale_y).ceil() as i32)
+                                .max(0)
+                                .min(f.height);
+                            if sx1 <= sx0 || sy1 <= sy0 {
+                                continue;
+                            }
+                            x0 = x0.min(sx0);
+                            y0 = y0.min(sy0);
+                            x1 = x1.max(sx1);
+                            y1 = y1.max(sy1);
                         }
-                        x0 = x0.min(sx0);
-                        y0 = y0.min(sy0);
-                        x1 = x1.max(sx1);
-                        y1 = y1.max(sy1);
-                    }
+                        (x0, y0, x1, y1)
+                    } else {
+                        // No damage information: rewrite the whole texture.
+                        (0, 0, f.width, f.height)
+                    };
                     if x0 < x1
                         && y0 < y1
                         && let Some(entry) = self.cache.get(&f.id)
@@ -1338,6 +1370,7 @@ impl Renderer {
                             Ok(()) => {
                                 if let Some(cached) = self.cache.get_mut(&f.id) {
                                     cached.generation = f.generation;
+                                    cached.last_used_epoch = self.frame_epoch;
                                 }
                             }
                             Err(_) => {
@@ -1577,6 +1610,8 @@ impl Renderer {
         >,
         mapped_style: Option<MappedSurfaceStyle>,
     ) {
+        // One upload batch per composite; see `draw_surfaces_ordered_impl`.
+        let _uploads = device.uploads_begin();
         for f in frames.iter() {
             self.retire_cached(f.id);
             let key = (f.id, f.buffer_id);

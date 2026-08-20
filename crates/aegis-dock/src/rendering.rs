@@ -1155,6 +1155,69 @@ impl Chrome for Dock {
         self.anim_active || (effective_autohide && (target - self.autohide_reveal).abs() > 0.002)
     }
 
+    fn damage_region(
+        &self,
+        _windows: &[Window],
+        display: (f32, f32),
+    ) -> Option<aegis_model::Rect> {
+        if self.fullscreen_locked() {
+            return None;
+        }
+        // The magnify wave, reveal morph, and spring overshoot all stay
+        // inside the same envelope the backdrop capture uses — a strip one
+        // panel thick on the dock's edge, wide enough for every tile at full
+        // magnification plus overshoot.
+        let mut region = {
+            let rect = self.capture_footprint(display);
+            aegis_model::Rect::new(
+                rect.x as i32,
+                rect.y as i32,
+                rect.w as i32,
+                rect.h as i32,
+            )
+        };
+        // A live-preview panel animates open above the strip (or beside it
+        // for a side dock); its panel rect is computed for presentation each
+        // frame, so the union with the strip covers both the panel and the
+        // strip it emerges from.
+        if let Some(preview) = self.live_preview_presentation() {
+            region = region.union(preview.panel);
+        }
+        // Tooltips float above the hovered tile while their dwell fade runs;
+        // a hover band reaching from the strip toward the screen centre is
+        // wider than any tooltip, so it bounds the fade's footprint.
+        if self.tooltip_alpha > 0.001 && self.tooltip_tile.is_some() {
+            let band = match self.position {
+                DockPosition::Bottom => {
+                    let y1 = display.1 - DOCK_EDGE_MARGIN;
+                    let y0 = (y1 - DOCK_PANEL_HEIGHT - DOCK_EDGE_MARGIN - TOOLTIP_BAND).max(0.0);
+                    aegis_model::Rect::new(0, y0 as i32, display.0 as i32, (y1 - y0) as i32)
+                }
+                DockPosition::Left => {
+                    let x1 = DOCK_EDGE_MARGIN + DOCK_PANEL_HEIGHT + TOOLTIP_BAND;
+                    aegis_model::Rect::new(
+                        0,
+                        0,
+                        x1.min(display.0) as i32,
+                        display.1 as i32,
+                    )
+                }
+                DockPosition::Right => {
+                    let x0 = (display.0 - DOCK_EDGE_MARGIN - DOCK_PANEL_HEIGHT - TOOLTIP_BAND)
+                        .max(0.0);
+                    aegis_model::Rect::new(
+                        x0 as i32,
+                        0,
+                        (display.0 - x0) as i32,
+                        display.1 as i32,
+                    )
+                }
+            };
+            region = region.union(band);
+        }
+        Some(region)
+    }
+
     fn requires_composition(&self) -> bool {
         !self.fullscreen_locked()
     }

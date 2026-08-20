@@ -346,6 +346,76 @@ impl Chrome for AgentFeedback {
             Instant::now().saturating_duration_since(activity.latest_at) < VISIBLE_FOR
         })
     }
+
+    fn damage_region(
+        &self,
+        windows: &[Window],
+        display: (f32, f32),
+    ) -> Option<aegis_model::Rect> {
+        let now = Instant::now();
+        let display = (display.0.max(1.0), display.1.max(1.0));
+        // The fade animates the whole feedback overlay (mask, sprites, label,
+        // background pill) from opaque to gone, and a pointer trail moves
+        // between frames: every pixel that showed feedback last frame or can
+        // show it this frame must repaint.
+        let mut region: Option<aegis_model::Rect> = None;
+        let mut background_count = 0usize;
+        for (id, activity) in &self.activity {
+            let expired = now.saturating_duration_since(activity.latest_at) >= VISIBLE_FOR;
+            let revoked = !self
+                .interaction_domains
+                .interaction_domains
+                .iter()
+                .any(|candidate| {
+                    candidate.id == *id && candidate.state != InteractionDomainState::Revoked
+                });
+            if expired || revoked {
+                continue;
+            }
+            match activity
+                .pointer_window
+                .zip(activity.pointer_position)
+                .filter(|(_, position)| point_in_display(*position, display))
+                .and_then(|(window, position)| {
+                    operation_region(windows, window, position, display)
+                        .map(|operation| (operation, position))
+                }) {
+                Some((operation, position)) => {
+                    // Window mask + pointer sprite + label. The label is
+                    // anchored to the pointer and clamped to the display; a
+                    // generous union keeps the pill-shaped label fully inside
+                    // the damaged area.
+                    let OperationRegion::Window { rect, .. } = operation;
+                    let mask = aegis_model::Rect::new(
+                        rect.x as i32,
+                        rect.y as i32,
+                        rect.w as i32,
+                        rect.h as i32,
+                    );
+                    let label = pointer_label_footprint(position, display);
+                    region = Some(match region {
+                        Some(existing) => existing.union(mask).union(label),
+                        None => mask.union(label),
+                    });
+                }
+                None => background_count += 1,
+            }
+        }
+        // Background-operation pills stack at the top edge, one per activity.
+        if background_count > 0 {
+            let band = aegis_model::Rect::new(
+                0,
+                0,
+                display.0 as i32,
+                (BACKGROUND_HEIGHT * background_count as f32).ceil() as i32,
+            );
+            region = Some(match region {
+                Some(existing) => existing.union(band),
+                None => band,
+            });
+        }
+        region
+    }
 }
 
 /// Resolve the feedback region for an applied pointer position: the visible
@@ -741,6 +811,28 @@ fn pointer_label_rect(position: Point, width: f32, display: (f32, f32)) -> Rect 
         w: width,
         h: LABEL_HEIGHT,
     }
+}
+
+/// Damage footprint of a pointer-anchored label: the label can sit on either
+/// side of (and above/below) the pointer and its measured width is only known
+/// at render time, so cover the widest clamp on both axes plus the pointer
+/// sprite's own square.
+fn pointer_label_footprint(position: Point, display: (f32, f32)) -> aegis_model::Rect {
+    let max_width = 290.0f32.min((display.0 - 16.0).max(1.0));
+    let x0 = (position.x as f32 - max_width - 20.0)
+        .min(position.x as f32 - CURSOR_SIZE * 0.5)
+        .max(0.0);
+    let x1 = (position.x as f32 + 20.0 + max_width)
+        .max(position.x as f32 + CURSOR_SIZE)
+        .min(display.0);
+    let y0 = (position.y as f32 - LABEL_HEIGHT - 18.0).max(0.0);
+    let y1 = (position.y as f32 + 18.0 + LABEL_HEIGHT).min(display.1);
+    aegis_model::Rect::new(
+        x0.floor() as i32,
+        y0.floor() as i32,
+        (x1 - x0).ceil() as i32,
+        (y1 - y0).ceil() as i32,
+    )
 }
 
 fn render_shape(

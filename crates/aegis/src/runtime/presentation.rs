@@ -20,6 +20,7 @@ impl CompositorRuntime {
             cursor_hidden,
             cursor_shape,
             had_input,
+            input_pointer_only,
             mut pending_screenshots,
         } = state;
         // Scene colors track the desktop appearance: the shell's design
@@ -48,7 +49,12 @@ impl CompositorRuntime {
             (self.input_acc.cursor.0 * scale).round() as i32,
             (self.input_acc.cursor.1 * scale).round() as i32,
         );
-        // Upload and place compositor-owned theme cursors on dedicated KMS
+        // The largest theme-sprite edge, for pointer-only partial repaints
+        // (damage assessment).
+        let cursor_extent = self
+            .cursor_cache
+            .sprite_extent(cursor_shape, scale)
+            .unwrap_or(48.0);        // Upload and place compositor-owned theme cursors on dedicated KMS
         // planes before deciding whether a full-output client can scan out
         // directly. The cheap Arc clone ends the CursorCache borrow before
         // mutating the host; cursor buffers themselves are cached by exact
@@ -151,10 +157,13 @@ impl CompositorRuntime {
         self.shell.prepare_backdrop(&input);
         let assessed_damage = self.assess_frame_damage(DamageAssessment {
             had_input,
+            input_pointer_only,
             session_locked,
             cursor_hidden,
             cursor_shape,
             software_cursor: self.host.uses_software_cursor(),
+            cursor_position: self.input_acc.cursor,
+            cursor_extent,
             scale,
             physical_size,
         });

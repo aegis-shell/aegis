@@ -87,6 +87,24 @@ impl Rect {
         }
     }
 
+    /// The smallest rectangle covering both this rectangle and `other`. An
+    /// empty operand contributes nothing; two empty rectangles union to an
+    /// empty rectangle. Damage accumulation uses this to combine per-source
+    /// dirty regions into a partial-repaint footprint.
+    pub fn union(&self, other: Rect) -> Rect {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return *self;
+        }
+        let x0 = self.origin.x.min(other.origin.x);
+        let y0 = self.origin.y.min(other.origin.y);
+        let x1 = (self.origin.x + self.size.w).max(other.origin.x + other.size.w);
+        let y1 = (self.origin.y + self.size.h).max(other.origin.y + other.size.h);
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
+
     /// Remove `hole` from this rectangle, returning the (up to four) disjoint
     /// rectangles that remain. An empty result means `hole` fully covered this
     /// rectangle. This is the geometric core of occlusion culling: subtracting

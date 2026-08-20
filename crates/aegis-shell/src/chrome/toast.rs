@@ -194,6 +194,29 @@ impl Chrome for Toast {
         !self.presentable().is_empty()
     }
 
+    fn damage_region(
+        &self,
+        _windows: &[Window],
+        display: (f32, f32),
+    ) -> Option<aegis_model::Rect> {
+        let count = self.presentable().len();
+        (count > 0).then(|| {
+            // The stacked strip in the top-right corner: every slot a toast
+            // occupies (or is about to vacate by expiring this frame) sits
+            // inside this band, margins included.
+            let width = (TOAST_W + TOAST_RIGHT_MARGIN).min(display.0.max(1.0));
+            let height = TOAST_TOP_MARGIN
+                + count as f32 * TOAST_H
+                + (count.saturating_sub(1)) as f32 * TOAST_GAP;
+            aegis_model::Rect::new(
+                (display.0 - width).max(0.0) as i32,
+                0,
+                width.ceil() as i32,
+                height.ceil() as i32,
+            )
+        })
+    }
+
     fn requires_composition(&self) -> bool {
         !self.presentable().is_empty()
     }

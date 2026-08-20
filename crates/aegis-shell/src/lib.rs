@@ -864,6 +864,28 @@ pub trait Chrome {
         false
     }
 
+    /// The output-logical rectangle this component's in-flight animation can
+    /// touch **this frame**, for hosts that convert animation ticks into
+    /// partial-output repaints instead of a full composite.
+    ///
+    /// Contract:
+    /// * Only consulted while [`Chrome::anim_pending`] returns true; a
+    ///   static component's region is never read.
+    /// * The rectangle must cover every pixel the animation may change
+    ///   between the previous presented frame and the next one — including
+    ///   the area vacated by a moving element (union of the previous and
+    ///   current position), plus any soft shadow/blur halo.
+    /// * Returning `None` is always safe: the host falls back to a
+    ///   full-output repaint for this frame. Third-party components should
+    ///   keep the `None` default unless they can state their footprint.
+    ///
+    /// Damage reported this way also has to be **re-reported** every animated
+    /// frame while the element keeps moving, because each partial repaint
+    /// consumes the previous frame's rectangle.
+    fn damage_region(&self, _windows: &[Window], _display: (f32, f32)) -> Option<aegis_model::Rect> {
+        None
+    }
+
     /// Whether this component would draw visible pixels in the next frame.
     /// The default is conservative: third-party chrome blocks direct scanout
     /// until it explicitly proves that its inactive state is visually empty.
@@ -1780,6 +1802,53 @@ impl Shell {
             return true;
         }
         self.ui.anim_pending()
+    }
+
+    /// The output-logical rectangle every in-flight chrome animation can
+    /// touch this frame, or `None` when any animated component (or lens's
+    /// own eased state) cannot state its footprint. The compositor uses this
+    /// to turn animation-driven frames into partial repaints instead of
+    /// full-output composites; `None` preserves the conservative
+    /// full-repaint behaviour.
+    ///
+    /// This only describes *chrome* animation damage. Client windows, the
+    /// software cursor, and the backdrop-effect source have their own damage
+    /// paths and are unioned by the host separately.
+    pub fn anim_damage_region(&self, display: (f32, f32)) -> Option<aegis_model::Rect> {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
+        let mut region: Option<aegis_model::Rect> = None;
+        for component in self
+            .components
+            .iter()
+            .filter(|component| {
+                participates_in_shell_pass(
+                    component.as_ref(),
+                    self.screenshot_freeze,
+                    modal_active,
+                    window_switcher_active,
+                    exclusive_presentation_active,
+                )
+            })
+            .filter(|c| c.anim_pending())
+        {
+            let rect = component.damage_region(&self.windows, display)?;
+            region = Some(match region {
+                Some(existing) => existing.union(rect),
+                None => rect,
+            });
+        }
+        // Lens's internal eased values (hover/active fades on buttons, the
+        // agent-feedback cursor sprite) have no exposed footprint; while any
+        // is still settling the shell cannot narrow the repaint.
+        if self.ui.anim_pending() {
+            return None;
+        }
+        region
     }
 
     /// Whether any component that would participate in the next chrome pass
