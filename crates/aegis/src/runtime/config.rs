@@ -288,6 +288,7 @@ pub(super) fn configured_color_policies(
                 aegis_model::output::ColorPolicy {
                     hdr: policy.hdr,
                     deep_color: policy.deep_color,
+                    sdr_white_nits: policy.sdr_white_nits,
                 },
             )
         })

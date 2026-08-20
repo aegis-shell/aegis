@@ -924,18 +924,33 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // The scan decodes icon files — far too slow for the frame loop — so a
     // worker thread does the reading and decoding, and the main loop only
     // applies results (GPU texture upload + catalog swap) when they arrive.
-    const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
     let next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
     let (scan_req_tx, scan_req_rx) = std::sync::mpsc::channel::<AppScanRequest>();
     let (scan_result_tx, scan_result_rx) = std::sync::mpsc::channel::<AppScanResult>();
     std::thread::Builder::new()
         .name("aegis-app-scan".into())
         .spawn(move || {
+            let mut last_theme = String::new();
+            let mut last_scale = 0u32;
+            let mut last_catalog = Vec::new();
+            let mut last_snapshot = std::collections::BTreeMap::new();
             while let Ok(request) = scan_req_rx.recv() {
                 let theme = request.icon_theme;
                 let catalog = application_catalog(&theme, request.scale);
                 let snapshot = snapshot_icons(&catalog);
+                if theme == last_theme
+                    && request.scale == last_scale
+                    && catalog == last_catalog
+                    && snapshot == last_snapshot
+                {
+                    continue;
+                }
                 let decoded = decode_icons(&catalog, &theme, request.scale);
+                last_theme = theme.clone();
+                last_scale = request.scale;
+                last_catalog = catalog.clone();
+                last_snapshot = snapshot.clone();
                 if scan_result_tx
                     .send((theme, request.scale, catalog, snapshot, decoded))
                     .is_err()

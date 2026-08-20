@@ -1687,7 +1687,7 @@ impl Renderer {
                                 .keys()
                                 .any(|candidate| candidate.0 == f.id)
                             {
-                                log::info!(
+                                log::trace!(
                                     "[render] dma-buf imported: {}x{} fourcc={:#x} mod={:#x}",
                                     f.width,
                                     f.height,

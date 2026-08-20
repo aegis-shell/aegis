@@ -87,6 +87,9 @@ impl CompositorRuntime {
             if self.presentation.tick(now) {
                 if self.animating {
                     self.presentation.queue_redraw();
+                    let _ = self
+                        .server
+                        .send_frame_callbacks(self.start.elapsed().as_millis() as u32);
                 } else {
                     let callbacks_sent = self
                         .server

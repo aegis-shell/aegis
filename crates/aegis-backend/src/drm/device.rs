@@ -438,6 +438,13 @@ impl DrmBackend {
         }
     }
 
+    /// Target SDR white luminance in nits for HDR mode (default 203.0).
+    fn configured_sdr_white_nits(&self) -> Option<f32> {
+        self.configured_color
+            .values()
+            .find_map(|policy| policy.sdr_white_nits)
+    }
+
     pub fn create_surface(&mut self, device: &flux::Device) -> Result<flux::Surface, DrmError> {
         // A recreated Flux surface reuses slot numbers for different VkImages.
         // Advance the epoch before allocating it so an equal-size recreation
@@ -486,17 +493,24 @@ impl DrmBackend {
                     },
                 )?
             }
-            (DisplayColorMode::Hdr, _) => flux::Surface::offscreen_dmabuf_with_color_options(
-                device,
-                width,
-                height,
-                &self.displays.modifiers,
-                flux::SurfaceColorOptions {
-                    color_spaces: &[flux::ColorSpace::BT2020_PQ],
-                    offscreen_formats: &[flux::Format::FLUX_FORMAT_RGB10A2_UNORM],
-                    ..Default::default()
-                },
-            )?,
+            (DisplayColorMode::Hdr, _) => {
+                let sdr_white = self.configured_sdr_white_nits().unwrap_or(203.0);
+                flux::Surface::offscreen_dmabuf_with_color_options(
+                    device,
+                    width,
+                    height,
+                    &self.displays.modifiers,
+                    flux::SurfaceColorOptions {
+                        color_spaces: &[flux::ColorSpace::BT2020_PQ],
+                        offscreen_formats: &[flux::Format::FLUX_FORMAT_RGB10A2_UNORM],
+                        hdr: Some(flux::SurfaceHdr {
+                            sdr_white_nits: sdr_white,
+                            metadata: None,
+                        }),
+                        ..Default::default()
+                    },
+                )?
+            }
         };
         if !surface.is_exportable() {
             return Err(DrmError::DmabufUnsupported);

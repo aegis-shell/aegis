@@ -699,6 +699,10 @@ pub struct OutputConfig {
     /// LUT-only profiles and HDR mode are out of scope and log a warning.
     #[serde(default)]
     pub icc_profile: Option<String>,
+    /// Target SDR white luminance in cd/m² (nits) in HDR mode (ITU-R BT.2408
+    /// default: 203.0). Valid range is 80.0 through 500.0.
+    #[serde(default)]
+    pub sdr_white_nits: Option<f32>,
 }
 
 /// The `position` table of a `[[output]]` entry: logical-pixel coordinates
@@ -978,15 +982,27 @@ impl Config {
                     format!("unknown transform '{transform}'"),
                 ));
             }
+            if let Some(sdr_white) = output.sdr_white_nits
+                && (!sdr_white.is_finite() || !(80.0..=500.0).contains(&sdr_white))
+            {
+                diagnostics.push(Diagnostic::new(
+                    Some(format!("output.{index}.sdr_white_nits")),
+                    "must be between 80.0 and 500.0 (nits)",
+                ));
+            }
             if output.scale.is_none()
                 && output.mode.is_none()
                 && output.position.is_none()
                 && output.transform.is_none()
                 && !output.primary
+                && !output.hdr
+                && !output.deep_color
+                && output.sdr_white_nits.is_none()
+                && output.icc_profile.is_none()
             {
                 diagnostics.push(Diagnostic::new(
                     Some(format!("output.{index}")),
-                    "has no effect; set at least one of scale, mode, position, transform, primary",
+                    "has no effect; set at least one of scale, mode, position, transform, primary, hdr, deep_color, sdr_white_nits, icc_profile",
                 ));
             }
         }
@@ -1254,6 +1270,7 @@ impl Config {
                     primary: output.primary,
                     hdr: output.hdr,
                     deep_color: output.deep_color,
+                    sdr_white_nits: output.sdr_white_nits,
                 },
             );
         }

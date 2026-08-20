@@ -186,6 +186,8 @@ impl CompositorRuntime {
                         (!cursor_hidden).then_some(last_committed_hotspot);
                     self.damage.last_presented_cursor_pixels =
                         (!cursor_hidden).then_some(last_committed_sprite_size);
+                    self.renderer.gc(self.server.live_surface_ids());
+                    self.renderer.begin_frame();
                     self.frame_count += 1;
                     return Ok(PresentationOutcome::Submitted);
                 }
@@ -234,6 +236,8 @@ impl CompositorRuntime {
                     .server
                     .send_frame_callbacks(self.start.elapsed().as_millis() as u32)
                     > 0;
+            self.renderer.gc(self.server.live_surface_ids());
+            self.renderer.begin_frame();
             return Ok(PresentationOutcome::NoDamage { callbacks_sent });
         }
         // Direct-scanout fast path: a single opaque dma-buf client whose actual
@@ -303,6 +307,8 @@ impl CompositorRuntime {
                     self.damage.last_presented_cursor_pixels =
                         (!cursor_hidden).then_some(last_committed_sprite_size);
                     self.damage.force_full_redraw = false;
+                    self.renderer.gc(self.server.live_surface_ids());
+                    self.renderer.begin_frame();
                     self.frame_count += 1;
                     return Ok(PresentationOutcome::Submitted);
                 }

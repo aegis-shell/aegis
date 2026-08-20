@@ -124,17 +124,22 @@ pub struct OutputPolicy {
     /// reduced banding in SDR. Also gated on every active output allowing
     /// it and every primary plane supporting the format.
     pub deep_color: bool,
+    /// Target SDR white luminance in cd/m² (nits) in HDR mode (ITU-R BT.2408
+    /// default: 203.0). Valid range is 80.0 through 500.0.
+    pub sdr_white_nits: Option<f32>,
 }
 
-/// Per-connector color policy (the `hdr` / `deep_color` fields of a
+/// Per-connector color policy (the `hdr` / `deep_color` / `sdr_white_nits` fields of a
 /// `[[output]]` config entry), consumed by the backend at modeset time.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ColorPolicy {
     /// Allow HDR (BT.2020 PQ) on this connector.
     pub hdr: bool,
     /// Allow a 10-bit deep-color SDR framebuffer on this connector.
     pub deep_color: bool,
+    /// Target SDR white luminance in cd/m² (nits) for HDR mode.
+    pub sdr_white_nits: Option<f32>,
 }
 
 /// The session-wide color pipeline actually in effect (the compositor
