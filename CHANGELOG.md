@@ -7,6 +7,37 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.42] - 2026-08-20
+
+### Added
+
+- HDR and color pipeline: Optics upgraded to v0.0.22, whose Rust bindings
+  expose batched texture uploads (`Device::uploads_begin`).
+
+### Changed
+
+- Compositor performance on HiDPI high-refresh outputs. Profiling a live
+  session on 3072x1920@120Hz showed the main thread spending 78% of its CPU
+  in memory copies — 63% under per-frame whole-texture recreation for
+  continuously-updating SHM clients (terminals, browsers) and 15% inside the
+  Wayland SHM commit copy — plus 41% of a second profile in command-pool
+  resets from per-upload queue submits. Two conservative damage policies
+  (any input event and any pending chrome animation forced a full-output
+  composite) amplified every client frame and dock/agent-feedback animation
+  into full-screen work. Cursor lag (libinput reporting 23–33ms event
+  processing lag) and animation jank were the visible symptoms.
+- Texture uploads: a same-size refresh of an existing texture now updates it
+  in place (`Image::update_region`) instead of destroy/recreate, and every
+  composite submits all of its texture uploads as one batched queue submit.
+- Damage localization: chrome components can declare their animation
+  footprint (`Chrome::damage_region`) — implemented for the dock (capture
+  envelope, live-preview panel, tooltip band), agent feedback (window mask,
+  pointer/label footprint, background pills), toasts, and the HUD — so a
+  ticking dock spring or a fading agent-operation overlay repaints only its
+  band instead of the whole output. Pointer-only input repaints the swept
+  cursor footprint unioned with the animated-chrome region; keys, buttons,
+  and unlocalizable animation states keep the conservative full repaint.
+
 ## [0.0.41] - 2026-08-20
 
 ### Added
