@@ -7,6 +7,24 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.43] - 2026-08-20
+
+### Fixed
+
+- Window-drag jank and input lag on multi-client desktops: the renderer's
+  per-frame texture GC compared live surfaces by their `SurfaceRec` heap
+  address while the texture caches key the very same surfaces by their
+  `wl_resource` pointer. The two never coincide, so every cached texture
+  was dropped every frame and the next composite rebuilt each one through
+  `flux_image_create` — a full CPU→GPU copy per surface per frame. This
+  also disabled the in-place `update_region` fast path introduced in
+  0.0.42 (its cache-hit gate was always false by composite time); both
+  the incremental damage upload and the batched single-submit upload now
+  engage as designed. Live profiling during window drags showed 1042 of
+  1044 upload samples going through texture re-creation and libinput
+  reporting 21–26ms event-processing lag; after the fix, cached textures
+  survive across frames and only the committed damage is uploaded.
+
 ## [0.0.42] - 2026-08-20
 
 ### Added
