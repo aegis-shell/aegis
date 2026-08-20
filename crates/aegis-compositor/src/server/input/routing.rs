@@ -452,17 +452,61 @@ impl Server {
     /// Content hash of exactly what [`Self::windows`] would publish, computed
     /// without cloning any `Window`. The frame loop compares this per frame
     /// and rebuilds the owned snapshot only when it moves; a collision would
-    /// only stall a refresh until the next change.
+    /// only stall a refresh until the next change. Memoized per millisecond
+    /// (see `State::window_signature_memo`): the signature is a pure function
+    /// of the surface table and `now`, so callers within one frame reuse the
+    /// first evaluation instead of re-walking every surface.
     pub fn windows_signature(&self) -> u64 {
+        let now = self.now_ms();
+        let (memo_now, memo_visible, memo_all) = self.state.window_signature_memo.get();
+        if memo_now == now && memo_now != 0 {
+            if memo_visible != 0 {
+                return memo_visible;
+            }
+            let visible = self.visible();
+            let signature = self.windows_signature_filtered(|s| visible.contains(&s.window.id));
+            self.state
+                .window_signature_memo
+                .set((now, signature, memo_all));
+            return signature;
+        }
         let visible = self.visible();
-        self.windows_signature_filtered(|s| visible.contains(&s.window.id))
+        let signature = self.windows_signature_filtered(|s| visible.contains(&s.window.id));
+        self.state.window_signature_memo.set((now, signature, 0));
+        signature
+    }
+
+    /// Drop the per-millisecond window-signature memo. Call after any batch
+    /// of surface-table mutations that bypasses the protocol dispatch path
+    /// (direct state edits in tests, or any future host-side reconfigure):
+    /// the memo keys on `now_ms` alone, so a mutation inside the same
+    /// millisecond would otherwise be served the pre-mutation signature.
+    /// The frame loop needs no explicit call — its signature consumers run
+    /// after dispatch returns, and the table only moves inside dispatch.
+    pub fn invalidate_window_signature_memo(&self) {
+        self.state.window_signature_memo.set((0, 0, 0));
     }
 
     /// Content hash of exactly what [`Self::all_windows`] would publish, the
     /// global counterpart of [`Self::windows_signature`]. The frame loop gates
     /// the dock's snapshot push on it just like the visible-set hash.
+    /// Memoized per millisecond alongside `windows_signature`.
     pub fn all_windows_signature(&self) -> u64 {
-        self.windows_signature_filtered(|_| true)
+        let now = self.now_ms();
+        let (memo_now, memo_visible, memo_all) = self.state.window_signature_memo.get();
+        if memo_now == now && memo_now != 0 {
+            if memo_all != 0 {
+                return memo_all;
+            }
+            let signature = self.windows_signature_filtered(|_| true);
+            self.state
+                .window_signature_memo
+                .set((now, memo_visible, signature));
+            return signature;
+        }
+        let signature = self.windows_signature_filtered(|_| true);
+        self.state.window_signature_memo.set((now, 0, signature));
+        signature
     }
 
     fn windows_signature_filtered(&self, in_set: impl Fn(&SurfaceRec) -> bool) -> u64 {

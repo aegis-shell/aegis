@@ -461,6 +461,58 @@ fn window_snapshot_drops_an_unmapped_toplevel() {
 }
 
 #[test]
+fn window_signature_memo_reuses_within_a_millisecond_and_invalidates_on_change() {
+    // The frame loop evaluates both signatures from two call sites per frame
+    // (damage assessment and the snapshot fan-out). The memo must make those
+    // redundant calls return identical values while the surface table is
+    // unchanged — including the all-windows variant interleaved with the
+    // visible-set one — and must never serve a stale value after the table
+    // mutates outside dispatch: the memo caches the per-millisecond walk,
+    // never the semantics.
+    let mut state = State::new(std::ptr::null_mut());
+    let window = aegis_model::window::WindowId(78);
+    let client = state.authority.register_client(None);
+    state
+        .authority
+        .create_interaction_group(client, &[window], HUMAN_INTERACTION_DOMAIN)
+        .expect("register physical window authority");
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    state.workspaces.place_toplevel(workspace, window);
+
+    let mut surface = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    surface.mapped = true;
+    surface.xdg_toplevel = 0x400usize as *mut ffi::wl_resource;
+    surface.window.id = window;
+    surface.window.app_id = Some("memo.test.app".into());
+    state.surfaces = vec![surface.as_mut()];
+
+    let server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        interaction_domain_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    let first = server.windows_signature();
+    let first_all = server.all_windows_signature();
+    // Same millisecond: the interleaved lookups return the memoized values.
+    assert_eq!(server.windows_signature(), first);
+    assert_eq!(server.all_windows_signature(), first_all);
+    assert_ne!(first, 0, "a real single-window signature must be non-zero");
+
+    // A direct state edit bypasses dispatch, so the memo must be dropped
+    // before the new title is observable (the frame loop's consumers all run
+    // after dispatch, so no explicit drop is needed there).
+    surface.window.title = Some("changed".into());
+    server.invalidate_window_signature_memo();
+    assert_ne!(server.windows_signature(), first);
+    assert_ne!(server.all_windows_signature(), first_all);
+}
+
+#[test]
 fn physical_window_snapshot_contains_only_controlled_or_observed_windows() {
     let mut state = State::new(std::ptr::null_mut());
     let agent = state

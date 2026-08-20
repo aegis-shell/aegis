@@ -244,6 +244,7 @@ impl State {
             color_pipeline_identity: 1,
             last_work_area: aegis_model::Rect::default(),
             epoch: std::time::Instant::now(),
+            window_signature_memo: std::cell::Cell::new((0, 0, 0)),
             last_app_geometries,
             window_state_store,
             window_state_path,

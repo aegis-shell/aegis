@@ -1556,6 +1556,15 @@ pub(crate) struct State {
     /// Cached chrome-aware work area bounds for maximized windows.
     pub(crate) last_work_area: aegis_model::Rect,
     pub(crate) epoch: std::time::Instant,
+    /// Memoized window signatures, keyed by the `now_ms` they were computed
+    /// at: `(now, visible_set_signature, all_windows_signature)`. The frame
+    /// loop evaluates both signatures from two call sites per frame (damage
+    /// assessment and the snapshot fan-out), and a signature is a pure
+    /// function of the surface table and `now` — within one millisecond the
+    /// values are identical, so the second and later lookups reuse the
+    /// first. Interior mutability keeps `windows_signature` on `&self`, as
+    /// the server API surface is otherwise immutable for readers.
+    pub(crate) window_signature_memo: std::cell::Cell<(u64, u64, u64)>,
     /// Last remembered floating window position and size per application ID.
     pub(crate) last_app_geometries: std::collections::HashMap<String, aegis_model::Rect>,
     /// Persistent window state store across restarts.
