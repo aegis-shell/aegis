@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.40] - 2026-08-20
+
 ### Fixed
 
 - Launcher close flash (whole-screen blink at the moment of dismissal): the
