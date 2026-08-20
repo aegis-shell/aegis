@@ -7,6 +7,25 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Launcher close flash (whole-screen blink at the moment of dismissal): the
+  reveal spring is underdamped and crosses zero while settling, and the
+  backdrop-blur gate keyed on the raw spring value toggled the full-screen
+  blur off/on at each overshoot crossing — a capture teardown and rebuild
+  mid-fade. The gate now holds through the whole settle (`anim_active`),
+  and the blur radius stays constant for the session instead of easing per
+  frame (the radius is part of the compositor's capture key, so easing it
+  forced a full-screen re-capture on every exit frame; any frame whose
+  rebuild did not deliver fell through to the sharp desktop under the
+  thinning veil).
+- Launcher search field and grid selection are scheme-following surfaces
+  instead of the popover/menu glass, which is translucent white in both
+  appearances: new `launcher_field_surface` (dark translucent glass in the
+  dark appearance, white in the light one) and `launcher_selection` wash
+  follow the desktop color scheme, so the dark theme reads 透黑 rather than
+  a translucent-white bar over the blurred veil.
+
 ## [0.0.39] - 2026-08-20
 
 ### Fixed

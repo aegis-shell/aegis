@@ -57,6 +57,9 @@ impl Design {
                 generic_icon_surface: Color::rgba(76, 85, 116, 224),
                 scrim: Color::rgba(8, 10, 18, 118),
                 on_scrim_text: Color::rgba(248, 250, 253, 255),
+                launcher_field_surface: Color::rgba(16, 19, 30, 122),
+                launcher_field_border: Color::rgba(255, 255, 255, 44),
+                launcher_selection: Color::rgba(12, 15, 26, 96),
                 critical: Color::rgba(255, 72, 84, 255),
                 validation: Color::rgba(190, 226, 255, 255),
             },
@@ -190,6 +193,9 @@ impl Design {
                 // wash here too — the light page text would be illegible on
                 // it.
                 on_scrim_text: Color::rgba(248, 250, 253, 255),
+                launcher_field_surface: Color::rgba(250, 251, 253, 208),
+                launcher_field_border: Color::rgba(28, 32, 44, 30),
+                launcher_selection: Color::rgba(255, 255, 255, 72),
                 critical: Color::rgba(210, 40, 55, 255),
                 validation: Color::rgba(30, 90, 200, 255),
             },
@@ -419,6 +425,20 @@ pub struct Colors {
     /// the page-appropriate text colors would sit on the wrong tonal side
     /// over the dark wash in the light appearance.
     pub on_scrim_text: Color,
+    /// The launcher's search field surface: a scheme-following translucent
+    /// tone (dark glass in the dark appearance, white glass in the light
+    /// one), unlike the popover/menu glass which is white in both. The
+    /// launcher sits on the blurred desktop veil, where a dark-theme
+    /// translucent-white field reads as an opaque bright bar instead of
+    /// tinted glass.
+    pub launcher_field_surface: Color,
+    /// Edge of [`Colors::launcher_field_surface`].
+    pub launcher_field_border: Color,
+    /// Grid-cell selection wash in the launcher. Scheme-following like the
+    /// field surface: a darker-than-veil ink wash in the dark appearance and
+    /// a lighter wash in the light one, so the selection reads as a tinted
+    /// surface (透黑/透白 with the theme) rather than a fixed white glow.
+    pub launcher_selection: Color,
     /// Critical emphasis: destructive confirmations, error text, and alerts
     /// that must read as dangerous on any surface.
     pub critical: Color,
@@ -812,6 +832,48 @@ mod tests {
         );
         let (r, g, b, a) = Design::dark().colors.generic_icon_surface.components();
         assert!(r > 40 && r < 130 && g > 50 && g < 140 && b > 90 && b < 190 && a > 200);
+    }
+
+    #[test]
+    fn launcher_field_glass_follows_the_scheme() {
+        // Dark appearance: translucent dark glass, not the popover white —
+        // over the blurred desktop veil a translucent-white bar reads as an
+        // opaque bright bar. (Colors store premultiplied bytes, so the
+        // assertions divide back out the alpha.)
+        let dark = Design::dark().colors;
+        let (r, g, b, a) = dark.launcher_field_surface.components();
+        let unmul = |c: u8| u32::from(c) * 255 / u32::from(a.max(1));
+        assert!(
+            unmul(r) < 60 && unmul(g) < 60 && unmul(b) < 80,
+            "dark field is dark glass: {}",
+            dark.launcher_field_surface.components().0
+        );
+        assert!(a > 80 && a < 190, "and translucent: {a}");
+
+        // Light appearance: white glass, matching its page tone.
+        let light = Design::light().colors;
+        let (r, g, b, a) = light.launcher_field_surface.components();
+        let unmul = |c: u8| u32::from(c) * 255 / u32::from(a.max(1));
+        assert!(
+            unmul(r) > 240 && unmul(g) > 240 && unmul(b) > 240,
+            "light field is white glass"
+        );
+
+        // The grid selection wash follows the scheme the same way: dark ink
+        // in the dark appearance, white in the light one. (Stored bytes are
+        // premultiplied, so divide the alpha back out.)
+        let (dr, dg, db, da) = dark.launcher_selection.components();
+        let dunmul = |c: u8| u32::from(c) * 255 / u32::from(da.max(1));
+        assert!(
+            dunmul(dr) < 40 && dunmul(dg) < 40 && dunmul(db) < 50,
+            "dark selection is a dark wash"
+        );
+        let (lr, lg, lb, la) = light.launcher_selection.components();
+        let lunmul = |c: u8| u32::from(c) * 255 / u32::from(la.max(1));
+        assert!(
+            lunmul(lr) > 240 && lunmul(lg) > 240 && lunmul(lb) > 240,
+            "light selection is a light wash"
+        );
     }
 
     #[test]

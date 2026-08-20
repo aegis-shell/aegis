@@ -218,8 +218,14 @@ impl Launcher {
     /// the 1% alpha mark let the un-blurred desktop pop through the
     /// still-fading scrim — the "bright flash on close". The fade must be
     /// fully finished before the overlay stops participating.
+    ///
+    /// Keyed on `anim_active`, not the spring value: the reveal spring is
+    /// underdamped and crosses zero while settling, and keying the backdrop
+    /// on `value > 0` alone would toggle the blur off/on at each overshoot
+    /// crossing — a full capture teardown and rebuild mid-fade, visible as a
+    /// one-frame flash.
     fn active(&self) -> bool {
-        self.brain.is_open() || self.visibility.value > 0.0
+        self.brain.is_open() || self.anim_active || self.visibility.value > 0.0
     }
 
     fn toggle(&mut self, _out: &mut ChromeEvents) {
@@ -557,11 +563,14 @@ impl Chrome for Launcher {
         }
         // Frosted-glass search field: the shared glass-panel material carries
         // the layout defaults while the painted layer keeps the launcher's
-        // brighter popover tint over the compositor's backdrop blur. No
-        // glass_focus token carries the focused edge, so the border alpha and
-        // widths stay numeric overrides.
-        let surface = self.design.colors.popover_surface;
-        let edge = self.design.colors.popover_border;
+        // own scheme-following field tone over the compositor's backdrop
+        // blur — dark translucent glass in the dark appearance (the shared
+        // popover/menu tokens are white in both and would read as an opaque
+        // bright bar here), white glass in the light one. No glass_focus
+        // token carries the focused edge, so the border alpha and widths
+        // stay numeric overrides.
+        let surface = self.design.colors.launcher_field_surface;
+        let edge = self.design.colors.launcher_field_border;
         let (_, _, _, surface_alpha) = surface.components();
         let (_, _, _, edge_alpha) = edge.components();
         let search_panel = LayoutOpts {
@@ -674,15 +683,16 @@ impl Chrome for Launcher {
             let icon_size = (layout.cell_w * 0.52)
                 .min(layout.cell_h - 42.0)
                 .clamp(44.0, 82.0);
-            // Selection/hover rides the scrim-anchored tone: a translucent
-            // light wash stays visible over the dark veil in both
-            // appearances, where the light scheme's dark ink fills would all
-            // but disappear.
-            let scrim_text = colors.on_scrim_text;
+            // Selection and hover are scheme-following surfaces like the
+            // search field: translucent dark ink in the dark appearance and
+            // translucent white in the light one (透黑/透白 随主题), instead of
+            // the fixed light glow the scrim-anchored tone produced.
+            let selection = colors.launcher_selection;
+            let (_, _, _, selection_alpha) = selection.components();
             let cell_bg = if cell.selected {
-                scrim_text.with_alpha(42)
+                selection
             } else if hovered {
-                scrim_text.with_alpha(26)
+                selection.with_alpha((selection_alpha as f32 * 0.62) as u8)
             } else {
                 Color::TRANSPARENT
             };
@@ -694,7 +704,7 @@ impl Chrome for Launcher {
                     LayoutOpts {
                         bg: cell_bg,
                         border: if cell.selected {
-                            scrim_text.with_alpha(54)
+                            self.design.colors.launcher_field_border
                         } else {
                             Color::TRANSPARENT
                         },
@@ -989,15 +999,18 @@ impl Chrome for Launcher {
         self.active()
     }
 
-    /// The blur radius eases with the reveal instead of switching off
-    /// abruptly at an alpha threshold: a hard cut at 1% visibility replaced
-    /// the blurred desktop with the sharp one in a single frame — the bright
-    /// flash on close. Tracked as a smooth multiplier, the compositor's
-    /// `BackdropCacheKey` sees a changing sigma and rebuilds the effect each
-    /// frame of the fade, so the desktop sharpens continuously.
+    /// The blur radius stays constant for the whole session, including the
+    /// exit fade. The radius is part of the compositor's
+    /// `BackdropCacheKey`: easing it per frame forced a full-screen
+    /// re-capture + effect rebuild on *every* frame of the fade, and any
+    /// frame where that rebuild did not deliver fell back to drawing the
+    /// sharp, unblurred desktop under the thinning scrim — the visible
+    /// "bright flash on close". A constant radius keeps the exit on the
+    /// zero-rebuild `Cached` path; the veil itself fades via the component
+    /// opacity, so the session still eases away visually.
     fn backdrop_blur_sigma(&self) -> f32 {
         if self.active() {
-            BACKDROP_BLUR_SIGMA * self.visibility.value.clamp(0.0, 1.0).sqrt()
+            BACKDROP_BLUR_SIGMA
         } else {
             0.0
         }
@@ -1453,15 +1466,39 @@ mod tests {
             "the backdrop stays declared through the fade"
         );
 
-        // Mid-fade the blur radius eases down with the reveal rather than
-        // cutting to zero at an alpha threshold.
+        // Mid-fade the blur radius stays at full strength: easing the
+        // radius keyed the compositor's capture cache on every frame and any
+        // failed rebuild fell through to the sharp desktop — the flash.
+        // The veil fades via component opacity; the blur hands over only
+        // once, when the spring has fully settled.
         launcher.advance_visibility(0.0, 1.0 / 60.0);
-        let mid = launcher.backdrop_blur_sigma();
-        assert!(
-            mid > 0.0 && mid < BACKDROP_BLUR_SIGMA,
-            "blur eases through the fade: {mid}"
-        );
+        assert_eq!(launcher.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
         assert!(launcher.active(), "the fade is still running");
+
+        // The underdamped spring crosses zero while settling; the gate must
+        // hold through those overshoot frames instead of toggling the blur.
+        launcher.visibility.value = -0.02;
+        assert!(
+            launcher.active(),
+            "an overshoot crossing must not drop the modal"
+        );
+        assert_eq!(
+            launcher
+                .backdrop_regions(
+                    (1280.0, 720.0),
+                    &[],
+                    &crate::WorkspaceSnapshot { outputs: vec![] }
+                )
+                .len(),
+            1,
+            "the backdrop survives the overshoot"
+        );
+
+        // Fully settled: one clean handover to the direct path.
+        launcher.visibility.value = 0.0;
+        launcher.anim_active = false;
+        assert!(!launcher.active());
+        assert_eq!(launcher.backdrop_blur_sigma(), 0.0);
     }
 
     #[test]
