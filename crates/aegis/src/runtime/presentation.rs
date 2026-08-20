@@ -122,9 +122,8 @@ impl CompositorRuntime {
         let shm_stream_forcing_due =
             !session_locked && self.host.is_active() && self.streams.forcing_due_shm(now);
         let stream_forcing_due = dmabuf_stream_forcing_due || shm_stream_forcing_due;
-        let dmabuf_stream_capture_due = !session_locked
-            && self.host.is_active()
-            && !self.streams.due_dmabuf_ids(now).is_empty();
+        let dmabuf_stream_capture_due =
+            !session_locked && self.host.is_active() && self.streams.any_dmabuf_due(now);
         let screenshot_include_cursor = self
             .config
             .as_ref()
@@ -382,10 +381,7 @@ impl CompositorRuntime {
             && !session_locked
             && self.host.is_active()
             && !self.capture_worker.is_busy()
-            && !self
-                .streams
-                .due_shm_ids(std::time::Instant::now())
-                .is_empty()
+            && self.streams.any_shm_due(std::time::Instant::now())
         {
             frame_capture = Some(FrameCapture {
                 crop: None,

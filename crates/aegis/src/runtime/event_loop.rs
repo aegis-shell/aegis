@@ -3,11 +3,6 @@ use super::*;
 const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const FALLBACK_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
 const MODEL_WALLPAPER_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
-/// Poll quantum while a stream frame traverses the readback lane: the
-/// stream is already past due, but its delivery is in flight, so a
-/// zero-timeout wait would only spin the core until the GPU fence or the
-/// worker completion lands.
-const STREAM_IN_FLIGHT_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 
 impl CompositorRuntime {
     fn presentation_availability(&self) -> PresentationAvailability {
@@ -152,25 +147,17 @@ impl CompositorRuntime {
         // at the stream's next frame deadline even on a static screen.
         // Window streams (ADR-0127) render independently of presentation:
         // the loop additionally wakes at a dirty window stream's max-fps
-        // deadline and polls briefly while one of its readbacks is in
-        // flight. Streams are not served while the session is locked or the
-        // backend is inactive, so they must not keep the loop awake then
-        // either. While
-        // a frame is already traversing the SHM readback lane (readback
-        // bound, or the worker converting it), delivery is in flight and
-        // its completion wakes the loop; poll again after a short quantum
-        // instead of spinning on a zero timeout until then.
+        // deadline. While a frame is already traversing the SHM readback
+        // lane (readback bound, or the worker converting it), the capture
+        // worker's completion eventfd is registered in the backend poll set
+        // (the worker signals *before* sending through the channel), so the
+        // completion itself wakes the loop — no poll quantum is needed and
+        // none may be added: a floor here would re-introduce the 1 kHz
+        // dispatch churn the eventfd was wired up to remove. Streams are
+        // not served while the session is locked or the backend is
+        // inactive, so they must not keep the loop awake then either.
         let stream_wait = if !self.server.session_locked() && self.host.is_active() {
-            let in_flight = self.pending_capture.is_some() || self.stream_job_in_flight;
-            self.streams
-                .next_stream_wake_in(std::time::Instant::now())
-                .map(|wait| {
-                    if in_flight {
-                        wait.max(STREAM_IN_FLIGHT_WAIT)
-                    } else {
-                        wait
-                    }
-                })
+            self.streams.next_stream_wake_in(std::time::Instant::now())
         } else {
             None
         };
@@ -213,13 +200,23 @@ impl CompositorRuntime {
     /// Aegis currently commits every active CRTC as one ownership batch, so
     /// the slowest active output bounds when the whole batch retires. Nested
     /// mode has no authoritative output mode and uses a 60 Hz estimate.
-    fn presentation_interval(&self) -> std::time::Duration {
-        atomic_domain_interval(
+    /// The result is cached against `outputs_revision` — this sits on the
+    /// per-frame pacing path and a hotplug is the only event that can move
+    /// it.
+    fn presentation_interval(&mut self) -> std::time::Duration {
+        let revision = self.server.outputs_revision();
+        let (cached_revision, cached) = self.cached_presentation_interval;
+        if cached_revision == revision {
+            return cached;
+        }
+        let interval = atomic_domain_interval(
             self.server
                 .output_infos()
                 .into_iter()
                 .map(|output| output.geometry.mode.refresh_mhz),
-        )
+        );
+        self.cached_presentation_interval = (revision, interval);
+        interval
     }
 
     fn update_animation_state(&mut self) {

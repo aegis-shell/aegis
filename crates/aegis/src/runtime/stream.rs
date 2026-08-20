@@ -640,9 +640,38 @@ impl OutputStreams {
         self.due_ids_by_transport(now, false)
     }
 
+    /// Whether any SHM stream is due — the per-frame capture-gating hot path
+    /// only needs the predicate; this is `due_shm_ids` without the Vec.
+    pub(super) fn any_shm_due(&self, now: Instant) -> bool {
+        self.streams
+            .iter()
+            .filter(|(_, stream)| !stream.frozen)
+            .filter(|(_, stream)| stream.window.is_none())
+            .filter(|(_, stream)| stream.dmabuf.is_none())
+            .any(|(_, stream)| {
+                stream
+                    .last_frame
+                    .is_none_or(|last| now.duration_since(last) >= stream.frame_interval)
+            })
+    }
+
     /// Ids of due dmabuf streams (the post-present slot fan-out).
     pub(super) fn due_dmabuf_ids(&self, now: Instant) -> Vec<u64> {
         self.due_ids_by_transport(now, true)
+    }
+
+    /// Whether any dmabuf stream is due (predicate-only, allocation-free).
+    pub(super) fn any_dmabuf_due(&self, now: Instant) -> bool {
+        self.streams
+            .iter()
+            .filter(|(_, stream)| !stream.frozen)
+            .filter(|(_, stream)| stream.window.is_none())
+            .filter(|(_, stream)| stream.dmabuf.is_some())
+            .any(|(_, stream)| {
+                stream
+                    .last_frame
+                    .is_none_or(|last| now.duration_since(last) >= stream.frame_interval)
+            })
     }
 
     /// Record that `stream_id` was offered a frame at `now`; `delivered`

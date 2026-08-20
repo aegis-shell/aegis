@@ -896,6 +896,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let last_ws_sig: Option<u64> = None;
     let last_interaction_domain_revision: Option<u64> = None;
     let last_outputs_revision: Option<u64> = None;
+    // (outputs_revision, interval); u64::MAX can never be a live revision
+    // on the first call (state starts at 0), forcing a first-frame compute.
+    let cached_presentation_interval: (u64, std::time::Duration) =
+        (u64::MAX, std::time::Duration::from_secs(1));
     let previous_agent_suspended = false;
     let automatically_paused_interaction_domains = std::collections::BTreeSet::new();
     // Whether chrome reported a multi-frame animation in flight last frame.
@@ -1039,6 +1043,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_ws_sig,
         last_interaction_domain_revision,
         last_outputs_revision,
+        cached_presentation_interval,
         damage: DamageTracking::default(),
         presentation: PresentationScheduler::new(),
         pending_frame: None,

@@ -235,6 +235,13 @@ pub(super) struct CompositorRuntime {
     pub(super) last_ws_sig: Option<u64>,
     pub(super) last_interaction_domain_revision: Option<u64>,
     pub(super) last_outputs_revision: Option<u64>,
+    /// Cached `atomic_domain_interval` keyed by `outputs_revision`.
+    /// `presentation_interval` sits on the per-frame pacing path (render
+    /// follow-up and estimated-vblank wake) and used to clone the full
+    /// `Vec<OutputInfo>` twice per frame through `Server::output_infos`;
+    /// outputs only change on hotplug/mode switches, so the interval is
+    /// recomputed only when the revision moves.
+    pub(super) cached_presentation_interval: (u64, std::time::Duration),
     /// Output damage baselines and buffer-age carry-over (runtime/damage.rs).
     pub(super) damage: DamageTracking,
     /// Explicit redraw/presentation lifecycle for the host's atomic commit
