@@ -7,6 +7,17 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.38] - 2026-08-20
+
+### Fixed
+
+- Unified renderer surface GC lifecycle: garbage collection across the desktop, lock screen, window switchers, and preview scenes now sweeps only surface IDs dead across the entire compositor, eliminating spurious resource recycling churn.
+- Removed redundant `renderer.begin_frame()` calls ahead of `begin_opaque_frame` in offscreen interaction domain capture and stream rendering passes.
+
+### Documentation
+
+- Added triage guide for popup, card, and transient window positioning issues (`docs/dev/triage/popup-positioning.md`).
+
 ## [0.0.37] - 2026-08-19
 
 ### Added
