@@ -37,7 +37,9 @@ Use any interaction:
 
 Type to filter applications. Use the arrow keys to move through the grid,
 press `Enter` to activate the selected application, or click an application
-cell. Scroll or swipe to move between result pages. Press `Escape` to close
+cell. Scroll or swipe to move between result pages: a mouse-wheel detent
+turns one page, and a two-finger touchpad swipe needs a deliberate flick
+(keep moving to walk further pages). Press `Escape` to close
 the launcher.
 
 See the [Configuration Reference](../reference/config.md#default-key-bindings)

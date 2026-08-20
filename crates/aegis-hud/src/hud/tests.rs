@@ -40,6 +40,50 @@ fn the_hud_never_reserves_space_or_captures_the_pointer() {
 }
 
 #[test]
+fn the_launcher_modal_fades_the_hud_out_and_away() {
+    let mut bar = Hud::new();
+    bar.layout.visible = [true, true];
+    bar.chip_fade = [1.0, 1.0];
+    bar.chip_target = [1.0, 1.0];
+    <Hud as Chrome>::update(&mut bar, ChromeUpdate::LauncherActive(true));
+    let workspaces = workspaces_empty();
+
+    // The fade targets zero with the same ease as the cursor-proximity fade,
+    // so the opening launcher reveal melts the chips away rather than
+    // cutting them in one frame.
+    bar.advance_fade(1.0 / 60.0, (-1000.0, -1000.0));
+    assert!(!bar.dormant(), "the fade is still running");
+    assert_eq!(bar.chip_target, [0.0, 0.0]);
+    assert!(
+        bar.chip_fade[0] < 1.0 && bar.chip_fade[0] > 0.0,
+        "the fade eases rather than cuts: {}",
+        bar.chip_fade[0]
+    );
+
+    // Settled: the HUD is fully dormant — no chrome pixels, no second frost
+    // stacked inside the launcher's backdrop blur, no animation.
+    bar.chip_fade = [0.0, 0.0];
+    assert!(bar.dormant());
+    assert!(!bar.requires_composition(), "no chrome pixels");
+    assert_eq!(bar.backdrop_blur_sigma(), 0.0);
+    assert!(
+        bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces)
+            .is_empty()
+    );
+    assert!(
+        bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces)
+            .is_empty()
+    );
+    assert!(!bar.anim_pending());
+
+    // Leaving the launcher restores the ordinary shown state.
+    <Hud as Chrome>::update(&mut bar, ChromeUpdate::LauncherActive(false));
+    assert!(!bar.dormant());
+    bar.advance_fade(1.0, (1000.0, 1000.0));
+    assert_eq!(bar.chip_target, [1.0, 1.0], "the chips fade back in");
+}
+
+#[test]
 fn fullscreen_window_makes_the_hud_composition_free() {
     let mut bar = Hud::new();
     bar.layout.visible = [true, true];

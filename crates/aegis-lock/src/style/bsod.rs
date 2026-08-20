@@ -132,10 +132,7 @@ impl StylePainter for BsodPainter {
                 aligned_layer(Align::Start),
             ),
             |ui| {
-                ui.label_compact_sized(
-                    &counter_line(counter, frame.state),
-                    layout.counter_size,
-                );
+                ui.label_compact_sized(&counter_line(counter, frame.state), layout.counter_size);
             },
         );
 
@@ -211,24 +208,15 @@ impl BsodCopy {
                         "Your session ran into a problem it cannot fix alone.",
                         "你的会话遇到了无法独自修复的问题。",
                     ),
-                    localized(
-                        "Authentication is unavailable.",
-                        "认证服务不可用。",
-                    ),
+                    localized("Authentication is unavailable.", "认证服务不可用。"),
                 ],
                 localized("AUTH_SERVICE_UNAVAILABLE", "认证服务不可用"),
             )
         } else {
             (
                 vec![
-                    localized(
-                        "Your session has been locked.",
-                        "你的会话已锁定。",
-                    ),
-                    localized(
-                        "Type your password to continue.",
-                        "输入密码以继续。",
-                    ),
+                    localized("Your session has been locked.", "你的会话已锁定。"),
+                    localized("Type your password to continue.", "输入密码以继续。"),
                 ],
                 localized("SESSION_LOCKED", "会话已锁定"),
             )
@@ -252,10 +240,7 @@ impl BsodCopy {
                 &format!("Time: {clock}  ·  {kb}"),
                 &format!("时间: {clock}  ·  {kb}"),
             ),
-            None => localized(
-                &format!("Time: {clock}"),
-                &format!("时间: {clock}"),
-            ),
+            None => localized(&format!("Time: {clock}"), &format!("时间: {clock}")),
         };
         vec![
             self.support_intro.clone(),
@@ -377,7 +362,11 @@ mod tests {
             "unexpected stop code {}",
             copy.stop_code
         );
-        assert!(copy.headline_lines.iter().any(|l| l.contains("password") || l.contains("密码")));
+        assert!(
+            copy.headline_lines
+                .iter()
+                .any(|l| l.contains("password") || l.contains("密码"))
+        );
     }
 
     #[test]

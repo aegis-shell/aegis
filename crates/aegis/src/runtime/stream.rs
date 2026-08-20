@@ -2836,7 +2836,9 @@ mod tests {
 
         // 2. Mid-interval (e.g. 5ms after t0 for a 60fps stream ~16.6ms): not due yet.
         assert!(!streams.forcing_due_shm(t0 + Duration::from_millis(5)));
-        let wait = streams.next_stream_wake_in(t0 + Duration::from_millis(5)).unwrap();
+        let wait = streams
+            .next_stream_wake_in(t0 + Duration::from_millis(5))
+            .unwrap();
         assert!(wait <= Duration::from_millis(12));
 
         // 3. Once interval has passed (17ms): forcing is due again.

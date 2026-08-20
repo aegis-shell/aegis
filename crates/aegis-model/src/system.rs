@@ -71,6 +71,16 @@ pub struct SystemStatus {
     pub volume: Option<u8>,
     pub muted: bool,
     pub network: NetworkState,
+    /// The sysfs name of the interface behind `network` (e.g. `wlan0`,
+    /// `enp3s0`), empty when offline. Presentation shows it beside the
+    /// link state so the panel reads as "which NIC".
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub network_interface: String,
+    /// The associated Wi-Fi network name when `network` is a live wireless
+    /// link, `None` otherwise (wired, offline, or the forked probe has not
+    /// answered yet).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub wifi_ssid: Option<String>,
     pub battery: Option<BatteryStatus>,
     /// `None` means the Wi-Fi radio service is unavailable.
     pub wifi_enabled: Option<bool>,

@@ -34,11 +34,7 @@ pub fn menu_disabled(menu: Theme, design: &Design) -> Theme {
 /// which would sit on the wrong tonal side otherwise.
 #[must_use]
 pub fn application(design: &Design) -> Theme {
-    let base = if design.is_light() {
-        Theme::light()
-    } else {
-        Theme::dark()
-    };
+    let base = application_base(design);
     base.with_bg(design.colors.application_surface)
         .with_fg(design.colors.application_text)
         .with_accent(design.colors.application_accent)
@@ -56,6 +52,25 @@ pub fn application(design: &Design) -> Theme {
         // on cards and chrome surfaces. The scheme-correct rest/hover/active
         // thumb ramp comes from the lens base theme.
         .with_scrollbar_track_color(Color::TRANSPARENT)
+}
+
+/// The scheme-correct lens base (light or dark) with only the foreground
+/// re-toned to the design's text color.
+///
+/// Hosts that own the lens context push this onto `Ui::set_theme` when the
+/// desktop scheme changes so bare lens widgets — vector icons and anything
+/// not explicitly styled — draw on the same tonal side as the design
+/// instead of the creation-time dark token set. It deliberately carries no
+/// background, border, or accent overrides: components supply their own
+/// surface materials and only inherit the tonal defaults.
+#[must_use]
+pub fn application_base(design: &Design) -> Theme {
+    let base = if design.is_light() {
+        Theme::light()
+    } else {
+        Theme::dark()
+    };
+    base.with_fg(design.colors.application_text)
 }
 
 /// The light widget theme inside the SAO command panel's white surfaces

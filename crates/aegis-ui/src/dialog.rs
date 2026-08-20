@@ -69,13 +69,7 @@ pub fn place_modal_panel(frame: &mut Frame, id: &str, panel_rect: Rect, design: 
 }
 
 /// Render a modal title in a single line.
-pub fn render_dialog_title(
-    frame: &mut Frame,
-    id: &str,
-    rect: Rect,
-    title: &str,
-    design: &Design,
-) {
+pub fn render_dialog_title(frame: &mut Frame, id: &str, rect: Rect, title: &str, design: &Design) {
     frame.place(
         id,
         &materials::chrome_place(rect, materials::transparent()),

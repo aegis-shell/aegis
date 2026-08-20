@@ -746,7 +746,10 @@ impl DrmBackend {
             // `cursor_state` is rewritten below, so no live index can go
             // stale while entries are dropped.
             while self.cursor_buffers.len() > MAX_CURSOR_BUFFERS {
-                let evicted = self.cursor_buffers.pop().expect("bound check ensures an entry");
+                let evicted = self
+                    .cursor_buffers
+                    .pop()
+                    .expect("bound check ensures an entry");
                 let card = self.card();
                 if let Err(error) = card.destroy_framebuffer(evicted.framebuffer) {
                     log::warn!("DRM: failed to destroy evicted cursor framebuffer: {error}");

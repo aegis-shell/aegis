@@ -14,8 +14,10 @@ impl CommandPanel {
             .map(|visible| menu_bounds(self.menu_owner, visible, display))
     }
 
-    /// The top-left profile panel: user persona (ringed avatar, display name,
-    /// `@username · groups`) with corner brackets. Slides in from the top-left.
+    /// The top-left profile block: user persona (gapped-ring avatar, display
+    /// name, `@username · groups`, hostname) drawn frameless — no chip glass,
+    /// no background, no border — straight onto the blurred background.
+    /// Slides in from the top-left.
     pub(super) fn render_profile_panel(
         &self,
         f: &mut Frame,
@@ -31,35 +33,28 @@ impl CommandPanel {
             ..rect
         };
 
-        // Profile chip minimal painted foreground (physical refraction provided by prism LiquidGlassRegion)
-        f.place(
-            "aegis-hud-profile-glass",
-            &chrome_place(
-                rect,
-                LayoutOpts {
-                    bg: Color::rgba(24, 26, 36, 42),
-                    border: Color::rgba(255, 255, 255, 18),
-                    border_width: 0.75,
-                    radius: self.design.radii.chip.max(20.0),
-                    pad: 0.0,
-                    ..surface_layout()
-                },
-            ),
-            |f| {
-                f.column_ex(&sized(rect.w, rect.h), |_| {});
-            },
-        );
-
-        let pad = 12.0;
+        let pad = 14.0;
         let center_y = rect.y + rect.h * 0.5;
         let base_theme = themes::hud(&hud);
         let muted_theme = themes::hud_muted(base_theme, &hud);
         let avatar_style = self.design.avatars.for_role(AvatarRole::PersonaHeader);
         let original = f.theme();
 
-        // -- profile zone: compact 48px avatar + name lines ------------------
-        let avatar_size = 48.0;
+        // -- profile zone: 56px avatar with a gapped line ring + name lines --
+        let avatar_size = 56.0;
         let avatar_center = (rect.x + pad + avatar_size * 0.5, center_y);
+        // The ring floats clear of the avatar edge — the visible gap reads
+        // as a deliberate stroke of the identity mark rather than a border.
+        let ring_gap = 3.0;
+        let ring_diameter = avatar_size + ring_gap * 2.0 + 2.0;
+        render_ring(
+            f,
+            "aegis-hud-avatar-ring",
+            avatar_center,
+            ring_diameter,
+            hud.accent,
+            1.5,
+        );
         render_disc(
             f,
             "aegis-hud-avatar-backdrop",
@@ -81,7 +76,13 @@ impl CommandPanel {
                     &chrome_place(avatar_rect, transparent()),
                     |f| {
                         f.row_ex(&sized(avatar_size, avatar_size), |f| {
-                            unsafe { f.image(texture as *mut lens::sys::flux_image, avatar_size, avatar_size) };
+                            unsafe {
+                                f.image(
+                                    texture as *mut lens::sys::flux_image,
+                                    avatar_size,
+                                    avatar_size,
+                                )
+                            };
                         });
                     },
                 );
@@ -102,7 +103,8 @@ impl CommandPanel {
                             |f| {
                                 f.flex(1.0);
                                 f.spacer(0.0);
-                                f.label_compact_sized(
+                                display_label(
+                                    f,
                                     &self.profile.initials,
                                     avatar_rect.w * avatar_style.initials_scale,
                                 );
@@ -115,18 +117,18 @@ impl CommandPanel {
             }
         }
 
-        let text_x = rect.x + pad + avatar_size + 10.0;
+        let text_x = rect.x + pad + ring_diameter + 14.0;
         let text_w = (rect.x + rect.w - pad - text_x).max(40.0);
-        let display_name = truncate(&self.profile.display_name, (text_w / 8.5).max(4.0) as usize);
+        let display_name = truncate(&self.profile.display_name, (text_w / 9.5).max(4.0) as usize);
         f.set_theme(base_theme);
         f.place(
             "aegis-hud-profile-name",
             &chrome_place(
                 Rect {
                     x: text_x,
-                    y: center_y - 18.0,
+                    y: center_y - 26.0,
                     w: text_w,
-                    h: 20.0,
+                    h: 24.0,
                 },
                 transparent(),
             ),
@@ -134,11 +136,11 @@ impl CommandPanel {
                 f.row_ex(
                     &LayoutOpts {
                         width: text_w,
-                        height: 20.0,
+                        height: 24.0,
                         cross: Align::Center,
                         ..Default::default()
                     },
-                    |f| f.label_compact_sized(&display_name, type_scale.headline),
+                    |f| display_label(f, &display_name, type_scale.title),
                 );
             },
         );
@@ -147,16 +149,16 @@ impl CommandPanel {
             sub_line.push_str(" · ");
             sub_line.push_str(&self.profile.groups.join(", "));
         }
-        let sub_line = truncate(&sub_line, (text_w / 5.5).max(6.0) as usize);
+        let sub_line = truncate(&sub_line, (text_w / 6.2).max(6.0) as usize);
         f.set_theme(muted_theme);
         f.place(
             "aegis-hud-profile-sub",
             &chrome_place(
                 Rect {
                     x: text_x,
-                    y: center_y + 2.0,
+                    y: center_y + 1.0,
                     w: text_w,
-                    h: 15.0,
+                    h: 18.0,
                 },
                 transparent(),
             ),
@@ -164,26 +166,49 @@ impl CommandPanel {
                 f.row_ex(
                     &LayoutOpts {
                         width: text_w,
-                        height: 15.0,
+                        height: 18.0,
                         cross: Align::Center,
                         ..Default::default()
                     },
-                    |f| f.label_compact_sized(&sub_line, type_scale.footnote),
+                    |f| display_label(f, &sub_line, type_scale.label),
                 );
             },
         );
+        // The hostname line answers "which machine": muted, sitting under
+        // the account line so the block reads who-on-where.
+        if !self.profile.hostname.is_empty() {
+            let host_line = truncate(&self.profile.hostname, (text_w / 6.2).max(6.0) as usize);
+            f.place(
+                "aegis-hud-profile-host",
+                &chrome_place(
+                    Rect {
+                        x: text_x,
+                        y: center_y + 20.0,
+                        w: text_w,
+                        h: 16.0,
+                    },
+                    transparent(),
+                ),
+                |f| {
+                    f.row_ex(
+                        &LayoutOpts {
+                            width: text_w,
+                            height: 16.0,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f| display_label(f, &host_line, type_scale.footnote),
+                    );
+                },
+            );
+        }
         f.set_theme(original);
     }
 
     /// The machine telemetry monitor: chassis glyph plus utilization gauges
     /// (CPU/GPU/RAM with sparklines, NET, DISK, BAT).
     #[allow(dead_code)]
-    pub(super) fn render_machine_panel(
-        &self,
-        f: &mut Frame,
-        rect: Rect,
-        i18n: &Localizer,
-    ) {
+    pub(super) fn render_machine_panel(&self, f: &mut Frame, rect: Rect, i18n: &Localizer) {
         let hud = Hud::classic();
         let type_scale = self.design.typography;
         let pad = 16.0;
@@ -311,7 +336,7 @@ impl CommandPanel {
                     |f| {
                         f.flex(1.0);
                         f.spacer(0.0);
-                        f.label_compact_sized(chassis_label, type_scale.caption);
+                        display_label(f, chassis_label, type_scale.caption);
                         f.flex(1.0);
                         f.spacer(0.0);
                     },
@@ -451,7 +476,7 @@ impl CommandPanel {
                     },
                     |f| {
                         if let Some(text) = text_label {
-                            f.label_compact_sized(text, type_scale.caption);
+                            display_label(f, text, type_scale.caption);
                         } else if let Some((icon, _)) = icon_label {
                             f.icon(icon, 10.0);
                         }
@@ -566,7 +591,7 @@ impl CommandPanel {
                     |f| {
                         f.flex(1.0);
                         f.spacer(0.0);
-                        f.label_compact_sized(&value, type_scale.caption);
+                        display_label(f, &value, type_scale.caption);
                     },
                 );
             },
@@ -577,7 +602,7 @@ impl CommandPanel {
     /// Returns the dedicated icon for a navigation tab.
     pub(super) fn tab_icon(tab: Tab) -> Icon {
         match tab {
-            Tab::System => Icon::Sliders,
+            Tab::QuickControls => Icon::Sliders,
             Tab::Settings(id) => match id.as_str() {
                 "display" => Icon::Activity,
                 "appearance" => Icon::PenTool,
@@ -637,10 +662,7 @@ impl CommandPanel {
         // 2. Right Column: Glass Page View (ProminentPanel physical liquid glass)
         f.place(
             "aegis-hud-view-glass",
-            &chrome_place(
-                view_rect,
-                materials::glass_panel(&self.design),
-            ),
+            &chrome_place(view_rect, materials::glass_panel(&self.design)),
             |f| {
                 f.column_ex(&sized(view_rect.w, view_rect.h), |_| {});
             },
@@ -650,7 +672,7 @@ impl CommandPanel {
         let pad_v = 18.0;
         let header_h = 36.0;
         let active_title = match self.tab {
-            Tab::System => i18n.text(Message::System),
+            Tab::QuickControls => i18n.text(Message::QuickControls),
             Tab::Settings(id) => self
                 .modules
                 .metadata()
@@ -683,8 +705,8 @@ impl CommandPanel {
                         ..Default::default()
                     },
                     |f| {
-                        f.icon(Self::tab_icon(self.tab), 20.0);
-                        f.label_compact_sized(active_title, type_scale.headline);
+                        f.icon(Self::tab_icon(self.tab), 22.0);
+                        display_label(f, active_title, type_scale.title);
                     },
                 );
             },
@@ -698,7 +720,7 @@ impl CommandPanel {
             h: (view_rect.h - pad_v * 2.0 - header_h - 10.0).max(1.0),
         };
         match self.tab {
-            Tab::System => self.render_system_section(f, body_area, i18n, out),
+            Tab::QuickControls => self.render_quick_controls_section(f, body_area, i18n, out),
             Tab::Settings(id) => self.render_settings_tab(f, id, body_area, i18n, out),
         }
     }
@@ -708,7 +730,8 @@ impl CommandPanel {
     pub(super) fn render_nav_rail(&mut self, f: &mut Frame, rect: Rect, i18n: &Localizer) {
         let hud = Hud::classic();
         let type_scale = self.design.typography;
-        let mut tabs: Vec<(Tab, &'static str)> = vec![(Tab::System, i18n.text(Message::System))];
+        let mut tabs: Vec<(Tab, &'static str)> =
+            vec![(Tab::QuickControls, i18n.text(Message::QuickControls))];
         tabs.extend(
             self.modules
                 .metadata()
@@ -747,7 +770,7 @@ impl CommandPanel {
                             let (text_color, icon_color) = if selected {
                                 (
                                     Color::rgba(255, 255, 255, 255), // Brilliant illuminated white text
-                                    hud.accent,                     // Glowing cyan accent icon
+                                    hud.accent,                      // Glowing cyan accent icon
                                 )
                             } else {
                                 (
@@ -757,7 +780,8 @@ impl CommandPanel {
                             };
 
                             let icon = Self::tab_icon(*tab);
-                            let label_text = truncate(label, ((rect.w - 56.0) / 7.0).max(4.0) as usize);
+                            let label_text =
+                                truncate(label, ((rect.w - 62.0) / 7.2).max(4.0) as usize);
 
                             f.set_theme(tab_theme.with_fg(text_color));
                             let (response, _) = f.pressable_row(
@@ -765,7 +789,7 @@ impl CommandPanel {
                                 &label_text,
                                 &LayoutOpts {
                                     height: CAPSULE_H,
-                                    pad: 16.0,
+                                    pad: 18.0,
                                     radius: CAPSULE_RADIUS, // 100% semicircle
                                     cross: Align::Center,
                                     gap: 12.0,
@@ -776,9 +800,9 @@ impl CommandPanel {
                                 },
                                 |f, _| {
                                     f.set_theme(tab_theme.with_fg(icon_color));
-                                    f.icon(icon, 18.0);
+                                    f.icon(icon, 20.0);
                                     f.set_theme(tab_theme.with_fg(text_color));
-                                    f.label_compact_sized(&label_text, type_scale.label);
+                                    display_label(f, &label_text, type_scale.body);
                                 },
                             );
                             if response.clicked && !selected {
@@ -832,9 +856,10 @@ impl CommandPanel {
                         |f| {
                             f.flex(1.0);
                             f.spacer(0.0);
-                            f.label_compact_sized(
+                            display_label(
+                                f,
                                 i18n.text(Message::ConnectingToDesktop),
-                                type_scale.label,
+                                type_scale.body,
                             );
                             f.flex(1.0);
                             f.spacer(0.0);
@@ -962,7 +987,7 @@ impl CommandPanel {
                     x: rect.x + 14.0,
                     y: rect.y + 8.0,
                     w: rect.w - 28.0,
-                    h: 15.0,
+                    h: 17.0,
                 },
                 transparent(),
             ),
@@ -970,12 +995,12 @@ impl CommandPanel {
                 f.row_ex(
                     &LayoutOpts {
                         width: rect.w - 28.0,
-                        height: 15.0,
+                        height: 17.0,
                         cross: Align::Center,
                         ..Default::default()
                     },
                     |f| {
-                        f.label_compact_sized(title, type_scale.footnote);
+                        display_label(f, title, type_scale.label);
                     },
                 );
             },
@@ -983,15 +1008,17 @@ impl CommandPanel {
         f.set_theme(original);
         Rect {
             x: rect.x + 12.0,
-            y: rect.y + 27.0,
+            y: rect.y + 29.0,
             w: rect.w - 24.0,
-            h: (rect.h - 37.0).max(1.0),
+            h: (rect.h - 39.0).max(1.0),
         }
     }
 
-    /// Quick settings, ported from the status bar's old status-and-controls
-    /// panel and laid out as full-width HUD groups.
-    pub(super) fn render_system_section(
+    /// The first tab: quick controls for the daily toggles — volume,
+    /// brightness, always-on, and do-not-disturb. These are the controls
+    /// users reach for without thinking, so they lead the nav rail; the
+    /// remaining quick settings stay in the System section.
+    pub(super) fn render_quick_controls_section(
         &mut self,
         f: &mut Frame,
         area: Rect,
@@ -1004,272 +1031,277 @@ impl CommandPanel {
         f.set_theme(themes::hud(&hud));
         let status = self.status.clone();
         let volume_themed = self.themed_icon(volume_icon_name(&status));
-        let network_themed = self.themed_icon(network_icon_name(status.network));
-        let network_label = network_text(&status, i18n);
-        let agent_indicator = agent_workspace_indicator(&self.interaction_domains, i18n);
-        let agent_status_text = if agent_indicator.state == AgentWorkspaceState::Idle {
-            agent_workspace_state_label(agent_indicator.state, i18n).to_string()
-        } else {
-            agent_indicator.label.clone()
-        };
-        // Group headers: a small muted caption above each control group,
-        // replacing the old bare separators.
         let base_theme = themes::hud(&hud);
         let muted_theme = themes::hud_muted(themes::hud(&hud), &hud);
         let group_header = move |f: &mut Frame, label: &str| {
             f.set_theme(muted_theme);
-            f.label_compact_sized(label, type_scale.footnote);
+            display_label(f, label, type_scale.footnote);
             f.set_theme(base_theme);
         };
-        f.place(
-            "aegis-hud-system",
-            &chrome_place(area, transparent()),
-            |f| {
-                f.column_ex(&sized(area.w, area.h), |f| {
-                    f.flex(1.0);
-                    f.scroll("aegis-hud-system-scroll", |f| {
-                        f.column_ex(
-                            &LayoutOpts {
-                                gap: 8.0,
-                                cross: Align::Stretch,
-                                ..Default::default()
-                            },
-                            |f| {
-                                // Sound group.
-                                group_header(f, i18n.text(Message::Sound));
-                                f.row_ex(
-                                    &LayoutOpts {
-                                        height: 22.0,
-                                        gap: 8.0,
-                                        cross: Align::Center,
-                                        ..Default::default()
-                                    },
-                                    |f| {
-                                        match volume_themed {
-                                            Some(icon) => unsafe {
-                                                f.image(
-                                                    icon as *mut lens::sys::flux_image,
-                                                    16.0,
-                                                    16.0,
-                                                )
-                                            },
-                                            None => f.icon(volume_icon(&status), 15.0),
-                                        }
-                                        f.label_compact_sized(
-                                            i18n.text(Message::Sound),
-                                            type_scale.label,
-                                        );
-                                        f.flex(1.0);
-                                        f.spacer(0.0);
-                                        f.label_compact_sized(
-                                            &status
-                                                .volume
-                                                .map(|level| format!("{level}%"))
-                                                .unwrap_or_else(|| "--".into()),
-                                            type_scale.footnote,
-                                        );
-                                    },
-                                );
-                                if status.volume.is_some() {
-                                    let mut volume = status.volume.unwrap_or(0) as f32;
-                                    if f.slider("##hud-volume", &mut volume, 0.0, 100.0) {
-                                        out.system_actions.push(SystemAction::SetVolume {
-                                            level: volume.round().clamp(0.0, 100.0) as u8,
-                                        });
+        f.place("aegis-hud-quick", &chrome_place(area, transparent()), |f| {
+            f.column_ex(&sized(area.w, area.h), |f| {
+                f.flex(1.0);
+                f.scroll("aegis-hud-quick-scroll", |f| {
+                    f.column_ex(
+                        &LayoutOpts {
+                            gap: 10.0,
+                            cross: Align::Stretch,
+                            ..Default::default()
+                        },
+                        |f| {
+                            // Sound.
+                            group_header(f, i18n.text(Message::Sound));
+                            f.row_ex(
+                                &LayoutOpts {
+                                    height: 26.0,
+                                    gap: 10.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| {
+                                    match volume_themed {
+                                        Some(icon) => unsafe {
+                                            f.image(icon as *mut lens::sys::flux_image, 18.0, 18.0)
+                                        },
+                                        None => f.icon(volume_icon(&status), 17.0),
                                     }
-                                    let mut muted = status.muted;
-                                    if f.checkbox(i18n.text(Message::Muted), &mut muted) {
-                                        out.system_actions.push(SystemAction::ToggleMute);
-                                    }
-                                } else {
-                                    unavailable_control(
+                                    display_label(f, i18n.text(Message::Sound), type_scale.body);
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    display_label(
                                         f,
-                                        i18n.text(Message::Volume),
-                                        i18n,
-                                        type_scale,
+                                        &status
+                                            .volume
+                                            .map(|level| format!("{level}%"))
+                                            .unwrap_or_else(|| "--".into()),
+                                        type_scale.label,
                                     );
-                                }
-                                f.spacer(2.0);
-
-                                // Brightness group.
-                                group_header(f, i18n.text(Message::Brightness));
-                                f.row_ex(
-                                    &LayoutOpts {
-                                        height: 22.0,
-                                        gap: 8.0,
-                                        cross: Align::Center,
-                                        ..Default::default()
-                                    },
-                                    |f| {
-                                        f.icon(Icon::Zap, 15.0);
-                                        f.label_compact_sized(
-                                            i18n.text(Message::Brightness),
-                                            type_scale.label,
-                                        );
-                                        f.flex(1.0);
-                                        f.spacer(0.0);
-                                        f.label_compact_sized(
-                                            &status
-                                                .brightness
-                                                .map(|level| format!("{level}%"))
-                                                .unwrap_or_else(|| "--".into()),
-                                            type_scale.footnote,
-                                        );
-                                    },
-                                );
-                                if status.brightness.is_some() {
-                                    let mut brightness = status.brightness.unwrap_or(1) as f32;
-                                    if f.slider("##hud-brightness", &mut brightness, 1.0, 100.0) {
-                                        out.system_actions.push(SystemAction::SetBrightness {
-                                            level: brightness.round().clamp(1.0, 100.0) as u8,
-                                        });
-                                    }
-                                } else {
-                                    unavailable_control(
-                                        f,
-                                        i18n.text(Message::Brightness),
-                                        i18n,
-                                        type_scale,
-                                    );
-                                }
-                                f.spacer(2.0);
-
-                                // Connectivity group.
-                                group_header(f, i18n.text(Message::Connectivity));
-                                f.row_ex(
-                                    &LayoutOpts {
-                                        height: 22.0,
-                                        gap: 8.0,
-                                        cross: Align::Center,
-                                        ..Default::default()
-                                    },
-                                    |f| {
-                                        match network_themed {
-                                            Some(icon) => unsafe {
-                                                f.image(
-                                                    icon as *mut lens::sys::flux_image,
-                                                    16.0,
-                                                    16.0,
-                                                )
-                                            },
-                                            None => f.icon(Icon::Globe, 15.0),
-                                        }
-                                        f.label_compact_sized(
-                                            i18n.text(Message::Connectivity),
-                                            type_scale.label,
-                                        );
-                                        f.flex(1.0);
-                                        f.spacer(0.0);
-                                        f.label_compact_sized(network_label, type_scale.footnote);
-                                    },
-                                );
-                                if status.wifi_enabled.is_some() {
-                                    let mut wifi = status.wifi_enabled.unwrap_or(false);
-                                    if f.checkbox(i18n.text(Message::Wifi), &mut wifi) {
-                                        out.system_actions
-                                            .push(SystemAction::SetWifi { enabled: wifi });
-                                    }
-                                } else {
-                                    unavailable_control(
-                                        f,
-                                        i18n.text(Message::Wifi),
-                                        i18n,
-                                        type_scale,
-                                    );
-                                }
-                                if status.bluetooth_enabled.is_some() {
-                                    let mut bluetooth = status.bluetooth_enabled.unwrap_or(false);
-                                    if f.checkbox(i18n.text(Message::Bluetooth), &mut bluetooth) {
-                                        out.system_actions.push(SystemAction::SetBluetooth {
-                                            enabled: bluetooth,
-                                        });
-                                    }
-                                } else {
-                                    unavailable_control(
-                                        f,
-                                        i18n.text(Message::Bluetooth),
-                                        i18n,
-                                        type_scale,
-                                    );
-                                }
-                                f.spacer(2.0);
-
-                                // Desktop group.
-                                group_header(f, i18n.text(Message::Desktop));
-                                f.row_ex(
-                                    &LayoutOpts {
-                                        height: 22.0,
-                                        gap: 8.0,
-                                        cross: Align::Center,
-                                        ..Default::default()
-                                    },
-                                    |f| {
-                                        f.icon(Icon::Grid, 15.0);
-                                        f.label_compact_sized(
-                                            i18n.text(Message::Desktop),
-                                            type_scale.label,
-                                        );
-                                    },
-                                );
-                                let mut do_not_disturb = status.do_not_disturb;
-                                if f.checkbox(i18n.text(Message::DoNotDisturb), &mut do_not_disturb)
-                                {
-                                    out.system_actions.push(SystemAction::SetDoNotDisturb {
-                                        enabled: do_not_disturb,
+                                },
+                            );
+                            if status.volume.is_some() {
+                                let mut volume = status.volume.unwrap_or(0) as f32;
+                                if f.slider("##hud-quick-volume", &mut volume, 0.0, 100.0) {
+                                    out.system_actions.push(SystemAction::SetVolume {
+                                        level: volume.round().clamp(0.0, 100.0) as u8,
                                     });
                                 }
-                                let mut tiled = status.tiled;
-                                if f.checkbox(i18n.text(Message::TiledLayout), &mut tiled) {
-                                    out.system_actions
-                                        .push(SystemAction::SetTiling { enabled: tiled });
+                                let mut muted = status.muted;
+                                if f.checkbox(i18n.text(Message::Muted), &mut muted) {
+                                    out.system_actions.push(SystemAction::ToggleMute);
                                 }
-                                f.spacer(2.0);
-
-                                // Agent Workspaces group: display-only aggregate of
-                                // the live Agent Interaction Domains (moved here from the HUD's right
-                                // chip, ADR-0083).
-                                group_header(f, i18n.text(Message::AgentWorkspaces));
-                                f.row_ex(
-                                    &LayoutOpts {
-                                        height: 22.0,
-                                        gap: 8.0,
-                                        cross: Align::Center,
-                                        ..Default::default()
-                                    },
-                                    |f| {
-                                        f.icon(Icon::Users, 15.0);
-                                        f.label_compact_sized(
-                                            i18n.text(Message::AgentWorkspaces),
-                                            type_scale.label,
-                                        );
-                                        f.flex(1.0);
-                                        f.spacer(0.0);
-                                        f.label_compact_sized(
-                                            &agent_status_text,
-                                            type_scale.footnote,
-                                        );
-                                    },
+                            } else {
+                                unavailable_control(
+                                    f,
+                                    i18n.text(Message::Volume),
+                                    i18n,
+                                    type_scale,
                                 );
-                                f.spacer(2.0);
+                            }
+                            f.spacer(4.0);
 
-                                // Session group: an immediate lock trigger and the
-                                // "always on" idle inhibitor, which suspends automatic
-                                // dimming, locking, and display power-off while held.
-                                group_header(f, i18n.text(Message::Session));
-                                if f.button(i18n.text(Message::LockNow)) {
-                                    out.lock = true;
+                            // Brightness.
+                            group_header(f, i18n.text(Message::Brightness));
+                            f.row_ex(
+                                &LayoutOpts {
+                                    height: 26.0,
+                                    gap: 10.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| {
+                                    f.icon(Icon::Zap, 17.0);
+                                    display_label(
+                                        f,
+                                        i18n.text(Message::Brightness),
+                                        type_scale.body,
+                                    );
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    display_label(
+                                        f,
+                                        &status
+                                            .brightness
+                                            .map(|level| format!("{level}%"))
+                                            .unwrap_or_else(|| "--".into()),
+                                        type_scale.label,
+                                    );
+                                },
+                            );
+                            if status.brightness.is_some() {
+                                let mut brightness = status.brightness.unwrap_or(1) as f32;
+                                if f.slider("##hud-quick-brightness", &mut brightness, 1.0, 100.0) {
+                                    out.system_actions.push(SystemAction::SetBrightness {
+                                        level: brightness.round().clamp(1.0, 100.0) as u8,
+                                    });
                                 }
-                                let mut always_on = status.idle_inhibited;
-                                if f.checkbox(i18n.text(Message::AlwaysOn), &mut always_on) {
-                                    out.system_actions
-                                        .push(SystemAction::SetIdleInhibit { inhibit: always_on });
-                                }
-                            },
-                        );
-                    });
+                            } else {
+                                unavailable_control(
+                                    f,
+                                    i18n.text(Message::Brightness),
+                                    i18n,
+                                    type_scale,
+                                );
+                            }
+                            f.spacer(4.0);
+
+                            // The daily toggles: always-on and
+                            // do-not-disturb as switch rows.
+                            group_header(f, i18n.text(Message::Session));
+                            let mut always_on = status.idle_inhibited;
+                            if f.switch(i18n.text(Message::AlwaysOn), &mut always_on) {
+                                out.system_actions
+                                    .push(SystemAction::SetIdleInhibit { inhibit: always_on });
+                            }
+                            let mut do_not_disturb = status.do_not_disturb;
+                            if f.switch(i18n.text(Message::DoNotDisturb), &mut do_not_disturb) {
+                                out.system_actions.push(SystemAction::SetDoNotDisturb {
+                                    enabled: do_not_disturb,
+                                });
+                            }
+                        },
+                    );
                 });
+            });
+        });
+        f.set_theme(original);
+    }
+
+    /// The right-middle network monitor: the live interface (plus the Wi-Fi
+    /// name when the link is wireless) as its identity, two framed line
+    /// charts for upload and download throughput, and the current rates as
+    /// text under each chart.
+    pub(super) fn render_network_panel(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        progress: f32,
+        i18n: &Localizer,
+    ) {
+        if rect.w < 120.0 || rect.h < 120.0 {
+            return;
+        }
+        let hud = Hud::classic();
+        let type_scale = self.design.typography;
+        let status = self.status.clone();
+        let network_themed = self.themed_icon(network_icon_name(status.network));
+        let identity = network_identity(&status, i18n);
+        let state_label = network_text(&status, i18n);
+        let rx = format!("{} / s", format_rate(self.stats.net_rx_bytes_per_sec));
+        let tx = format!("{} / s", format_rate(self.stats.net_tx_bytes_per_sec));
+        let slide = (1.0 - ease_out_cubic(progress)) * 24.0;
+        let rect = Rect {
+            x: rect.x + slide,
+            ..rect
+        };
+
+        let original = f.theme();
+        let base_theme = themes::hud(&hud);
+        let muted_theme = themes::hud_muted(base_theme, &hud);
+
+        let pad = 16.0;
+        // Identity header: icon, `wlan0 · Homelab-5G`, and the link state.
+        let header_h = 30.0;
+        f.set_theme(base_theme);
+        f.place(
+            "aegis-hud-network-header",
+            &chrome_place(
+                Rect {
+                    x: rect.x + pad,
+                    y: rect.y + pad,
+                    w: (rect.w - pad * 2.0).max(1.0),
+                    h: header_h,
+                },
+                transparent(),
+            ),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: (rect.w - pad * 2.0).max(1.0),
+                        height: header_h,
+                        gap: 10.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        match network_themed {
+                            Some(icon) => unsafe {
+                                f.image(icon as *mut lens::sys::flux_image, 20.0, 20.0)
+                            },
+                            None => f.icon(Icon::Globe, 18.0),
+                        }
+                        display_label(f, &truncate(&identity, 26), type_scale.headline);
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                        f.set_theme(muted_theme);
+                        display_label(f, state_label, type_scale.footnote);
+                        f.set_theme(base_theme);
+                    },
+                );
             },
         );
+
+        // Two framed charts: upload over download, equal width, fed by the
+        // shared throughput histories.
+        let chart_top = rect.y + pad + header_h + 8.0;
+        let chart_gap = 10.0;
+        let chart_w = ((rect.w - pad * 2.0 - chart_gap) * 0.5).max(40.0);
+        let chart_h = ((rect.h - chart_top - pad - 56.0) * 0.62).max(48.0);
+        let caption_y = chart_top + chart_h + 6.0;
+        for (index, chart) in [("up", &self.net_tx_history), ("down", &self.net_rx_history)]
+            .iter()
+            .enumerate()
+        {
+            let chart_rect = Rect {
+                x: rect.x + pad + index as f32 * (chart_w + chart_gap),
+                y: chart_top,
+                w: chart_w,
+                h: chart_h,
+            };
+            render_rate_chart(
+                f,
+                &format!("aegis-hud-net-{}", chart.0),
+                chart.1,
+                chart_rect,
+                hud.accent,
+                hud.border,
+            );
+        }
+        // The captions: `Up 1.2M / s` / `Down 340K / s`.
+        for (index, (label, value)) in [
+            (i18n.text(Message::NetUp), &tx),
+            (i18n.text(Message::NetDown), &rx),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let caption_rect = Rect {
+                x: rect.x + pad + index as f32 * (chart_w + chart_gap),
+                y: caption_y,
+                w: chart_w,
+                h: 40.0,
+            };
+            f.place(
+                &format!("aegis-hud-net-caption-{}", index),
+                &chrome_place(caption_rect, transparent()),
+                |f| {
+                    f.column_ex(
+                        &LayoutOpts {
+                            width: caption_rect.w,
+                            height: caption_rect.h,
+                            gap: 2.0,
+                            cross: Align::Start,
+                            ..Default::default()
+                        },
+                        |f| {
+                            f.set_theme(muted_theme);
+                            display_label(f, label, type_scale.footnote);
+                            f.set_theme(base_theme);
+                            display_label(f, value, type_scale.headline);
+                        },
+                    );
+                },
+            );
+        }
         f.set_theme(original);
     }
 
@@ -1304,10 +1336,7 @@ impl CommandPanel {
                         |f| {
                             f.flex(1.0);
                             f.spacer(0.0);
-                            f.label_compact_sized(
-                                i18n.text(Message::NoTrayItems),
-                                type_scale.label,
-                            );
+                            display_label(f, i18n.text(Message::NoTrayItems), type_scale.body);
                             f.flex(1.0);
                             f.spacer(0.0);
                         },
@@ -1402,7 +1431,8 @@ impl CommandPanel {
                                                                     }
                                                                 },
                                                             }
-                                                            f.label_compact_sized(
+                                                            display_label(
+                                                                f,
                                                                 &cell.title,
                                                                 type_scale.caption,
                                                             );
@@ -1496,10 +1526,7 @@ impl CommandPanel {
                         |f| {
                             f.flex(1.0);
                             f.spacer(0.0);
-                            f.label_compact_sized(
-                                i18n.text(Message::NoNotifications),
-                                type_scale.label,
-                            );
+                            display_label(f, i18n.text(Message::NoNotifications), type_scale.body);
                             f.flex(1.0);
                             f.spacer(0.0);
                         },
@@ -1528,13 +1555,13 @@ impl CommandPanel {
                             },
                             |f| {
                                 for notification in notifications.iter().rev() {
-                                    let summary = truncate(&notification.summary, 48);
-                                    let body = truncate(&notification.body, 72);
+                                    let summary = truncate(&notification.summary, 44);
+                                    let body = truncate(&notification.body, 64);
                                     let (response, _) = f.pressable_row(
                                         &format!("aegis-hud-message-{}", notification.id),
                                         &summary,
                                         &LayoutOpts {
-                                            height: 52.0,
+                                            height: 58.0,
                                             gap: 2.0,
                                             pad: 4.0,
                                             radius: 8.0,
@@ -1549,16 +1576,10 @@ impl CommandPanel {
                                                     ..Default::default()
                                                 },
                                                 |f| {
-                                                    f.label_compact_sized(
-                                                        &summary,
-                                                        type_scale.label,
-                                                    );
+                                                    display_label(f, &summary, type_scale.body);
                                                     if !body.is_empty() {
                                                         f.set_theme(muted_theme);
-                                                        f.label_compact_sized(
-                                                            &body,
-                                                            type_scale.footnote,
-                                                        );
+                                                        display_label(f, &body, type_scale.label);
                                                         f.set_theme(row_theme);
                                                     }
                                                 },
@@ -1659,9 +1680,10 @@ impl CommandPanel {
                                 // capture the click, which the dbusmenu spec
                                 // forbids.
                                 f.set_theme(dim_theme);
-                                f.label_compact_sized(
+                                display_label(
+                                    f,
                                     &truncate(&menu_row_label(row), 32),
-                                    type_scale.label,
+                                    type_scale.body,
                                 );
                                 f.set_theme(menu_theme);
                             } else if f.selectable(&truncate(&menu_row_label(row), 32), false) {

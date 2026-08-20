@@ -49,6 +49,16 @@ const MAX_COLUMNS: usize = 8;
 const MAX_ROWS: usize = 5;
 const OPEN_STIFFNESS: f32 = 360.0;
 const OPEN_DAMPING: f32 = 0.86;
+/// Scroll distance (logical pixels) one touchpad swipe must travel before it
+/// can turn the page. Wheel detents are multiplied into the same pixel scale,
+/// so one detent lands far past the threshold while a resting two-finger
+/// jitter never reaches it. The old ±0.05 px trigger made an accidental
+/// feather-touch of the touchpad flip pages.
+const PAGE_SCROLL_THRESHOLD: f32 = 48.0;
+/// Once a swipe has paged, it must travel this far *beyond* the trigger
+/// before it can page again: a continuous two-finger flick does not rattle
+/// through three pages in one gesture. Reset when the scroll axis goes quiet.
+const PAGE_REPEAT_DISTANCE: f32 = 160.0;
 
 /// The application launcher chrome component.
 pub struct Launcher {
@@ -61,6 +71,16 @@ pub struct Launcher {
     columns: usize,
     page_capacity: usize,
     page_shift: f32,
+    /// Signed scroll accumulation for the in-flight page gesture, in logical
+    /// pixels along the dominant axis. Non-zero only while a two-finger swipe
+    /// (or wheel run) is actively feeding the page axis; it decays back to
+    /// zero once the axis rests, re-arming the threshold.
+    page_gesture: f32,
+    /// Whether the in-flight gesture has already turned a page. The first
+    /// turn needs `PAGE_SCROLL_THRESHOLD` of travel; every further turn of
+    /// the same gesture needs `PAGE_REPEAT_DISTANCE`, so a deliberate long
+    /// flick walks pages while a graze never leaves the first.
+    paged_this_gesture: bool,
     visibility: SpringState,
     anim_active: bool,
     /// Level edge tracking prevents a held dock click from activating the
@@ -180,6 +200,8 @@ impl Launcher {
             columns: 1,
             page_capacity: 1,
             page_shift: 0.0,
+            page_gesture: 0.0,
+            paged_this_gesture: false,
             visibility: SpringState::default(),
             anim_active: false,
             prev_down: false,
@@ -189,6 +211,15 @@ impl Launcher {
             reduced_motion: false,
             design: Design::dark(),
         }
+    }
+
+    /// Whether the launcher still owns the modal surface for input and
+    /// composition purposes. Runs the whole fade out: releasing the modal at
+    /// the 1% alpha mark let the un-blurred desktop pop through the
+    /// still-fading scrim — the "bright flash on close". The fade must be
+    /// fully finished before the overlay stops participating.
+    fn active(&self) -> bool {
+        self.brain.is_open() || self.visibility.value > 0.0
     }
 
     fn toggle(&mut self, _out: &mut ChromeEvents) {
@@ -336,6 +367,8 @@ impl Chrome for Launcher {
         if !self.brain.is_open() && progress <= 0.001 {
             self.page = 0;
             self.page_shift = 0.0;
+            self.page_gesture = 0.0;
+            self.paged_this_gesture = false;
             self.prev_down = down;
             self.search_focused = false;
             return;
@@ -345,6 +378,13 @@ impl Chrome for Launcher {
         // opacity stamps into every draw command's colours, so painted
         // layers, text, and icons fade together.
         frame.set_opacity(progress);
+        // The launcher's content sits on the scrim veil, which stays a dark
+        // wash in both appearances; re-tone the frame foreground onto that
+        // tonal side so labels, bare icons, and the search field stay legible
+        // in the light appearance too (the page-appropriate theme foreground
+        // turns to dark ink there). Restored at the end of the render.
+        let original_theme = frame.theme();
+        frame.set_theme(original_theme.with_fg(self.design.colors.on_scrim_text));
 
         let dt = raw.dt_seconds.clamp(0.0, 1.0 / 15.0);
         if self.reduced_motion {
@@ -373,22 +413,69 @@ impl Chrome for Launcher {
         // input boundary). Paging keeps the number of live lens nodes
         // bounded and mirrors Launchpad's spatial model better than one
         // enormous vertically scrolling list.
+        //
+        // Wheel detents are discrete, deliberate steps and page exactly once
+        // each. Two-finger touchpad swipes arrive as raw pixel deltas, where
+        // the old ±0.05 px trigger made an accidental graze flip pages: the
+        // dominant axis now accumulates until it crosses
+        // `PAGE_SCROLL_THRESHOLD`, and after a turn the same gesture must
+        // travel `PAGE_REPEAT_DISTANCE` further before it may turn again.
+        // The accumulator re-arms whenever the axis rests.
         let mut page_changed = false;
         if self.brain.is_open() && page_total > 1 {
-            let scroll_x = raw.scroll_x * 40.0 + raw.scroll_pixels_x;
-            let scroll_y = raw.scroll_y * 40.0 + raw.scroll_pixels_y;
-            let page_axis = if scroll_x.abs() > scroll_y.abs() {
-                scroll_x
-            } else {
-                scroll_y
-            };
-            if page_axis < -0.05 && self.page + 1 < page_total {
-                self.change_page(self.page + 1);
-                page_changed = true;
-            } else if page_axis > 0.05 && self.page > 0 {
-                self.change_page(self.page - 1);
-                page_changed = true;
+            let wheel = wheel_page_axis(raw.scroll_x, raw.scroll_y);
+            let finger = finger_page_axis(raw.scroll_pixels_x, raw.scroll_pixels_y);
+            if wheel.abs() > 0.5 {
+                if let Some(page) = page_step(self.page, page_total, wheel < 0.0) {
+                    self.change_page(page);
+                    page_changed = true;
+                }
+                self.page_gesture = 0.0;
+            } else if finger.abs() > 0.5 {
+                // A direction reversal re-arms the cheap first-page
+                // threshold: turning back past a boundary you just hit is a
+                // new intent, not a continuation of the blocked gesture.
+                if self.page_gesture.signum() == -finger.signum() && self.page_gesture != 0.0 {
+                    self.paged_this_gesture = false;
+                }
+                self.page_gesture += finger;
+                let direction = self.page_gesture.signum();
+                // The first page of a gesture turns at the threshold; the
+                // same gesture must then travel the (longer) repeat
+                // distance for every further page, so a long deliberate
+                // flick walks pages while a graze stays on one.
+                let required = if self.paged_this_gesture {
+                    PAGE_REPEAT_DISTANCE
+                } else {
+                    PAGE_SCROLL_THRESHOLD
+                };
+                if self.page_gesture.abs() >= required {
+                    match page_step(self.page, page_total, direction < 0.0) {
+                        Some(page) => {
+                            self.change_page(page);
+                            // Consume the travel: the next page of this
+                            // gesture needs the full repeat distance again.
+                            self.page_gesture = 0.0;
+                            self.paged_this_gesture = true;
+                            page_changed = true;
+                        }
+                        // The gesture ran past the first/last page: consume
+                        // it too. Holding at the trigger would let a blocked
+                        // gesture re-fire every frame; reversing direction
+                        // then needs a fresh, deliberate swipe.
+                        None => {
+                            self.page_gesture = 0.0;
+                        }
+                    }
+                }
+            } else if self.page_gesture != 0.0 {
+                // The axis rested: re-arm the threshold for the next gesture.
+                self.page_gesture = 0.0;
+                self.paged_this_gesture = false;
             }
+        } else {
+            self.page_gesture = 0.0;
+            self.paged_this_gesture = false;
         }
         if page_changed {
             self.brain.select_filtered(self.page * self.page_capacity);
@@ -488,6 +575,12 @@ impl Chrome for Launcher {
             "aegis-launcher-search",
             &chrome_place(search_rect, search_panel),
             |frame| {
+                // The search field is a popover-surface body, not bare scrim
+                // content: its glyphs take the page-appropriate text tone so
+                // they sit on the right side of the light scheme's white
+                // glass (the outer on-scrim override would keep them light).
+                let outer = frame.theme();
+                frame.set_theme(outer.with_fg(self.design.colors.application_text));
                 frame.row_ex(
                     &LayoutOpts {
                         width: search_w,
@@ -517,6 +610,7 @@ impl Chrome for Launcher {
                         }
                     },
                 );
+                frame.set_theme(outer);
             },
         );
         if self.search_focused {
@@ -580,10 +674,15 @@ impl Chrome for Launcher {
             let icon_size = (layout.cell_w * 0.52)
                 .min(layout.cell_h - 42.0)
                 .clamp(44.0, 82.0);
+            // Selection/hover rides the scrim-anchored tone: a translucent
+            // light wash stays visible over the dark veil in both
+            // appearances, where the light scheme's dark ink fills would all
+            // but disappear.
+            let scrim_text = colors.on_scrim_text;
             let cell_bg = if cell.selected {
-                colors.menu_active.with_alpha(42)
+                scrim_text.with_alpha(42)
             } else if hovered {
-                colors.menu_hover.with_alpha(26)
+                scrim_text.with_alpha(26)
             } else {
                 Color::TRANSPARENT
             };
@@ -595,7 +694,7 @@ impl Chrome for Launcher {
                     LayoutOpts {
                         bg: cell_bg,
                         border: if cell.selected {
-                            colors.menu_border.with_alpha(54)
+                            scrim_text.with_alpha(54)
                         } else {
                             Color::TRANSPARENT
                         },
@@ -617,7 +716,7 @@ impl Chrome for Launcher {
                             ..Default::default()
                         },
                         |frame| {
-                            render_app_icon(frame, cell.icon, icon_size, progress);
+                            render_app_icon(frame, &self.design, cell.icon, icon_size, progress);
                             frame.label_compact_sized(&cell.label, typography.label);
                         },
                     );
@@ -655,7 +754,7 @@ impl Chrome for Launcher {
                             ..sized_fill(
                                 diameter,
                                 diameter,
-                                colors.menu_text.with_alpha(if page == self.page {
+                                colors.on_scrim_text.with_alpha(if page == self.page {
                                     220
                                 } else {
                                     84
@@ -725,9 +824,10 @@ impl Chrome for Launcher {
         }
 
         // The shell shares one lens frame across every chrome component.
-        // Restore full opacity so the launcher's fade cannot affect a
-        // component rendered after it.
+        // Restore full opacity and the ambient theme so the launcher's fade
+        // and tonal override cannot affect a component rendered after it.
         frame.set_opacity(1.0);
+        frame.set_theme(original_theme);
 
         if let Some(page) = clicked_page {
             self.change_page(page);
@@ -771,11 +871,11 @@ impl Chrome for Launcher {
         _windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
     ) -> bool {
-        self.brain.is_open() || self.visibility.value > 0.01
+        self.active()
     }
 
     fn modal_active(&self) -> bool {
-        self.brain.is_open() || self.visibility.value > 0.01
+        self.active()
     }
 
     fn visible_during_modal(&self) -> bool {
@@ -859,10 +959,13 @@ impl Chrome for Launcher {
                 self.toggle(_out);
             }
             ChromeCommand::CloseLauncher if self.brain.is_open() => {
+                // Fade out through the same exit path as a user close: the
+                // old hard reset (`visibility = SpringState::default()`)
+                // dropped the scrim and the backdrop blur in a single frame
+                // — a bright pop whenever Prism opened over the launcher.
                 self.app_menu.dismiss();
                 self.brain.close();
-                self.visibility = SpringState::default();
-                self.anim_active = false;
+                self.anim_active = true;
             }
             _ => {}
         }
@@ -883,12 +986,18 @@ impl Chrome for Launcher {
     }
 
     fn requires_composition(&self) -> bool {
-        self.brain.is_open() || self.visibility.value > 0.01
+        self.active()
     }
 
+    /// The blur radius eases with the reveal instead of switching off
+    /// abruptly at an alpha threshold: a hard cut at 1% visibility replaced
+    /// the blurred desktop with the sharp one in a single frame — the bright
+    /// flash on close. Tracked as a smooth multiplier, the compositor's
+    /// `BackdropCacheKey` sees a changing sigma and rebuilds the effect each
+    /// frame of the fade, so the desktop sharpens continuously.
     fn backdrop_blur_sigma(&self) -> f32 {
-        if self.brain.is_open() || self.visibility.value > 0.01 {
-            BACKDROP_BLUR_SIGMA
+        if self.active() {
+            BACKDROP_BLUR_SIGMA * self.visibility.value.clamp(0.0, 1.0).sqrt()
         } else {
             0.0
         }
@@ -900,7 +1009,7 @@ impl Chrome for Launcher {
         _windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        if self.brain.is_open() || self.visibility.value > 0.01 {
+        if self.active() {
             vec![BackdropRegion {
                 x: 0.0,
                 y: 0.0,
@@ -930,6 +1039,35 @@ impl Chrome for Launcher {
 
 fn page_count(items: usize, capacity: usize) -> usize {
     items.div_ceil(capacity.max(1)).max(1)
+}
+
+/// Wheel detents scaled into the shared pixel space, reduced to the
+/// dominant axis. One detent is 40 px here, matching the legacy multiplier.
+fn wheel_page_axis(scroll_x: f32, scroll_y: f32) -> f32 {
+    let x = scroll_x * 40.0;
+    let y = scroll_y * 40.0;
+    if x.abs() > y.abs() { x } else { y }
+}
+
+/// Touchpad pixel deltas reduced to the dominant axis.
+fn finger_page_axis(scroll_x: f32, scroll_y: f32) -> f32 {
+    if scroll_x.abs() > scroll_y.abs() {
+        scroll_x
+    } else {
+        scroll_y
+    }
+}
+
+/// The next page index for a `forward` (true = later pages) step, or `None`
+/// at either end of the pager.
+fn page_step(page: usize, page_total: usize, forward: bool) -> Option<usize> {
+    if forward && page + 1 < page_total {
+        Some(page + 1)
+    } else if !forward && page > 0 {
+        Some(page - 1)
+    } else {
+        None
+    }
 }
 
 fn icon_visibility_scale(progress: f32) -> f32 {
@@ -962,6 +1100,9 @@ fn search_caret_layer(design: &Design) -> LayoutOpts {
     LayoutOpts {
         gap: 0.0,
         pad: 0.0,
+        // The caret lives inside the search field's popover surface, so it
+        // takes the page-appropriate text tone (dark ink on the light
+        // scheme's white glass), not the scrim-anchored tone around it.
         bg: design.colors.application_text.with_alpha(230),
         radius: SEARCH_CARET_W * 0.5,
         ..surface_layout()
@@ -983,7 +1124,13 @@ fn search_caret_rect(search: Rect, query_width: f32, caret_height: f32) -> Rect 
 /// dock. Both variants live in one fixed slot and use the same visibility
 /// curve, so missing-icon entries participate in launcher entry/exit motion
 /// exactly like resolved raster icons.
-fn render_app_icon(frame: &mut Frame, icon: Option<*mut c_void>, icon_size: f32, progress: f32) {
+fn render_app_icon(
+    frame: &mut Frame,
+    design: &Design,
+    icon: Option<*mut c_void>,
+    icon_size: f32,
+    progress: f32,
+) {
     let slot = LayoutOpts {
         cross: Align::Center,
         ..sized(icon_size, icon_size)
@@ -1011,9 +1158,9 @@ fn render_app_icon(frame: &mut Frame, icon: Option<*mut c_void>, icon_size: f32,
                     ..sized_fill(
                         visible_size,
                         visible_size,
-                        // Intentional content color: the neutral slate of the
-                        // generic app-icon chip, shared by both appearances.
-                        Color::rgba(76, 85, 116, 224),
+                        // The scheme-invariant neutral slate shared with the
+                        // dock's generic tile.
+                        design.colors.generic_icon_surface,
                         visible_size * 0.24,
                     )
                 };
@@ -1029,6 +1176,8 @@ fn render_app_icon(frame: &mut Frame, icon: Option<*mut c_void>, icon_size: f32,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppCatalog;
+    use lens::Ui;
 
     #[test]
     fn standard_layout_is_a_complete_page_above_the_dock() {
@@ -1115,5 +1264,220 @@ mod tests {
         let snapped_down = reduced.advance_visibility(0.0, 0.016);
         assert_eq!(snapped_down, 0.0);
         assert!(!reduced.anim_active);
+    }
+
+    // ---- paging gesture ---------------------------------------------------
+
+    /// A launcher open over a multi-page catalog, plus the (input, frame)
+    /// pair needed to drive its render headlessly.
+    fn paged_launcher(pages: usize) -> (Launcher, Input) {
+        let mut launcher = Launcher::new();
+        let capacity = GridLayout::for_display(1280.0, 720.0, Reserved::default()).capacity();
+        let apps = (0..pages * capacity + 2)
+            .map(|index| Entry {
+                id: format!("app{index}.desktop"),
+                name: format!("App {index}"),
+                ..Entry::default()
+            })
+            .collect();
+        launcher.update(ChromeUpdate::AppCatalog(&AppCatalog {
+            apps,
+            ..AppCatalog::default()
+        }));
+        launcher.toggle(&mut ChromeEvents::default());
+        launcher.visibility = SpringState {
+            value: 1.0,
+            velocity: 0.0,
+        };
+        launcher.anim_active = false;
+        let input = Input::new((1280.0, 720.0), 1.0 / 60.0);
+        (launcher, input)
+    }
+
+    fn render_frame(launcher: &mut Launcher, input: &Input) {
+        let mut ui = Ui::headless().expect("create headless Lens context");
+        let i18n = Localizer::new("en-US");
+        ui.frame(input, |frame| {
+            launcher.render(
+                frame,
+                input,
+                &[],
+                &crate::WorkspaceSnapshot { outputs: vec![] },
+                &i18n,
+                &mut ChromeEvents::default(),
+            );
+        });
+    }
+
+    #[test]
+    fn touchpad_swipe_needs_a_deliberate_distance_before_paging() {
+        let (mut launcher, mut input) = paged_launcher(3);
+
+        // A graze far below the threshold never pages.
+        input.set_scroll_pixels(-20.0, 0.0);
+        render_frame(&mut launcher, &input);
+        assert_eq!(launcher.page, 0, "a 20 px graze must not page");
+
+        // Accumulating past the threshold pages exactly once.
+        for _ in 0..6 {
+            input.set_scroll_pixels(-10.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 1, "80 px of travel pages once");
+
+        // The same continued flick does not page again until it has
+        // travelled the repeat distance.
+        for _ in 0..4 {
+            input.set_scroll_pixels(-10.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 1, "a short continuation must not page again");
+        for _ in 0..14 {
+            input.set_scroll_pixels(-10.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 2, "the full repeat distance pages again");
+
+        // Reversing direction after the axis rests pages back.
+        input.set_scroll_pixels(0.0, 0.0);
+        render_frame(&mut launcher, &input);
+        for _ in 0..6 {
+            input.set_scroll_pixels(12.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 1, "reversing pages back");
+    }
+
+    #[test]
+    fn reversing_mid_gesture_re_arms_the_threshold() {
+        let (mut launcher, mut input) = paged_launcher(3);
+
+        // Page forward once.
+        for _ in 0..6 {
+            input.set_scroll_pixels(-10.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 1);
+
+        // Reverse without lifting: the reversal itself is a new intent, so
+        // the cheap threshold — not the repeat distance — applies.
+        for _ in 0..6 {
+            input.set_scroll_pixels(12.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 0, "a mid-gesture reversal pages back");
+    }
+
+    #[test]
+    fn swipe_past_the_last_page_is_consumed() {
+        // Two pages of content: one full page plus a second partial page.
+        let capacity = GridLayout::for_display(1280.0, 720.0, Reserved::default()).capacity();
+        let apps = (0..capacity + 2)
+            .map(|index| Entry {
+                id: format!("app{index}.desktop"),
+                name: format!("App {index}"),
+                ..Entry::default()
+            })
+            .collect();
+        let mut launcher = Launcher::new();
+        launcher.update(ChromeUpdate::AppCatalog(&AppCatalog {
+            apps,
+            ..AppCatalog::default()
+        }));
+        launcher.toggle(&mut ChromeEvents::default());
+        launcher.visibility = SpringState {
+            value: 1.0,
+            velocity: 0.0,
+        };
+        launcher.anim_active = false;
+        let input = Input::new((1280.0, 720.0), 1.0 / 60.0);
+        let mut input = input;
+
+        // Walk to the last page, then keep swiping forward.
+        for _ in 0..16 {
+            input.set_scroll_pixels(-14.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 1, "arrived at the last page");
+        for _ in 0..8 {
+            input.set_scroll_pixels(-14.0, 0.0);
+            render_frame(&mut launcher, &input);
+        }
+        assert_eq!(launcher.page, 1, "swiping past the end stays put");
+    }
+
+    #[test]
+    fn wheel_detents_page_once_each() {
+        let (mut launcher, mut input) = paged_launcher(3);
+        input.set_scroll(0.0, -1.0);
+        render_frame(&mut launcher, &input);
+        assert_eq!(launcher.page, 1, "one wheel detent pages exactly once");
+
+        input.set_scroll(0.0, 0.0);
+        render_frame(&mut launcher, &input);
+        input.set_scroll(0.0, -1.0);
+        render_frame(&mut launcher, &input);
+        assert_eq!(launcher.page, 2);
+    }
+
+    // ---- fade lifetime ----------------------------------------------------
+
+    #[test]
+    fn closing_fades_instead_of_snapping_and_keeps_the_backdrop_alive() {
+        let mut launcher = Launcher::new();
+        launcher.toggle(&mut ChromeEvents::default());
+        launcher.visibility = SpringState {
+            value: 1.0,
+            velocity: 0.0,
+        };
+
+        // Closing via the Prism-open path fades instead of resetting.
+        launcher.command(&ChromeCommand::CloseLauncher, &mut ChromeEvents::default());
+        assert!(!launcher.brain.is_open());
+        assert!(
+            launcher.visibility.value > 0.9,
+            "the close path starts a fade, not a snap: {}",
+            launcher.visibility.value
+        );
+        assert!(launcher.anim_active, "the exit animation is in flight");
+        assert!(launcher.active(), "still modal while the fade runs");
+        assert_eq!(
+            launcher
+                .backdrop_regions(
+                    (1280.0, 720.0),
+                    &[],
+                    &crate::WorkspaceSnapshot { outputs: vec![] }
+                )
+                .len(),
+            1,
+            "the backdrop stays declared through the fade"
+        );
+
+        // Mid-fade the blur radius eases down with the reveal rather than
+        // cutting to zero at an alpha threshold.
+        launcher.advance_visibility(0.0, 1.0 / 60.0);
+        let mid = launcher.backdrop_blur_sigma();
+        assert!(
+            mid > 0.0 && mid < BACKDROP_BLUR_SIGMA,
+            "blur eases through the fade: {mid}"
+        );
+        assert!(launcher.active(), "the fade is still running");
+    }
+
+    #[test]
+    fn fully_settled_launcher_is_composition_free() {
+        let launcher = Launcher::new();
+        assert!(!launcher.active());
+        assert!(!launcher.requires_composition());
+        assert_eq!(launcher.backdrop_blur_sigma(), 0.0);
+        assert!(
+            launcher
+                .backdrop_regions(
+                    (1280.0, 720.0),
+                    &[],
+                    &crate::WorkspaceSnapshot { outputs: vec![] }
+                )
+                .is_empty()
+        );
     }
 }

@@ -20,15 +20,14 @@ pub mod shapes;
 
 pub use chip::{
     DEFAULT_WORKSPACE_DOT_DIAMETER, chip_layout, chip_opts, hud_glyph_outline,
-    hud_glyph_outline_params, hud_text_outline, hud_text_outline_params, place_chip,
-    render_badge, workspace_dot_color, workspace_dot_intensity,
+    hud_glyph_outline_params, hud_text_outline, hud_text_outline_params, place_chip, render_badge,
+    workspace_dot_color, workspace_dot_intensity,
 };
 pub use dialog::{
     ActionButtonStyle, DEFAULT_BACKDROP_BLUR_SIGMA, DEFAULT_BUTTON_HEIGHT, DEFAULT_BUTTON_WIDTH,
-    DEFAULT_MODAL_PAD, DEFAULT_MODAL_WIDTH, DEFAULT_TITLE_HEIGHT, GRANT_ACCENT_INDEX,
-    GRANT_LABELS, is_cancel_key, is_confirm_key, place_modal_panel, place_modal_scrim,
-    render_action_button, render_dialog_actions_two_button, render_dialog_title,
-    render_grant_action_buttons,
+    DEFAULT_MODAL_PAD, DEFAULT_MODAL_WIDTH, DEFAULT_TITLE_HEIGHT, GRANT_ACCENT_INDEX, GRANT_LABELS,
+    is_cancel_key, is_confirm_key, place_modal_panel, place_modal_scrim, render_action_button,
+    render_dialog_actions_two_button, render_dialog_title, render_grant_action_buttons,
 };
 pub use geom::{center_rect, contains, stretch, stretch_gap, stretch_pad, stretch_top};
 pub use menu::{

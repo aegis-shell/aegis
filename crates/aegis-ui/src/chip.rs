@@ -72,12 +72,7 @@ pub fn workspace_dot_intensity(index: usize, position: f32) -> f32 {
 }
 
 /// Render a status badge / count bubble.
-pub fn render_badge(
-    frame: &mut Frame,
-    text: &str,
-    is_accented: bool,
-    design: &Design,
-) {
+pub fn render_badge(frame: &mut Frame, text: &str, is_accented: bool, design: &Design) {
     let bg = if is_accented {
         design.colors.application_accent
     } else {

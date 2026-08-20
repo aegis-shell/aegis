@@ -13,6 +13,10 @@ pub struct Profile {
     pub display_name: String,
     pub initials: String,
     pub groups: Vec<String>,
+    /// The machine's hostname, shown beside the account so the panel reads
+    /// as "who on which machine". Display content only, exactly like the
+    /// account fields above.
+    pub hostname: String,
 }
 
 impl Profile {
@@ -56,6 +60,7 @@ impl Profile {
             .to_uppercase();
         Ok(Self {
             groups: groups(&username, record.pw_gid),
+            hostname: hostname(),
             username,
             display_name,
             initials: if initials.is_empty() {
@@ -72,8 +77,20 @@ impl Profile {
             display_name: "User".into(),
             initials: "U".into(),
             groups: Vec::new(),
+            hostname: hostname(),
         }
     }
+}
+
+/// The kernel's static hostname, trimmed. `/proc/sys/kernel/hostname`
+/// mirrors `gethostname()` without a libc call and stays readable in
+/// minimal environments; the empty string means "unknown".
+fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
 }
 
 fn groups(username: &str, primary_gid: libc::gid_t) -> Vec<String> {
@@ -153,5 +170,15 @@ mod tests {
         assert!(!profile.username.is_empty());
         assert!(!profile.display_name.is_empty());
         assert!(!profile.initials.is_empty());
+    }
+
+    #[test]
+    fn hostname_resolves_or_degrades_to_empty() {
+        let host = hostname();
+        assert!(!host.contains('\n'), "hostname must be trimmed");
+        assert!(!host.contains(char::is_whitespace), "no embedded spaces");
+        assert!(host.len() <= 255, "kernel hostnames are bounded");
+        // Both constructors carry the same resolution.
+        assert_eq!(Profile::fallback().hostname, host);
     }
 }

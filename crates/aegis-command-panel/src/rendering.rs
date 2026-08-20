@@ -11,7 +11,7 @@ pub(super) enum MenuRowAction {
     Click(i32),
 }
 
-pub(super) use aegis_ui::{contains, ease_out_cubic, render_disc, stagger};
+pub(super) use aegis_ui::{contains, ease_out_cubic, render_disc, render_ring, stagger};
 
 /// Two settings actions are the same kind when they mutate the same
 /// settings section; the queue keeps only the newest draft of each kind
@@ -97,6 +97,21 @@ pub(super) fn network_text(status: &SystemStatus, i18n: &Localizer) -> &'static 
     }
 }
 
+/// The network surface's identity line: the live interface, plus the SSID
+/// when the link is wireless. `wlan0 · Homelab-5G` for Wi-Fi, `enp3s0` for
+/// wired, a muted "Offline" when no link is up.
+pub(super) fn network_identity(status: &SystemStatus, i18n: &Localizer) -> String {
+    if status.network_interface.is_empty() {
+        return i18n.text(Message::Offline).to_owned();
+    }
+    match (status.network, &status.wifi_ssid) {
+        (NetworkState::Wifi, Some(ssid)) if !ssid.is_empty() => {
+            format!("{} · {}", status.network_interface, ssid)
+        }
+        _ => status.network_interface.clone(),
+    }
+}
+
 /// An unavailable-on-this-host control row: the label plus a muted
 /// "Unavailable" marker, matching the status bar's old panel.
 pub(super) fn unavailable_control(
@@ -113,10 +128,10 @@ pub(super) fn unavailable_control(
             ..Default::default()
         },
         |f| {
-            f.label_compact_sized(label, type_scale.footnote);
+            display_label(f, label, type_scale.footnote);
             f.flex(1.0);
             f.spacer(0.0);
-            f.label_compact_sized(i18n.text(Message::Unavailable), type_scale.footnote);
+            display_label(f, i18n.text(Message::Unavailable), type_scale.footnote);
         },
     );
 }
@@ -162,69 +177,6 @@ pub(super) fn menu_bounds(owner: Rect, visible: &[MenuNode], display: (f32, f32)
         + separator_count as f32 * MENU_SECTION_HEIGHT;
     place_popup(owner, (MENU_WIDTH, height), display)
 }
-
-/// The Agent Workspaces status row's content: the aggregate Agent Interaction Domain
-/// state it summarizes (ported from the HUD's dropped right chip, ADR-0083).
-pub(super) struct AgentWorkspaceIndicator {
-    pub(super) label: String,
-    pub(super) state: AgentWorkspaceState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AgentWorkspaceState {
-    Idle,
-    Active,
-    Paused,
-    PartiallyPaused,
-}
-
-pub(super) fn agent_workspace_indicator(
-    snapshot: &InteractionDomainSnapshot,
-    i18n: &Localizer,
-) -> AgentWorkspaceIndicator {
-    let live = snapshot
-        .interaction_domains
-        .iter()
-        .filter(|interaction_domain| {
-            interaction_domain.kind == InteractionDomainKind::Agent
-                && interaction_domain.state != InteractionDomainState::Revoked
-        })
-        .collect::<Vec<_>>();
-    let active_count = live
-        .iter()
-        .filter(|interaction_domain| interaction_domain.state == InteractionDomainState::Active)
-        .count();
-    let state = match live.as_slice() {
-        [] => AgentWorkspaceState::Idle,
-        _ if active_count == live.len() => AgentWorkspaceState::Active,
-        _ if active_count == 0 => AgentWorkspaceState::Paused,
-        _ => AgentWorkspaceState::PartiallyPaused,
-    };
-    let state_label = agent_workspace_state_label(state, i18n);
-    let label = match live.as_slice() {
-        [] => i18n.text(Message::AgentWorkspaces).to_string(),
-        [interaction_domain] => format!("{} · {state_label}", interaction_domain.label),
-        interaction_domains => format!(
-            "{} · {state_label}",
-            i18n.agent_workspace_count(interaction_domains.len())
-        ),
-    };
-    AgentWorkspaceIndicator { label, state }
-}
-
-pub(super) fn agent_workspace_state_label(
-    state: AgentWorkspaceState,
-    i18n: &Localizer,
-) -> &'static str {
-    match state {
-        AgentWorkspaceState::Idle => i18n.text(Message::NoActiveAgentWorkspaces),
-        AgentWorkspaceState::Active => i18n.text(Message::InteractionDomainActive),
-        AgentWorkspaceState::Paused => i18n.text(Message::InteractionDomainPaused),
-        AgentWorkspaceState::PartiallyPaused => i18n.text(Message::AgentWorkspacesPartiallyPaused),
-    }
-}
-
-// ---- header-band gauges ----------------------------------------------------
 
 /// Fixed-capacity ring of utilization samples for the header sparklines:
 /// pushing past `cap` evicts the oldest sample.
@@ -364,4 +316,98 @@ pub(super) fn format_rate(bytes_per_sec: f64) -> String {
 pub(super) fn format_gib_pair(used: u64, total: u64) -> String {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     format!("{:.1}/{:.1}G", used as f64 / GIB, total as f64 / GIB)
+}
+
+// ---- display typography (ADR-0080 refresh) -------------------------------
+
+/// Weight of the panel's display typography. lens draws text at the theme's
+/// regular weight (`text_weight = 0`); the bold 600–700 range reads as the
+/// game-HUD voice the panel wants for its labels.
+pub(super) const DISPLAY_WEIGHT: f32 = 700.0;
+
+/// A bold compact label: measures and draws at [`DISPLAY_WEIGHT`] in the
+/// engine's default sans-serif family, so centered and right-aligned runs
+/// stay geometrically exact. This is the panel's standard label call —
+/// plain `label_compact_sized` inside the panel is a review flag.
+pub(super) fn display_label(f: &mut Frame, text: &str, size: f32) {
+    f.label_compact_weighted(text, size, DISPLAY_WEIGHT);
+}
+
+// ---- network surface charts ----------------------------------------------
+
+/// A framed throughput chart box: a hairline frame plus a centered
+/// polyline built from the history's samples, newest at the right. The
+/// polyline is drawn as thin vertical bars whose heights follow the sample
+/// ramp — the workspace's only "line" idiom (lens has no path primitive).
+pub(super) fn render_rate_chart(
+    f: &mut Frame,
+    id: &str,
+    history: &History,
+    rect: Rect,
+    color: Color,
+    frame_color: Color,
+) {
+    f.place(
+        &format!("{id}-frame"),
+        &materials::chrome_place(
+            rect,
+            LayoutOpts {
+                bg: Color::TRANSPARENT,
+                border: frame_color,
+                border_width: 1.0,
+                radius: 8.0,
+                pad: 0.0,
+                ..materials::surface_layout()
+            },
+        ),
+        |_| {},
+    );
+    // Chart body inset inside the frame, keeping the stroke visible.
+    const INSET: f32 = 7.0;
+    let body = Rect {
+        x: rect.x + INSET,
+        y: rect.y + INSET,
+        w: (rect.w - INSET * 2.0).max(1.0),
+        h: (rect.h - INSET * 2.0).max(1.0),
+    };
+    const BAR_W: f32 = 2.5;
+    const BAR_GAP: f32 = 2.0;
+    let max_bars = ((body.w + BAR_GAP) / (BAR_W + BAR_GAP)).floor().max(0.0) as usize;
+    if max_bars == 0 {
+        return;
+    }
+    // Normalize against the series' own peak (bytes/s have no natural
+    // ceiling), then ramp the bar heights along the series so the shape
+    // reads as a line rather than a bar meter.
+    let samples: Vec<f32> = history.samples().collect();
+    let count = samples.len().min(max_bars);
+    if count == 0 {
+        return;
+    }
+    let peak = samples.iter().fold(0.0_f32, |a, b| a.max(*b)).max(1.0);
+    for (index, sample) in samples[samples.len() - count..].iter().enumerate() {
+        let level = (sample / peak).clamp(0.0, 1.0);
+        // A 1.5px floor keeps flat traffic visible as a live baseline.
+        let h = ((body.h - 2.0) * level + 1.5).min(body.h);
+        let right = body.x + body.w - (count - 1 - index) as f32 * (BAR_W + BAR_GAP);
+        f.place(
+            &format!("{id}-bar-{index}"),
+            &materials::chrome_place(
+                Rect {
+                    x: right - BAR_W,
+                    y: body.y + body.h - h,
+                    w: BAR_W,
+                    h,
+                },
+                LayoutOpts {
+                    bg: color,
+                    border: Color::TRANSPARENT,
+                    radius: 1.0,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
+            |_| {},
+        );
+    }
 }

@@ -282,8 +282,8 @@ pub fn bsod_layout(width: f32, height: f32) -> BsodLayout {
     let headline_y = face_y + scale.face * 1.0 + headline_gap;
     let headline_step = scale.headline * 1.30;
     let headline_total_height = headline_step + scale.headline;
-    let counter_y = (headline_y + headline_total_height + counter_gap)
-        .min(qr_y - scale.counter * 2.0);
+    let counter_y =
+        (headline_y + headline_total_height + counter_gap).min(qr_y - scale.counter * 2.0);
     let marks_y = counter_y + scale.counter * 1.4;
 
     BsodLayout {

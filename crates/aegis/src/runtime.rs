@@ -575,20 +575,23 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 last_volume: Option<u8>,
                 last_muted: bool,
                 last_wifi: Option<bool>,
+                last_ssid: Option<String>,
             }
             impl StatusProbe {
                 fn full(&mut self) -> aegis_shell::SystemStatus {
-                    let (volume, muted, wifi) = aegis_shell::detect_forked_status();
+                    let (volume, muted, wifi, ssid) = aegis_shell::detect_forked_status();
                     self.last_volume = volume;
                     self.last_muted = muted;
                     self.last_wifi = wifi;
-                    aegis_shell::detect_system_status_lightweight(volume, muted, wifi)
+                    self.last_ssid = ssid.clone();
+                    aegis_shell::detect_system_status_lightweight(volume, muted, wifi, ssid)
                 }
                 fn cheap(&self) -> aegis_shell::SystemStatus {
                     aegis_shell::detect_system_status_lightweight(
                         self.last_volume,
                         self.last_muted,
                         self.last_wifi,
+                        self.last_ssid.clone(),
                     )
                 }
             }
@@ -596,6 +599,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 last_volume: None,
                 last_muted: false,
                 last_wifi: None,
+                last_ssid: None,
             };
             // Drain any refresh requests queued during the previous probe so a
             // burst of volume key presses collapses into one full probe.

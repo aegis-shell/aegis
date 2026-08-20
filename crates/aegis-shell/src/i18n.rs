@@ -101,6 +101,7 @@ pub enum Message {
     QuitSession,
     LockNow,
     AlwaysOn,
+    QuickControls,
     Sound,
     Brightness,
     Display,
@@ -250,6 +251,7 @@ pub enum Message {
     /// The chassis form factor; [`Message::Desktop`] is the desktop metaphor.
     DesktopChassis,
     Charging,
+    Offline,
 }
 
 /// Lightweight locale handle passed to chrome components for each frame.
@@ -320,6 +322,7 @@ impl Localizer {
             Message::Session => &catalog.session,
             Message::LockNow => &catalog.lock_now,
             Message::AlwaysOn => &catalog.always_on,
+            Message::QuickControls => &catalog.quick_controls,
             Message::Sound => &catalog.sound,
             Message::Brightness => &catalog.brightness,
             Message::Display => &catalog.display,
@@ -469,6 +472,7 @@ impl Localizer {
             Message::Laptop => &catalog.laptop,
             Message::DesktopChassis => &catalog.desktop_chassis,
             Message::Charging => &catalog.charging,
+            Message::Offline => &catalog.offline,
         }
     }
 
@@ -717,6 +721,8 @@ struct Catalog {
     desktop_chassis: String,
     charging: String,
     recording_with_count: String,
+    quick_controls: String,
+    offline: String,
 }
 
 static ENGLISH: OnceLock<Catalog> = OnceLock::new();
@@ -774,5 +780,11 @@ mod tests {
         assert_eq!(zh.text(Message::AgentKeyboard), "键盘输入");
         assert_eq!(zh.text(Message::NoActiveAgentWorkspaces), "暂无活动工作区");
         assert_eq!(en.agent_workspace_count(2), "2 workspaces");
+        assert_eq!(en.text(Message::QuickControls), "Quick Controls");
+        assert_eq!(zh.text(Message::QuickControls), "快捷控制");
+        assert_eq!(en.text(Message::Network), "Network");
+        assert_eq!(zh.text(Message::Network), "网络");
+        assert_eq!(en.text(Message::Offline), "Offline");
+        assert_eq!(zh.text(Message::Offline), "离线");
     }
 }

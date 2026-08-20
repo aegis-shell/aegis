@@ -54,7 +54,9 @@ impl Design {
                 slider_fill: Color::rgba(102, 156, 255, 255),
                 slider_knob: Color::rgba(255, 255, 255, 255),
                 card_surface: Color::rgba(255, 255, 255, 14),
+                generic_icon_surface: Color::rgba(76, 85, 116, 224),
                 scrim: Color::rgba(8, 10, 18, 118),
+                on_scrim_text: Color::rgba(248, 250, 253, 255),
                 critical: Color::rgba(255, 72, 84, 255),
                 validation: Color::rgba(190, 226, 255, 255),
             },
@@ -182,7 +184,12 @@ impl Design {
                 slider_fill: Color::rgba(43, 101, 232, 255),
                 slider_knob: Color::rgba(255, 255, 255, 255),
                 card_surface: Color::rgba(255, 255, 255, 96),
+                generic_icon_surface: Color::rgba(76, 85, 116, 224),
                 scrim: Color::rgba(28, 32, 44, 104),
+                // Content tone anchored to the scrim, which stays a dark
+                // wash here too — the light page text would be illegible on
+                // it.
+                on_scrim_text: Color::rgba(248, 250, 253, 255),
                 critical: Color::rgba(210, 40, 55, 255),
                 validation: Color::rgba(30, 90, 200, 255),
             },
@@ -191,7 +198,8 @@ impl Design {
                 tooltip: GlassStyle::new(0.16, 10.0, 5.0).with_material(3.0, 3.5, 0.9, 1.0),
                 menu: GlassStyle::new(0.20, 16.0, 8.0).with_material(5.0, 4.5, 0.8, 1.0),
                 floating_panel: GlassStyle::new(0.20, 16.0, 8.0).with_material(3.5, 3.5, 0.9, 1.0),
-                prominent_panel: GlassStyle::new(0.22, 18.0, 9.0).with_material(4.0, 4.0, 0.85, 1.0),
+                prominent_panel: GlassStyle::new(0.22, 18.0, 9.0)
+                    .with_material(4.0, 4.0, 0.85, 1.0),
                 dock: GlassStyle::new(0.22, 12.0, 6.0).with_material(3.0, 3.0, 0.95, 1.0),
             },
             glass_focus: GlassFocus {
@@ -396,10 +404,21 @@ pub struct Colors {
     pub slider_fill: Color,
     pub slider_knob: Color,
     pub card_surface: Color,
+    /// Neutral slate of the generic app-icon chip drawn when an entry ships
+    /// no icon, shared by the dock and the launcher grid. Scheme-invariant
+    /// content color: the same mid-tone slate reads on both the dark and
+    /// light appearance's glass.
+    pub generic_icon_surface: Color,
     /// Full-screen dimming veil behind modal chrome (prompts, pickers, the
     /// launcher backdrop). Stays a dark ink wash in both appearances so
     /// bright content recedes behind the modal surface.
     pub scrim: Color,
+    /// Foreground for content drawn directly on the scrim veil (the
+    /// launcher's search field text, grid labels, and pagination). The scrim
+    /// stays dark in both appearances, so this tone stays light in both too —
+    /// the page-appropriate text colors would sit on the wrong tonal side
+    /// over the dark wash in the light appearance.
+    pub on_scrim_text: Color,
     /// Critical emphasis: destructive confirmations, error text, and alerts
     /// that must read as dangerous on any surface.
     pub critical: Color,
@@ -771,6 +790,28 @@ mod tests {
         assert!(surface_alpha > 200);
         let (r, g, b, _) = sao.text.components();
         assert!(r < 64 && g < 64 && b < 64);
+    }
+
+    #[test]
+    fn on_scrim_text_stays_light_in_both_appearances() {
+        // The scrim veil stays a dark wash in both appearances, so content
+        // drawn directly on it keeps a light tone in both too — the light
+        // scheme's page-appropriate ink would be illegible over the wash.
+        for design in [Design::dark(), Design::light()] {
+            let (r, g, b, a) = design.colors.on_scrim_text.components();
+            assert!(r > 220 && g > 220 && b > 220 && a == 255);
+        }
+    }
+
+    #[test]
+    fn generic_icon_surface_is_scheme_invariant() {
+        // The no-icon app chip is a mid-tone slate in both appearances.
+        assert_eq!(
+            Design::light().colors.generic_icon_surface,
+            Design::dark().colors.generic_icon_surface
+        );
+        let (r, g, b, a) = Design::dark().colors.generic_icon_surface.components();
+        assert!(r > 40 && r < 130 && g > 50 && g < 140 && b > 90 && b < 190 && a > 200);
     }
 
     #[test]

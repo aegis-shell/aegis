@@ -113,6 +113,13 @@ pub struct Hud {
     /// the HUD is semantically dormant: it draws no pixels, requests no
     /// backdrop, and advertises no animation/composition work.
     fullscreen_active: bool,
+    /// The full-screen application launcher owns the output (through its
+    /// exit fade). The HUD hides for the duration: its chips would float
+    /// inside the launcher's blurred, dimmed field — a second frost stacked
+    /// on the launcher's backdrop — and its content (workspace dots, tray)
+    /// is irrelevant while browsing the app library. Same dormancy contract
+    /// as `fullscreen_active`.
+    launcher_active: bool,
     reduced_motion: bool,
     icons: IconSet,
     notifications: Option<Arc<Mutex<NotificationQueue>>>,
@@ -221,6 +228,7 @@ impl Hud {
         let now = Instant::now();
         Hud {
             fullscreen_active: false,
+            launcher_active: false,
             reduced_motion: false,
             icons: IconSet::default(),
             notifications,
@@ -238,6 +246,16 @@ impl Hud {
             workspace_position_initialized: false,
             design: Design::dark(),
         }
+    }
+
+    /// Whether the HUD is fully dormant this frame: a fullscreen window owns
+    /// the output presentation. The launcher instead *fades* the HUD out
+    /// (see [`Self::advance_fade`]), so it only counts as dormant once the
+    /// chip fade has settled — `requires_composition` and the backdrop
+    /// queries already key on that settled fade.
+    fn dormant(&self) -> bool {
+        self.fullscreen_active
+            || (self.launcher_active && self.chip_fade.iter().all(|fade| *fade <= 0.01))
     }
 
     fn refresh_status(&mut self) {
@@ -418,7 +436,12 @@ impl Hud {
         let dt = dt.clamp(0.0, 1.0 / 15.0);
         let follow = 1.0 - (-FADE_RATE * dt).exp();
         for index in [LEFT, CENTER] {
-            let target = if self.layout.visible[index] {
+            // The launcher owning the output drives both chips to zero with
+            // the same ease as the cursor-proximity fade, so the HUD melts
+            // into the launcher's reveal instead of vanishing in one frame.
+            let target = if self.launcher_active {
+                0.0
+            } else if self.layout.visible[index] {
                 Self::fade_target(self.layout.chips[index], cursor)
             } else {
                 0.0
@@ -491,7 +514,7 @@ impl Chrome for Hud {
         _i18n: &Localizer,
         _out: &mut ChromeEvents,
     ) {
-        if self.fullscreen_active {
+        if self.dormant() {
             self.frame_prepared = false;
             return;
         }
@@ -791,6 +814,7 @@ impl Chrome for Hud {
                 // HUD, matching the shell's visible chrome policy.
                 self.fullscreen_active = SpaceUse::from_windows(windows) == SpaceUse::Fullscreen;
             }
+            ChromeUpdate::LauncherActive(active) => self.launcher_active = active,
             ChromeUpdate::ReducedMotion(reduced) => {
                 self.reduced_motion = reduced;
                 if reduced {
@@ -809,7 +833,7 @@ impl Chrome for Hud {
         _windows: &[Window],
         workspaces: &WorkspaceSnapshot,
     ) {
-        if self.fullscreen_active {
+        if self.dormant() {
             self.frame_prepared = false;
         } else {
             self.prepare_frame_state(input, workspaces);
@@ -817,7 +841,7 @@ impl Chrome for Hud {
     }
 
     fn anim_pending(&self) -> bool {
-        if self.fullscreen_active {
+        if self.dormant() {
             return false;
         }
         self.chip_fade
@@ -828,7 +852,7 @@ impl Chrome for Hud {
     }
 
     fn requires_composition(&self) -> bool {
-        !self.fullscreen_active
+        !self.dormant()
             && self
                 .chip_fade
                 .iter()
@@ -854,7 +878,7 @@ impl Chrome for Hud {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        if self.fullscreen_active {
+        if self.dormant() {
             return Vec::new();
         }
         self.layout
@@ -878,7 +902,7 @@ impl Chrome for Hud {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<LiquidGlassRegion> {
-        if self.fullscreen_active {
+        if self.dormant() {
             return Vec::new();
         }
         self.layout

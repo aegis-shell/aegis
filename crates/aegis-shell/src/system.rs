@@ -17,13 +17,16 @@ pub use aegis_model::system::{
 /// Every source is optional so VMs, nested sessions, and desktops without a
 /// given service still receive a coherent snapshot.
 pub fn detect_system_status() -> SystemStatus {
-    let (volume, muted) = detect_volume();
+    let (volume, muted, wifi_enabled, wifi_ssid) = detect_forked_status();
+    let (network, network_interface) = detect_network();
     SystemStatus {
         volume,
         muted,
-        network: detect_network(),
+        network,
+        network_interface,
+        wifi_ssid,
         battery: detect_battery(),
-        wifi_enabled: detect_wifi_radio(),
+        wifi_enabled,
         bluetooth_enabled: detect_bluetooth_radio(),
         brightness: detect_brightness(),
         do_not_disturb: false,
@@ -38,28 +41,32 @@ pub fn detect_system_status() -> SystemStatus {
 }
 
 /// Probe every status field whose source is a cheap `/sys` read, deferring the
-/// two fork+exec probes (`wpctl get-volume`, `nmcli radio wifi`) to a separate
-/// full pass.
+/// fork+exec probes (`wpctl get-volume`, `nmcli radio wifi`, `iwgetid`) to a
+/// separate full pass.
 ///
 /// The status poller wakes on a short cadence to keep the HUD (battery,
-/// brightness, charging, network link) fresh, but neither of the forked
+/// brightness, charging, network link) fresh, but none of the forked
 /// commands changes on that timescale — volume moves only on user action
 /// (which already triggers an out-of-cycle full probe via the refresh signal)
 /// and the Wi-Fi radio toggle is rare. Re-running them every few seconds
 /// spawned one `wpctl` and one `nmcli` per cycle purely to re-discover an
 /// unchanged answer. This light variant keeps the frequent poll off the fork
-/// path entirely; `volume`, `muted`, and `wifi_enabled` are filled in from the
-/// caller's last known values, so a snapshot built from it only diverges where
-/// the sysfs-backed fields actually moved.
+/// path entirely; `volume`, `muted`, `wifi_enabled`, and `wifi_ssid` are
+/// filled in from the caller's last known values, so a snapshot built from
+/// it only diverges where the sysfs-backed fields actually moved.
 pub fn detect_system_status_lightweight(
     last_volume: Option<u8>,
     last_muted: bool,
     last_wifi_enabled: Option<bool>,
+    last_wifi_ssid: Option<String>,
 ) -> SystemStatus {
+    let (network, network_interface) = detect_network();
     SystemStatus {
         volume: last_volume,
         muted: last_muted,
-        network: detect_network(),
+        network,
+        network_interface,
+        wifi_ssid: last_wifi_ssid,
         battery: detect_battery(),
         wifi_enabled: last_wifi_enabled,
         bluetooth_enabled: detect_bluetooth_radio(),
@@ -75,14 +82,15 @@ pub fn detect_system_status_lightweight(
     }
 }
 
-/// Run only the forked probes and return `(volume, muted, wifi_enabled)`.
+/// Run only the forked probes and return
+/// `(volume, muted, wifi_enabled, wifi_ssid)`.
 ///
 /// Called on the long-interval cadence and on out-of-cycle refresh requests,
 /// so the cheap poll stays on the `/sys` path while the expensive commands run
 /// rarely and only when their result may have changed.
-pub fn detect_forked_status() -> (Option<u8>, bool, Option<bool>) {
+pub fn detect_forked_status() -> (Option<u8>, bool, Option<bool>, Option<String>) {
     let (volume, muted) = detect_volume();
-    (volume, muted, detect_wifi_radio())
+    (volume, muted, detect_wifi_radio(), detect_wifi_ssid())
 }
 
 fn detect_volume() -> (Option<u8>, bool) {
@@ -99,11 +107,13 @@ fn detect_volume() -> (Option<u8>, bool) {
         .unwrap_or((None, false))
 }
 
-fn detect_network() -> NetworkState {
+/// The default-route interface first (the one the panel should name),
+/// falling back to any live link. Returns the state plus the sysfs name.
+fn detect_network() -> (NetworkState, String) {
     let Ok(entries) = fs::read_dir("/sys/class/net") else {
-        return NetworkState::Offline;
+        return (NetworkState::Offline, String::new());
     };
-    let mut wired = false;
+    let mut wired: Option<String> = None;
     for entry in entries.flatten() {
         let name = entry.file_name();
         if name == "lo" {
@@ -116,16 +126,27 @@ fn detect_network() -> NetworkState {
         if !up {
             continue;
         }
-        if path.join("wireless").is_dir() || name.to_string_lossy().starts_with("wl") {
-            return NetworkState::Wifi;
+        let name = name.to_string_lossy().into_owned();
+        if path.join("wireless").is_dir() || name.starts_with("wl") {
+            return (NetworkState::Wifi, name);
         }
-        wired = true;
+        wired = wired.or(Some(name));
     }
-    if wired {
-        NetworkState::Wired
-    } else {
-        NetworkState::Offline
+    match wired {
+        Some(name) => (NetworkState::Wired, name),
+        None => (NetworkState::Offline, String::new()),
     }
+}
+
+/// The associated Wi-Fi network name from `iwgetid -r`, the wireless-tools
+/// equivalent of reading `/proc/net/wireless`'s essid column. `None` when no
+/// tool, radio, or association answers — the same "unknown, keep the last
+/// value" contract as the other forked probes.
+fn detect_wifi_ssid() -> Option<String> {
+    command_output("iwgetid", &["-r"]).and_then(|value| {
+        let ssid = value.trim();
+        (!ssid.is_empty()).then(|| ssid.to_owned())
+    })
 }
 
 fn detect_battery() -> Option<BatteryStatus> {

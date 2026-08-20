@@ -1,24 +1,27 @@
 //! The command panel: a full-screen modal overlay in a VR/AR personal-info
-//! HUD language (ADR-0080) — deep blue-black translucent "dark glass"
-//! floating panels with a cyan accent, thin hairlines, and corner brackets
-//! over the standard dark blurred scrim.
+//! HUD language (ADR-0080). The whole output sits behind one blurred
+//! translucent background — the compositor frosts the desktop and a
+//! scheme-adaptive painted wash (ink in dark mode, pearl in light mode)
+//! blends bright and dark into the blur so the HUD island stays legible
+//! either way. Floating glass surfaces carry the cyan accent, hairlines,
+//! and corner brackets on top.
 //!
-//! One centered cluster of surfaces: a header band with the user's
-//! profile (avatar, display name, groups) on the left and a live machine
-//! monitor (chassis glyph plus CPU/GPU/RAM/NET/DISK/BAT gauges fed by
-//! `ChromeUpdate::ResourceStats`) on the right; below it the main panel,
-//! topped by a flat tab bar holding the System quick-settings tab plus one
-//! tab per available `aegis-settings` module (with the close button at its
-//! right end); and the side column stacking the notification list over the
-//! StatusNotifierItem tray. The System tab carries quick settings (volume,
-//! brightness, radios, do-not-disturb) and the Agent Workspaces status row
-//! that the HUD's dropped right chip once carried (ADR-0083); settings
+//! One centered cluster of surfaces: a frameless user identity block with
+//! the avatar, display name, `@username · groups`, and the hostname on the
+//! left; the main panel to its right, hosting the Quick Controls tab plus
+//! one tab per available `aegis-settings` module; a floating notification
+//! stream in the top-right with a network monitor below it (the live
+//! interface and Wi-Fi name, upload/download line charts, and current
+//! rates). Quick Controls holds the daily toggles — volume, brightness,
+//! always-on, do-not-disturb — while the System tab keeps the remaining
+//! quick settings and the Agent Workspaces status row (ADR-0083); settings
 //! module tabs host the module registry's pages and route their
 //! `SettingsAction`s through `ChromeEvents::settings_actions`; the tray
 //! keeps left-click activation with host-rendered dbusmenu popovers, and
-//! the notification list keeps click-to-dismiss. The panel opens through
-//! the `Super+S` keybinding or a four-finger touchpad swipe down, and
-//! closes on Escape, a scrim click, the tab bar's close button, the same
+//! the notification list keeps click-to-dismiss. Panel-wide display
+//! typography is bold sans-serif at amplified sizes — the game-HUD voice.
+//! The panel opens through the `Super+S` keybinding or a four-finger
+//! touchpad swipe down, and closes on Escape, a scrim click, the same
 //! binding, or a four-finger swipe up.
 //!
 //! Scope (ADR-0115): the panel is the display-and-control surface for
@@ -43,12 +46,11 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_design::tokens::{Hud, TypeScale};
 use aegis_design::{AvatarRole, Design, GlassRole, materials, themes};
 use aegis_model::input::KeyChar;
-use aegis_model::interaction_domain::{
-    InteractionDomainKind, InteractionDomainSnapshot, InteractionDomainState,
-};
+use aegis_model::interaction_domain::InteractionDomainSnapshot;
 use aegis_model::notify::{Notification, NotificationQueue};
 use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_model::window::{SpaceUse, Window};
@@ -60,8 +62,8 @@ use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use aegis_shell::{
     BackdropRegion, ChassisKind, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
-    IconSet, LiquidGlassRegion, Localizer, Message, NetworkState, ResourceStats,
-    SystemAction, SystemStatus, place_popup, truncate,
+    IconSet, LiquidGlassRegion, Localizer, Message, NetworkState, ResourceStats, SystemAction,
+    SystemStatus, place_popup, truncate,
 };
 use aegis_tray::{MenuNode, MenuState, TrayCommand, TrayHandle, TrayIcon};
 
@@ -76,13 +78,16 @@ const BACKDROP_BLUR_SIGMA: f32 = 14.0;
 /// Layout constants for the 9-part visual HUD anchor architecture:
 /// - Top-Left (左上): Compact user profile chip (48px avatar + name).
 /// - Top-Right (右上): Floating notification stream.
+/// - Right-Middle (右中): Network monitor (interface, rate charts).
 /// - Center (中): Split Main Control Panel (Left Nav Rail + Right Tab View).
-const PROFILE_W: f32 = 280.0;
-const PROFILE_H: f32 = 72.0;
+const PROFILE_W: f32 = 300.0;
+const PROFILE_H: f32 = 84.0;
 const MAIN_W: f32 = 720.0;
 const MAIN_H: f32 = 460.0;
 const NOTIF_W: f32 = 260.0;
 const NOTIF_H: f32 = 200.0;
+const NETWORK_W: f32 = 300.0;
+const NETWORK_H: f32 = 300.0;
 /// The tray panel's fixed height at the side column's bottom: a small
 /// section header plus two tray-grid rows.
 const TRAY_PANEL_H: f32 = 172.0;
@@ -126,11 +131,11 @@ fn presentation_anim_pending(
     (reveal - target).abs() > 0.002 || avatar_playing || avatar_reload_pending
 }
 
-/// The main panel's tabs: the System quick settings plus one tab per
-/// available settings module from the registry, in registry order.
+/// The main panel's tabs: the Quick Controls tab plus one tab per available
+/// settings module from the registry, in registry order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    System,
+    QuickControls,
     Settings(ModuleId),
 }
 
@@ -237,10 +242,14 @@ pub struct CommandPanel {
     status: SystemStatus,
     /// Latest host utilization sample behind the header band's gauges.
     stats: ResourceStats,
-    /// Sparkline histories for the header band's CPU/GPU/RAM gauges.
+    /// Sparkline histories for the header band's CPU/GPU/RAM gauges and the
+    /// network surface's upload/download charts, fed by
+    /// `ChromeUpdate::ResourceStats`.
     cpu_history: History,
     gpu_history: History,
     ram_history: History,
+    net_rx_history: History,
+    net_tx_history: History,
     /// Local account behind the header band's profile zone, resolved once
     /// at construction (never per frame).
     profile: Profile,
@@ -350,40 +359,41 @@ impl CommandPanel {
         };
         let open_on_start = cfg!(debug_assertions)
             && std::env::var_os("AEGIS_COMMAND_PANEL_OPEN").is_some_and(|value| !value.is_empty());
-        if cfg!(debug_assertions) {
-            if let Ok(mut queue) = notifications.lock() {
-                if queue.snapshot().is_empty() {
-                    queue.push(
-                        "战术网络",
-                        "已建立量子加密链路，节点 0x7F 延迟 4ms",
-                        Some("aegis-net".into()),
-                        1000,
-                    );
-                    queue.push(
-                        "核心遥测",
-                        "GPU Shader 预热完成，显存动态分配 384MB",
-                        Some("aegis-gpu".into()),
-                        2000,
-                    );
-                    queue.push(
-                        "安全总线",
-                        "Agent 交互域沙箱环境完整性验证通过",
-                        Some("aegis-security".into()),
-                        3000,
-                    );
-                    queue.push(
-                        "电源管理",
-                        "已开启高能效模式，当前电池电量 92% (充电中)",
-                        Some("aegis-power".into()),
-                        4000,
-                    );
-                }
-            }
+        // Debug builds seed a few demo notifications so the panel's stream
+        // has content to lay out without a bus.
+        if cfg!(debug_assertions)
+            && let Ok(mut queue) = notifications.lock()
+            && queue.snapshot().is_empty()
+        {
+            queue.push(
+                "战术网络",
+                "已建立量子加密链路，节点 0x7F 延迟 4ms",
+                Some("aegis-net".into()),
+                1000,
+            );
+            queue.push(
+                "核心遥测",
+                "GPU Shader 预热完成，显存动态分配 384MB",
+                Some("aegis-gpu".into()),
+                2000,
+            );
+            queue.push(
+                "安全总线",
+                "Agent 交互域沙箱环境完整性验证通过",
+                Some("aegis-security".into()),
+                3000,
+            );
+            queue.push(
+                "电源管理",
+                "已开启高能效模式，当前电池电量 92% (充电中)",
+                Some("aegis-power".into()),
+                4000,
+            );
         }
         CommandPanel {
             open: open_on_start,
             reveal: if open_on_start { 1.0 } else { 0.0 },
-            tab: Tab::System,
+            tab: Tab::QuickControls,
             modules: builtin_settings_modules(),
             settings: None,
             design: Design::dark(),
@@ -394,6 +404,8 @@ impl CommandPanel {
             cpu_history: History::new(HISTORY_CAP),
             gpu_history: History::new(HISTORY_CAP),
             ram_history: History::new(HISTORY_CAP),
+            net_rx_history: History::new(HISTORY_CAP),
+            net_tx_history: History::new(HISTORY_CAP),
             profile: Profile::current().unwrap_or_else(|_| Profile::fallback()),
             avatar,
             portrait_config,
@@ -427,7 +439,7 @@ impl CommandPanel {
         CommandPanel {
             open: false,
             reveal: 0.0,
-            tab: Tab::System,
+            tab: Tab::QuickControls,
             modules: builtin_settings_modules(),
             settings: None,
             design: Design::dark(),
@@ -438,6 +450,8 @@ impl CommandPanel {
             cpu_history: History::new(HISTORY_CAP),
             gpu_history: History::new(HISTORY_CAP),
             ram_history: History::new(HISTORY_CAP),
+            net_rx_history: History::new(HISTORY_CAP),
+            net_tx_history: History::new(HISTORY_CAP),
             profile: Profile::current().unwrap_or_else(|_| Profile::fallback()),
             avatar: None,
             portrait_config: PortraitConfig::new(Vec::new()),
@@ -563,12 +577,14 @@ impl CommandPanel {
     }
 
     /// The profile panel (screen top-left), notifications panel (screen top-right),
-    /// main control panel (screen center), and side column (machine monitor over tray,
+    /// main control panel (screen center), network monitor (screen right-middle),
+    /// and side column (machine monitor over tray).
     /// Calculate panel bounds based on the 9-region spatial anchor system:
     /// - Top-Left (左上): User Profile Chip
     /// - Top-Right (右上): Notifications Stream
+    /// - Right-Middle (右中): Network Monitor
     /// - Center (中): Split Main Control Panel (Left Nav Rail + Right Tab View)
-    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect, Rect) {
+    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect, Rect, Rect) {
         let margin_x = (display.0 * 0.025).clamp(16.0, 48.0);
         let margin_y = (display.1 * 0.035).clamp(16.0, 40.0);
         let gap = PANEL_GAP;
@@ -586,7 +602,15 @@ impl CommandPanel {
         // 2. Top-Right Anchor (右上): Notifications Stream
         let notif_w = NOTIF_W.min((display.0 * 0.38).max(140.0));
         let notif_h = NOTIF_H.min((display.1 * 0.38).max(64.0));
-        let notif_x = (display.0 - margin_x - notif_w).max(profile.x + profile.w + gap);
+
+        // 3. Right-Middle Anchor (右中): Network Monitor, below the
+        // notification stream. It is the wider of the two right-column
+        // surfaces, so it fixes the column's left edge; the notification
+        // stream aligns to it. On narrow displays it yields first.
+        let network_w = NETWORK_W.min((display.0 * 0.3).max(0.0));
+        let network_x = (display.0 - margin_x - network_w).max(profile.x + profile.w + gap);
+
+        let notif_x = (network_x + network_w - notif_w).max(profile.x + profile.w + gap);
         let notifications = Rect {
             x: notif_x,
             y: margin_y,
@@ -594,11 +618,27 @@ impl CommandPanel {
             h: notif_h.min((display.1 - margin_y * 2.0).max(1.0)),
         };
 
-        // 3. Center Anchor (中): Split Main Control Panel (Nav Rail + Content View)
+        let network_top = notifications.y + notifications.h + gap;
+        let network_h = NETWORK_H.min((display.1 - network_top - margin_y).max(0.0));
+        let network = Rect {
+            x: network_x,
+            y: network_top,
+            w: network_w.min((display.0 - network_x - margin_x).max(1.0)),
+            h: network_h,
+        };
+
+        // 4. Center Anchor (中): Split Main Control Panel (Nav Rail + Content View)
         let main_w = MAIN_W.min((display.0 - margin_x * 2.0).max(1.0));
         let main_h = MAIN_H.min((display.1 - margin_y * 2.0).max(1.0));
         let main_x = ((display.0 - main_w) * 0.5).max(margin_x);
         let main_y = ((display.1 - main_h) * 0.5).max(margin_y);
+        // Keep the centered cluster clear of the right column when both
+        // compete for the same horizontal band.
+        let main_w = if network.h > 0.0 {
+            main_w.min((network.x - gap - main_x).max(1.0))
+        } else {
+            main_w
+        };
         let main = Rect {
             x: main_x,
             y: main_y,
@@ -606,7 +646,7 @@ impl CommandPanel {
             h: (display.1 - main_y - margin_y).min(main_h).max(1.0),
         };
 
-        // 4. Side Column (System Telemetry): Temporarily disabled / zero bounds
+        // 5. Side Column (System Telemetry): Temporarily disabled / zero bounds
         let side = Rect {
             x: display.0,
             y: display.1,
@@ -614,7 +654,7 @@ impl CommandPanel {
             h: 0.0,
         };
 
-        (profile, main, notifications, side)
+        (profile, main, notifications, network, side)
     }
 
     /// Clone the notification queue, memoized on the queue's revision: an
@@ -777,7 +817,7 @@ impl Chrome for CommandPanel {
             self.avatar_warned = true;
         }
         let reveal = self.reveal.clamp(0.0, 1.0);
-        let (profile_rect, main_rect, notifications_rect, side_rect) =
+        let (profile_rect, main_rect, notifications_rect, network_rect, side_rect) =
             Self::cluster_bounds(display);
         let tray_h = TRAY_PANEL_H.min((side_rect.h - PANEL_GAP - 60.0).max(56.0));
         let machine_rect = Rect {
@@ -803,6 +843,7 @@ impl Chrome for CommandPanel {
             && !contains(profile_rect, cursor.0, cursor.1)
             && !contains(notifications_rect, cursor.0, cursor.1)
             && !contains(main_rect, cursor.0, cursor.1)
+            && !contains(network_rect, cursor.0, cursor.1)
             && !contains(side_rect, cursor.0, cursor.1)
             && !on_popover
         {
@@ -816,7 +857,44 @@ impl Chrome for CommandPanel {
         let notif_progress = stagger(reveal, 0.0);
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
         let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
-        // lens stamps each built node with the context opacity, so one
+
+        // The blurred translucent background: the compositor's backdrop
+        // pass blurs the whole output behind the panel (see
+        // `backdrop_regions`), and this painted veil supplies the adaptive
+        // light/dark wash on top of it. Dark mode deepens toward ink so
+        // bright content recedes; light mode lifts toward pearl so dark
+        // content recedes — the scrim follows the scheme, not the wallpaper.
+        // The veil's alpha rides the reveal so the blur surfaces first and
+        // the wash settles in behind the cluster.
+        let full = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: display.0,
+            h: display.1,
+        };
+        let scrim_base = if self.design.is_light() {
+            Color::rgba(238, 241, 248, 255)
+        } else {
+            Color::rgba(8, 11, 20, 255)
+        };
+        f.place(
+            "aegis-hud-background-scrim",
+            &chrome_place(
+                full,
+                LayoutOpts {
+                    gap: 0.0,
+                    pad: 0.0,
+                    bg: scrim_base.with_alpha((150.0 * reveal).round().min(255.0) as u8),
+                    border: Color::TRANSPARENT,
+                    ..surface_layout()
+                },
+            ),
+            |_| {},
+        );
+
+        // Display typography is per-call (`display_label`, bold sans at the
+        // amplified HUD sizes), so no context-wide scope is needed here.
+        // Lens stamps each built node with the context opacity, so one
         // switch fades every element of a section — text, icons, images,
         // sliders, scrollbars; the switch is restored after the cluster
         // (lens also resets it at every frame begin).
@@ -826,8 +904,10 @@ impl Chrome for CommandPanel {
         self.render_notifications_panel(f, notifications_rect, notif_progress, i18n, out);
         f.set_opacity(content_progress);
         self.render_main_panel(f, main_rect, content_progress, i18n, out);
+        f.set_opacity(side_progress.max(content_progress));
+        self.render_network_panel(f, network_rect, side_progress, i18n);
         // System telemetry / side monitor temporarily disabled per user direction.
-        let _ = (side_progress, machine_rect, tray_rect);
+        let _ = (machine_rect, tray_rect);
 
         // The dbusmenu popover floats above the panels; it belongs to the
         // tray, so it fades with the side column.
@@ -933,6 +1013,8 @@ impl Chrome for CommandPanel {
                     0.0
                 };
                 self.ram_history.push(ram_percent);
+                self.net_rx_history.push(stats.net_rx_bytes_per_sec as f32);
+                self.net_tx_history.push(stats.net_tx_bytes_per_sec as f32);
             }
             ChromeUpdate::InteractionDomains(snapshot) => {
                 self.interaction_domains = snapshot.clone();
@@ -984,15 +1066,27 @@ impl Chrome for CommandPanel {
 
     fn backdrop_regions(
         &self,
-        _display: (f32, f32),
+        display: (f32, f32),
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        // The command panel is boundless floating chrome: individual components
-        // declare their own stable `capture_bounds` footprint through
-        // `liquid_glass_regions`, avoiding expensive and flicker-prone fullscreen
-        // backdrop captures on cursor movement.
-        Vec::new()
+        // The blurred translucent background (ADR-0080 refresh): while the
+        // panel is revealing, the whole output is one backdrop capture, so
+        // the compositor's realtime blur frosts everything behind the HUD
+        // island. The per-component glass bodies still carry their own
+        // refraction on top; this region only supplies the blur the painted
+        // scrim washes over. The launcher uses the same fullscreen-region
+        // pattern.
+        if self.active() {
+            vec![BackdropRegion {
+                x: 0.0,
+                y: 0.0,
+                w: display.0,
+                h: display.1,
+            }]
+        } else {
+            Vec::new()
+        }
     }
 
     fn liquid_glass_regions(
@@ -1005,11 +1099,11 @@ impl Chrome for CommandPanel {
             return Vec::new();
         }
         let reveal = self.reveal.clamp(0.0, 1.0);
-        let profile_progress = stagger(reveal, 0.0);
         let notif_progress = stagger(reveal, 0.0);
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
+        let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
 
-        let (profile_rect, main_rect, notifications_rect, _) = Self::cluster_bounds(display);
+        let (_, main_rect, notifications_rect, network_rect, _) = Self::cluster_bounds(display);
         let nav_w = 190.0_f32.min(main_rect.w * 0.28).max(150.0);
         let gap = 16.0;
         let view_w = (main_rect.w - nav_w - gap).max(1.0);
@@ -1028,18 +1122,15 @@ impl Chrome for CommandPanel {
 
         let mut regions = Vec::new();
 
-        // 1. Top-Left Profile Chip (GlassRole::Chip)
-        if profile_progress > 0.01 {
-            let region = LiquidGlassRegion::from_role(
-                &self.design,
-                GlassRole::Chip,
-                BackdropRegion::from(profile_rect),
-                self.design.radii.chip.max(20.0),
-                profile_progress,
-            )
-            .with_capture_bounds(BackdropRegion::from(profile_rect));
-            regions.push(region);
-        }
+        // The fullscreen blurred translucent background is NOT a glass body:
+        // it comes from the plain frost `BackdropRegion` in `backdrop_regions`
+        // plus the painted scheme-adaptive scrim in `render`, so the analytic
+        // bodies below carry their refraction over a shared frost instead of
+        // stacking on a second fullscreen body.
+
+        // 1. Top-Left Identity Block: frameless — no glass body, no painted
+        //    foreground. The block's content sits directly on the shared
+        //    blurred translucent background.
 
         // 2. Top-Right Notifications (GlassRole::FloatingPanel)
         if notif_progress > 0.01 {
@@ -1054,9 +1145,22 @@ impl Chrome for CommandPanel {
             regions.push(region);
         }
 
+        // 2.5 Right-Middle Network Monitor (GlassRole::FloatingPanel)
+        if side_progress > 0.01 && network_rect.w > 1.0 {
+            let region = LiquidGlassRegion::from_role(
+                &self.design,
+                GlassRole::FloatingPanel,
+                BackdropRegion::from(network_rect),
+                self.design.radii.glass_panel,
+                side_progress,
+            )
+            .with_capture_bounds(BackdropRegion::from(network_rect));
+            regions.push(region);
+        }
+
         // 3. Central Control Panel: Left Individual Semicircle Capsule Tabs + Right View
         if content_progress > 0.01 {
-            let mut tabs = vec![Tab::System];
+            let mut tabs = vec![Tab::QuickControls];
             tabs.extend(
                 self.modules
                     .metadata()

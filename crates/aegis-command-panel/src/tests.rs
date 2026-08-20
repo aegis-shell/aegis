@@ -143,8 +143,8 @@ fn a_fullscreen_window_closes_the_panel() {
 #[test]
 fn cluster_bounds_stay_inside_small_displays() {
     for display in [(320.0, 480.0), (800.0, 600.0), (1920.0, 1080.0)] {
-        let (profile, main, notifications, side) = CommandPanel::cluster_bounds(display);
-        for rect in [profile, main, notifications, side] {
+        let (profile, main, notifications, network, side) = CommandPanel::cluster_bounds(display);
+        for rect in [profile, main, notifications, network, side] {
             assert!(rect.x >= 0.0 && rect.y >= 0.0);
             assert!(rect.x + rect.w <= display.0 + 0.01);
             assert!(rect.y + rect.h <= display.1 + 0.01);
@@ -156,10 +156,11 @@ fn cluster_bounds_stay_inside_small_displays() {
 
 #[test]
 fn full_size_displays_get_the_design_geometry() {
-    let (profile, main, notifications, side) = CommandPanel::cluster_bounds((1920.0, 1080.0));
+    let (profile, main, notifications, network, side) =
+        CommandPanel::cluster_bounds((1920.0, 1080.0));
     // Profile is compact in top-left
-    assert_eq!(profile.w, 280.0);
-    assert_eq!(profile.h, 72.0);
+    assert_eq!(profile.w, 300.0);
+    assert_eq!(profile.h, 84.0);
     assert_eq!(profile.x, 48.0);
     assert_eq!(profile.y, 37.8);
 
@@ -169,11 +170,20 @@ fn full_size_displays_get_the_design_geometry() {
     assert_eq!(notifications.x, 1920.0 - 48.0 - 260.0);
     assert_eq!(notifications.y, 37.8);
 
-    // Main Split Control Panel is centered on screen
+    // The network monitor sits at the right-middle anchor, below the
+    // notification stream and sharing its right edge.
+    assert_eq!(network.w, 300.0);
+    assert_eq!(network.h, 300.0);
+    assert_eq!(network.x, 1920.0 - 48.0 - 300.0);
+    assert_eq!(network.y, notifications.y + notifications.h + PANEL_GAP);
+
+    // Main Split Control Panel is centered on screen and clear of the
+    // network column.
     assert_eq!(main.w, 720.0);
     assert_eq!(main.h, 460.0);
     assert_eq!(main.x, (1920.0 - 720.0) * 0.5);
     assert_eq!(main.y, (1080.0 - 460.0) * 0.5);
+    assert!(main.x + main.w <= network.x - PANEL_GAP);
 
     // Side Column (Machine Monitor + Tray) is disabled
     assert_eq!(side.w, 0.0);
@@ -256,80 +266,53 @@ fn stagger_delays_the_content_panel_behind_the_menu() {
 }
 
 #[test]
-fn agent_workspace_row_tracks_aggregate_interaction_domain_state() {
+fn network_identity_names_the_interface_and_wifi_ssid() {
     let i18n = Localizer::new("en-US");
-    let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
-    let indicator = agent_workspace_indicator(&model.snapshot(), &i18n);
-    assert_eq!(indicator.state, AgentWorkspaceState::Idle);
-    assert_eq!(indicator.label, "Agent Workspaces");
+    let mut status = SystemStatus::default();
 
-    let bundle = model.create_agent_interaction_domain("Fuji", Default::default());
-    let mut snapshot = model.snapshot();
-    let indicator = agent_workspace_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentWorkspaceState::Active);
-    assert_eq!(indicator.label, "Fuji · Active");
+    // Offline: no interface to name.
+    assert_eq!(network_identity(&status, &i18n), "Offline");
 
-    snapshot
-        .interaction_domains
-        .iter_mut()
-        .find(|interaction_domain| interaction_domain.id == bundle.interaction_domain)
-        .expect("agent InteractionDomain")
-        .state = InteractionDomainState::Paused;
-    let indicator = agent_workspace_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentWorkspaceState::Paused);
-    assert_eq!(indicator.label, "Fuji · Paused");
+    // Wired: the interface alone.
+    status.network = NetworkState::Wired;
+    status.network_interface = "enp3s0".into();
+    assert_eq!(network_identity(&status, &i18n), "enp3s0");
 
-    let research = model.create_agent_interaction_domain("Research Agent", Default::default());
-    let mut snapshot = model.snapshot();
-    snapshot
-        .interaction_domains
-        .iter_mut()
-        .find(|interaction_domain| interaction_domain.id == bundle.interaction_domain)
-        .expect("agent InteractionDomain")
-        .state = InteractionDomainState::Paused;
-    let indicator = agent_workspace_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentWorkspaceState::PartiallyPaused);
-    assert_eq!(indicator.label, "2 workspaces · Partially paused");
+    // Wi-Fi: the interface plus the SSID once the forked probe answers.
+    status.network = NetworkState::Wifi;
+    status.network_interface = "wlan0".into();
+    status.wifi_ssid = Some("Homelab-5G".into());
+    assert_eq!(network_identity(&status, &i18n), "wlan0 · Homelab-5G");
 
-    snapshot
-        .interaction_domains
-        .iter_mut()
-        .find(|interaction_domain| interaction_domain.id == research.interaction_domain)
-        .expect("second agent InteractionDomain")
-        .state = InteractionDomainState::Paused;
-    let indicator = agent_workspace_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentWorkspaceState::Paused);
-    assert_eq!(indicator.label, "2 workspaces · Paused");
-
-    for interaction_domain in snapshot
-        .interaction_domains
-        .iter_mut()
-        .filter(|interaction_domain| interaction_domain.kind == InteractionDomainKind::Agent)
-    {
-        interaction_domain.state = InteractionDomainState::Revoked;
-    }
-    let indicator = agent_workspace_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentWorkspaceState::Idle);
-    assert_eq!(indicator.label, "Agent Workspaces");
+    // Wi-Fi before the probe answers: fall back to the interface.
+    status.wifi_ssid = None;
+    assert_eq!(network_identity(&status, &i18n), "wlan0");
 }
 
 #[test]
 fn command_panel_emits_liquid_glass_regions_when_open() {
     let mut panel = CommandPanel::without_sources();
     let display = (1920.0, 1080.0);
-    let workspaces = WorkspaceSnapshot { outputs: Vec::new() };
+    let workspaces = WorkspaceSnapshot {
+        outputs: Vec::new(),
+    };
     let mut out = ChromeEvents::default();
 
     // Inactive panel returns no liquid glass regions
-    assert!(panel.liquid_glass_regions(display, &[], &workspaces).is_empty());
+    assert!(
+        panel
+            .liquid_glass_regions(display, &[], &workspaces)
+            .is_empty()
+    );
 
-    // Opened panel returns physical liquid glass bodies (profile, notifications, capsule tabs, close button, view)
+    // Opened panel returns physical liquid glass bodies (profile, notifications, network, capsule tabs, view)
     panel.toggle_command_panel(&mut out);
     panel.reveal = 1.0;
     let regions = panel.liquid_glass_regions(display, &[], &workspaces);
     assert!(regions.len() >= 4);
-    assert_eq!(regions[0].opacity, 1.0); // Profile chip
-    assert_eq!(regions[1].opacity, 1.0); // Notifications
+    assert_eq!(regions[0].opacity, 1.0); // Notifications
+    assert_eq!(regions[1].opacity, 1.0); // Network monitor (right-middle)
+    assert_eq!(regions[1].corner_radius, panel.design.radii.glass_panel);
     // Each capsule has 100% semicircle ends (corner_radius == height * 0.5)
     assert_eq!(regions[2].corner_radius, 22.0); // First capsule tab
     let last = regions.last().unwrap();

@@ -18,49 +18,57 @@ while Interaction Domain lifecycle management is not.
 
 The HUD is display-only: it reserves no space and accepts no
 pointer input. The interactions it used to host live here instead — a
-full-screen modal overlay in a VR/AR personal-info HUD language: deep
-blue-black translucent "dark glass" floating panels with a cyan accent,
-thin hairlines, and corner brackets over the standard dark blurred
-scrim. The panel opens through the `Super+S` keybinding or a four-finger
-touchpad swipe down (both dispatched by the compositor's main loop), and
-closes on Escape, a click on the scrim, the same keybinding, or a
-four-finger swipe up.
+full-screen modal overlay in a VR/AR personal-info HUD language over one
+blurred translucent background: the compositor frosts the whole output and
+a scheme-adaptive painted wash (ink in dark mode, pearl in light mode)
+blends bright and dark into the blur, with cyan-accented liquid-glass
+surfaces floating on top and bold sans-serif display typography. The panel
+opens through the `Super+S` keybinding or a four-finger touchpad swipe down
+(both dispatched by the compositor's main loop), and closes on Escape, a
+click on the scrim, the same keybinding, or a four-finger swipe up.
 
 Surfaces:
 
-- **System tab** — volume/mute, brightness, Wi-Fi, Bluetooth, Do-Not-Disturb,
-  and the tiled-layout toggle, emitted as `SystemAction`s, plus the
-  display-only Agent Workspaces status row that aggregates the live Agent
-  Interaction Domains (moved here from the HUD, ADR-0083).
+- **Quick Controls tab (first)** — the daily toggles: volume (+ mute),
+  brightness, always-on (the session idle inhibitor), and do-not-disturb,
+  emitted as `SystemAction`s. The remaining quick settings (Wi-Fi and
+  Bluetooth radios, tiled layout, Agent Workspaces status, Lock Now) are
+  held out of the panel for now; they return through the settings module
+  tabs.
 - **Settings module tabs** — one tab per available `aegis-settings` module
   (display, touchpad, appearance, power), rendered from the registry inside
   the main panel; their `SettingsAction`s leave through
   `ChromeEvents::settings_actions` with the current snapshot revision.
 - **Notifications** — the notification history with click-to-dismiss,
-  pinned to the top of the side column. The queue retains one hour of
-  entries; the frameless toast strip presents only a three-second window of
-  them (ADR-0083).
-- **Tray** — the shared `aegis-tray` StatusNotifierItem snapshot at the
-  bottom of the side column with full interaction: left-click `Activate`,
-  right-click host-rendered dbusmenu popover (or `SecondaryActivate`).
+  pinned to the top-right. The queue retains one hour of entries; the
+  frameless toast strip presents only a three-second window of them
+  (ADR-0083).
+- **Network monitor (right-middle)** — the live interface and Wi-Fi name
+  (`wlan0 · Homelab-5G`), two framed line charts plotting upload and
+  download throughput from `ChromeUpdate::ResourceStats`, and the current
+  rates as text under each chart.
+- **Tray** — the shared `aegis-tray` StatusNotifierItem snapshot with full
+  interaction: left-click `Activate`, right-click host-rendered dbusmenu
+  popover (or `SecondaryActivate`).
 
 ## Layout
 
-A boundless, floating HUD layout of dark glass surfaces, each with its own reveal
-animation:
+A boundless, floating HUD layout over the shared blurred background, each
+surface with its own reveal animation:
 
-- **Main Control Panel (Center)** — the primary focal point: a flat tab bar (System
-  plus one tab per available settings module, close button at the right end) over
-  the active tab's body; tab bodies scroll when they overflow.
-- **Profile chip (top-left)** — compact user persona (ringed 48px avatar orb with live
-  3D VRM rendering and VRMA animation playback, display name, and
-  `@username · groups` from the local account record).
-- **Notifications panel (top-right)** — the notification history with click-to-dismiss.
-  The queue retains one hour of entries; the frameless toast strip presents only a
-  three-second window of them (ADR-0083).
-- **Machine telemetry & Tray (right-center)** — the machine monitor (chassis glyph plus
-  CPU/GPU/RAM/NET/DISK/BAT gauges fed by `ChromeUpdate::ResourceStats`, with
-  btop-style sparklines for CPU, GPU, and RAM) over the fixed-height tray panel.
+- **Main Control Panel (Center)** — the primary focal point: a liquid-glass
+  capsule nav rail (Quick Controls plus one capsule per available settings
+  module) beside the active tab's frosted glass view; tab bodies scroll
+  when they overflow.
+- **Identity block (top-left)** — frameless user persona: a 56px avatar orb
+  (live 3D VRM rendering and VRMA animation playback) inside a gapped cyan
+  line ring, the display name at title scale, `@username · groups`, and the
+  machine's hostname from the local account/kernel record.
+- **Notifications panel (top-right)** — the notification history with
+  click-to-dismiss. The queue retains one hour of entries; the frameless
+  toast strip presents only a three-second window of them (ADR-0083).
+- **Network monitor (right-middle)** — the network surface below the
+  notification stream, sharing the column's right edge.
 
 ## Boundaries
 

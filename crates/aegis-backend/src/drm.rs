@@ -598,9 +598,7 @@ struct CursorBuffer {
 
 impl CursorBuffer {
     fn matches(&self, size: (u32, u32), pixels: &[u8]) -> bool {
-        self.content_size == size
-            && self.len == pixels.len()
-            && self.pixels.as_slice() == pixels
+        self.content_size == size && self.len == pixels.len() && self.pixels.as_slice() == pixels
     }
 }
 

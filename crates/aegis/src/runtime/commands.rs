@@ -69,13 +69,7 @@ pub(super) fn draw_direct_desktop_scene(
             window_switcher.is_some(),
         );
         if let Some(presentation) = window_switcher {
-            draw_window_switcher_scrim(
-                canvas,
-                logical_size,
-                scale,
-                presentation,
-                scheme,
-            );
+            draw_window_switcher_scrim(canvas, logical_size, scale, presentation, scheme);
         }
     }
     Ok(())

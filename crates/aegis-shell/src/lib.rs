@@ -34,8 +34,8 @@ pub use chrome::{
     AgentFeedback, AppMenu, AppPickParams, AppPicker, BatteryAlert, BatteryAlertParams,
     CapabilityFamily, CapabilityGroup, CapabilityPickParams, CapabilityPickResult,
     CapabilityPrompt, ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt,
-    ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction,
-    ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
+    ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector,
+    SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use popup::{POPUP_GAP, POPUP_MARGIN, PopupSide, place_popup, place_popup_side};
@@ -604,6 +604,12 @@ pub enum ChromeUpdate<'a> {
     Settings(&'a aegis_model::settings::SettingsSnapshot),
     ReducedMotion(bool),
     ModalReserved(Reserved),
+    /// Whether the full-screen application launcher currently owns the
+    /// output. Pushed every frame alongside [`ChromeUpdate::ModalReserved`]:
+    /// the launcher blurs and dims the complete desktop, so persistent
+    /// decorations that would float inside its field (the HUD chips) hide
+    /// for its duration, while the dock below its work area stays.
+    LauncherActive(bool),
 }
 
 /// One piece of compositor chrome.
@@ -1088,6 +1094,13 @@ impl Shell {
         let design = aegis_design::Design::for_scheme(scheme);
         if self.design != design {
             self.design = design;
+            // Keep lens's own widget defaults on the same tonal side as the
+            // design: bare icons and any unstyled widget draw with the
+            // context theme's foreground, which otherwise stays on the
+            // creation-time dark token set even in the light appearance
+            // (near-white glyphs on white glass).
+            self.ui
+                .set_theme(aegis_design::themes::application_base(&design));
             for component in self.components.iter_mut() {
                 component.update(ChromeUpdate::Appearance(&self.design));
             }
@@ -1985,8 +1998,14 @@ impl Shell {
                     total.right += edge.right;
                     total
                 });
+            // The launcher (including its exit fade) owns the whole output:
+            // persistent decorations floating inside its blurred field hide.
+            let launcher_active = components
+                .iter()
+                .any(|component| component.launcher_active());
             for component in components.iter_mut() {
                 component.update(ChromeUpdate::ModalReserved(modal_reserved));
+                component.update(ChromeUpdate::LauncherActive(launcher_active));
             }
             self.ui.frame(input, |f| {
                 for component in components.iter_mut() {

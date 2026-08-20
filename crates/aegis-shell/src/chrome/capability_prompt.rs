@@ -455,7 +455,12 @@ impl Chrome for CapabilityPrompt {
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        place_modal_panel(frame, "aegis-capability-prompt-panel", layout.panel, &design);
+        place_modal_panel(
+            frame,
+            "aegis-capability-prompt-panel",
+            layout.panel,
+            &design,
+        );
 
         let title = ellipsize(
             frame,

@@ -7,6 +7,32 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Application launcher (`Applications` dock tile) reveal and dismissal:
+  - The HUD status chips now fade out while the launcher owns the output
+    instead of floating a second frost inside its full-screen backdrop
+    blur; the dock below the launcher's work area stays visible.
+  - Two-finger touchpad swipes page the launcher grid only after a
+    deliberate 48 px of travel (and 160 px per additional page in the same
+    gesture), replacing the ±0.05 px hair trigger that made an accidental
+    graze flip pages. Mouse-wheel detents still page exactly once each.
+  - Closing the launcher no longer flashes: the backdrop blur radius now
+    eases down with the exit fade instead of switching off at a 1% alpha
+    threshold, and the modal (pointer capture, backdrop regions) is held
+    until the fade fully settles rather than released at 1%.
+  - Opening Prism over the launcher fades the launcher out through the
+    same exit animation instead of dropping the scrim and blur in one
+    frame.
+- Launcher light-appearance legibility: the shell now re-tones the lens
+  context theme when the desktop color scheme changes (bare lens glyphs
+  such as the search icon and pagination chevrons previously kept the
+  creation-time dark foreground, rendering near-white on white glass), the
+  grid labels/caret/pagination anchor to a new scrim-appropriate text tone
+  that stays light in both appearances (the veil stays a dark wash), and
+  the generic no-icon app chip became a documented scheme-invariant
+  design token.
+
 ## [0.0.38] - 2026-08-20
 
 ### Fixed
