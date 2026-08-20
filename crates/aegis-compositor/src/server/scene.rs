@@ -485,10 +485,20 @@ impl Server {
 
     /// Every live client surface ID plus in-flight closing ghost frames,
     /// covering all workspaces, previews, overlays, and the lock screen.
+    ///
+    /// The renderer's texture caches key surfaces by their `wl_resource`
+    /// pointer (`SurfacePixels::id`), so the live set must report the same
+    /// pointer — not the `SurfaceRec` address. Reporting the record pointer
+    /// made every cached texture look dead each frame: the GC dropped all of
+    /// them, and the next composite re-created every texture through
+    /// `flux_image_create` (a full CPU→GPU copy per surface per frame, the
+    /// dominant main-thread cost while dragging windows).
     pub fn live_surface_ids(&self) -> impl Iterator<Item = usize> + '_ {
         self.state
             .live_surfaces()
-            .map(|p| p as usize)
+            // SAFETY: `live_surfaces` yields non-null records owned by this
+            // single-threaded server for the duration of the iteration.
+            .map(|p| unsafe { (*p).resource as usize })
             .chain(self.state.closing_frames.iter().map(|f| f.id))
     }
 
