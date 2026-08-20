@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.39] - 2026-08-20
+
 ### Fixed
 
 - Application launcher (`Applications` dock tile) reveal and dismissal:
