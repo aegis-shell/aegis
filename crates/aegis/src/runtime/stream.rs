@@ -1710,7 +1710,6 @@ fn render_window_stream_shm(
             flux_last_error_detail()
         )
     })?;
-    renderer.begin_frame();
     begin_opaque_frame(&target.canvas, &frame, interaction_domain_clear(scheme))
         .map_err(|error| format!("begin window stream pass: {error}"))?;
     draw_window_tree(device, renderer, server, &target.canvas, geometry);
@@ -1754,7 +1753,6 @@ fn render_window_stream_dmabuf(
             flux_last_error_detail()
         ))
     })?;
-    renderer.begin_frame();
     begin_opaque_frame(&dmabuf.canvas, &frame, interaction_domain_clear(scheme))
         .map_err(|error| BlitFailure::Retryable(format!("capture pass: {error}")))?;
     draw_window_tree(device, renderer, server, &dmabuf.canvas, geometry);

@@ -25,6 +25,7 @@ responsibility boundary this follows.
 | Page | Symptom class |
 |------|---------------|
 | [Cursor Issue Triage](cursor.md) | Cursor appearance and behavior: client vs compositor attribution |
+| [Popup Positioning Issue Triage](popup-positioning.md) | Popup, card, and transient window placement: client vs compositor attribution |
 
 ## Adding a case
 

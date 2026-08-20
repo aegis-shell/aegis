@@ -1356,15 +1356,8 @@ pub(super) fn draw_client_scene(
             server.client_surface_frame_order(),
         )
     };
-    let overlay_shm = server.overlay_frames();
-    let overlay_dmabuf = server.overlay_dmabuf_frames();
     let windows = server.render_windows();
-    renderer.gc(shm
-        .iter()
-        .map(|frame| frame.id)
-        .chain(dmabuf.iter().map(|frame| frame.id))
-        .chain(overlay_shm.iter().map(|frame| frame.id))
-        .chain(overlay_dmabuf.iter().map(|frame| frame.id)));
+    renderer.gc(server.live_surface_ids());
     if let Some(slide) = server.workspace_slide_presentation() {
         let output = slide.output;
         let animated_windows = slide
@@ -1486,10 +1479,7 @@ pub(super) fn draw_lock_scene(
     }
     let shm = server.lock_frames();
     let dmabuf = server.lock_dmabuf_frames();
-    renderer.gc(shm
-        .iter()
-        .map(|frame| frame.id)
-        .chain(dmabuf.iter().map(|frame| frame.id)));
+    renderer.gc(server.live_surface_ids());
     renderer.draw_toplevels(device, canvas, &shm, (0.0, 0.0));
     renderer.draw_dmabuf_toplevels(device, canvas, &dmabuf, (0.0, 0.0));
     canvas.restore();
@@ -1773,10 +1763,6 @@ pub(super) fn draw_window_switcher_cards(
         let shm = server.client_preview_frames_for(&target_set);
         let dmabuf = server.client_preview_dmabuf_frames_for(&target_set);
         let surface_order = server.client_preview_frame_order_for(&target_set);
-        renderer.gc(shm
-            .iter()
-            .map(|frame| frame.id)
-            .chain(dmabuf.iter().map(|frame| frame.id)));
         let brightness = aegis_shell::preview::content_brightness(
             presentation.selected,
             card.window,
@@ -1846,10 +1832,6 @@ pub(super) fn draw_live_preview_scenes(
             let shm = server.client_preview_frames_for(&target_set);
             let dmabuf = server.client_preview_dmabuf_frames_for(&target_set);
             let surface_order = server.client_preview_frame_order_for(&target_set);
-            renderer.gc(shm
-                .iter()
-                .map(|frame| frame.id)
-                .chain(dmabuf.iter().map(|frame| frame.id)));
             let brightness = aegis_shell::preview::content_brightness(
                 presentation.focused,
                 card.window,

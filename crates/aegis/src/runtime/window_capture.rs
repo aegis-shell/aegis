@@ -204,7 +204,6 @@ pub(super) fn begin_window_capture(
             flux_last_error_detail()
         )
     })?;
-    renderer.begin_frame();
     begin_opaque_frame(&canvas, &frame, interaction_domain_clear(scheme)).map_err(|error| {
         format!(
             "begin window {} canvas: {error}{}",

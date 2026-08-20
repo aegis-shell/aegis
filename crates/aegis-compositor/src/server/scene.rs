@@ -483,6 +483,15 @@ impl Server {
             .collect()
     }
 
+    /// Every live client surface ID plus in-flight closing ghost frames,
+    /// covering all workspaces, previews, overlays, and the lock screen.
+    pub fn live_surface_ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self.state
+            .live_surfaces()
+            .map(|p| p as usize)
+            .chain(self.state.closing_frames.iter().map(|f| f.id))
+    }
+
     /// All mapped physical-desktop client surfaces backed by shm.
     ///
     /// The returned vector is an unordered backing store. Composite it

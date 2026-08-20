@@ -340,7 +340,6 @@ pub(super) fn begin_interaction_domain_capture(
             flux_last_error_detail()
         )
     })?;
-    renderer.begin_frame();
     begin_opaque_frame(&target.canvas, &frame, interaction_domain_clear(scheme)).map_err(
         |error| {
             format!(
