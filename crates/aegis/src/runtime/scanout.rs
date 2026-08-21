@@ -356,12 +356,23 @@ impl CompositorRuntime {
         frame_capture_pending: bool,
     ) -> PrimaryPlanePlan {
         let shell = self.shell.composition_requirements();
-        let shm_surface_count = self.server.client_surface_frames().len();
-        let all_dmabufs = self.server.client_surface_dmabuf_frames();
-        let mut toplevel_dmabufs = self.server.toplevel_dmabuf_frames();
-        let candidate_matches_scene = all_dmabufs.len() == 1
+        // One shared visibility/occlusion snapshot for every count here: the
+        // scanout planner previously rebuilt both full frame lists (each an
+        // O(windows × surfaces) occlusion walk plus per-surface Vec clones of
+        // damage/opaque regions) only to read `.len()` from them — and it ran
+        // before the cheap SHM rejection, so a pure-SHM desktop paid the full
+        // dma-buf collection every frame for a candidate that always fails.
+        let sets = self.server.desktop_frame_sets();
+        let visible = &sets.visible;
+        let occluded = &sets.occluded;
+        let shm_surface_count = sets.shm.len();
+        let dmabuf_surface_count = sets.dmabuf.len();
+        let mut toplevel_dmabufs =
+            self.server
+                .toplevel_dmabuf_frames_with(visible, occluded);
+        let candidate_matches_scene = dmabuf_surface_count == 1
             && toplevel_dmabufs.len() == 1
-            && all_dmabufs[0].id == toplevel_dmabufs[0].id;
+            && sets.dmabuf[0].id == toplevel_dmabufs[0].id;
         let facts = ScanoutSceneFacts {
             session_locked: self.server.session_locked(),
             capture_pending: frame_capture_pending
@@ -376,7 +387,7 @@ impl CompositorRuntime {
                 + self.server.overlay_dmabuf_frames().len(),
             software_cursor_visible: self.host.uses_software_cursor() && !cursor_hidden,
             shm_surface_count,
-            dmabuf_surface_count: all_dmabufs.len(),
+            dmabuf_surface_count,
             toplevel_dmabuf_count: toplevel_dmabufs.len(),
             candidate_matches_scene,
         };

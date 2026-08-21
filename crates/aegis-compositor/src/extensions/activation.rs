@@ -27,6 +27,39 @@ static XDG_ACTIVATION_TOKEN_IMPL: ffi::xdg_activation_token_v1_interface_impl =
         destroy: crate::res_destroy,
     };
 
+/// How long a committed activation token stays redeemable. Activations are
+/// meant to follow a token within a user interaction's lifetime; 30 s keeps
+/// generous margin for slow app startup while bounding the map.
+const ACTIVATION_TOKEN_TTL_MS: u64 = 30_000;
+
+/// Hard ceiling on tokens awaiting activation. Realistic sessions hold a
+/// handful; the ceiling exists so a client streaming commit requests cannot
+/// grow the map faster than the per-iteration TTL sweep can retire entries.
+const MAX_ACTIVATION_TOKENS: usize = 256;
+
+/// Drop activation tokens whose commit has aged out of the TTL. Called once
+/// per event-loop iteration and defensively at insert time; the latter also
+/// evicts the oldest entries when a burst inside one iteration reaches the
+/// count ceiling.
+pub(crate) fn expire_activation_tokens(state: &mut State, now_ms: u64) {
+    state
+        .activation_tokens
+        .retain(|_, (_, committed_at)| now_ms.saturating_sub(*committed_at) < ACTIVATION_TOKEN_TTL_MS);
+    // Still at/over the ceiling (a burst inside one iteration): evict the
+    // oldest committed entries until there is room for one more.
+    while state.activation_tokens.len() >= MAX_ACTIVATION_TOKENS {
+        let Some(oldest) = state
+            .activation_tokens
+            .iter()
+            .min_by_key(|(_, (_, committed_at))| *committed_at)
+            .map(|(token, _)| token.clone())
+        else {
+            break;
+        };
+        state.activation_tokens.remove(&oldest);
+    }
+}
+
 pub(crate) unsafe extern "C" fn xdg_activation_bind(
     client: *mut ffi::wl_client,
     data: *mut c_void,
@@ -176,7 +209,12 @@ unsafe extern "C" fn activation_token_commit(
                 .serial
                 .is_some_and(|serial| serial == (*state).last_button_serial);
             if valid_focus && valid_surface && valid_serial {
-                (*state).activation_tokens.insert(token.clone(), seat);
+                // Bound the map: a token is single-use, but clients that
+                // commit and never activate (then disconnect) would
+                // otherwise pin entries forever.
+                let now_ms = (*state).now_ms();
+                expire_activation_tokens(&mut *state, now_ms);
+                (*state).activation_tokens.insert(token.clone(), (seat, now_ms));
             }
         }
         if let Ok(token) = CString::new(token) {
@@ -213,7 +251,7 @@ unsafe extern "C" fn xdg_activation_activate(
             return;
         }
         let token = CStr::from_ptr(token).to_string_lossy();
-        if let Some(seat) = (*state).activation_tokens.remove(token.as_ref()) {
+        if let Some((seat, _committed_at)) = (*state).activation_tokens.remove(token.as_ref()) {
             let Some(_guard) = crate::ActiveSeatGuard::enter(&mut *state, seat) else {
                 return;
             };

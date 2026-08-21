@@ -18,17 +18,17 @@ repository = "https://github.com/ming2k/aegis"
 # development worktree can patch these sources through
 # .cargo/optics-local.toml without making a sibling checkout mandatory for CI
 # or downstream packagers.
-flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
-flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
-flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
-lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
+flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
+flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
+flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
+lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
 # prism (material library; ADR-0063) carries the liquid-glass compositor.
 # Canonical resolution needs an optics tag containing prism-rs.
-prism = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
-prism-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.22" }
+prism = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
+prism-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.23" }
 
 # Observability: crates emit through the `log` facade; each binary installs a
 # `tracing`-based subscriber through the shared `aegis-logging` crate, which

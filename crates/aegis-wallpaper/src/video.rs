@@ -144,7 +144,15 @@ fn reader_loop(path: PathBuf, w: u32, h: u32, slot: Arc<Mutex<Slot>>, shutdown: 
             match read_exact_or_eof(&mut stdout, &mut buf) {
                 Ok(true) => {
                     let mut s = slot.lock().unwrap();
-                    s.pixels = Some(buf.clone());
+                    // Hand the filled buffer to the consumer by value and
+                    // keep a fresh allocation for the next frame: at 1080p
+                    // this runs 24 times a second, and the previous
+                    // `buf.clone()` made an extra full-frame copy per frame
+                    // on this thread.
+                    s.pixels = Some(std::mem::replace(
+                        &mut buf,
+                        vec![0u8; frame_size],
+                    ));
                     s.seq = s.seq.wrapping_add(1);
                 }
                 Ok(false) => break, // EOF — outer loop respawns.
@@ -210,18 +218,20 @@ impl Source for VideoSource {
 
     fn poll(&mut self, now: Instant) -> (&[u8], u64) {
         let newer: Option<Vec<u8>> = {
-            let s = self.slot.lock().unwrap();
+            let mut s = self.slot.lock().unwrap();
             if s.seq != self.last_seen_seq {
                 self.last_seen_seq = s.seq;
-                s.pixels.clone()
+                // Take the frame by value: cloning here made a second
+                // full-frame copy per frame on the compositor thread, on
+                // top of the reader's handoff and this buffer's copy below.
+                s.pixels.take()
             } else {
                 None
             }
         };
         let refreshed = newer.is_some();
         if let Some(p) = newer {
-            self.current.clear();
-            self.current.extend_from_slice(&p);
+            self.current = p;
             self.r#gen = self.r#gen.wrapping_add(1);
         }
         if refreshed || now >= self.next_poll_at {

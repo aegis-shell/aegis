@@ -443,12 +443,19 @@ impl CompositorRuntime {
         let mut full = false;
 
         let server = &self.server;
+        // Share one visibility/occlusion snapshot across the SHM and dma-buf
+        // client lists (see `Server::desktop_frame_sets`): the damage pass
+        // previously recomputed the O(windows × surfaces) occlusion walk once
+        // per list, and the render/scanout paths repeat the same work again.
+        let client_sets = server.desktop_frame_sets();
+        let overlay = server.overlay_frames();
+        let lock = server.lock_frames();
         for frames in [
-            server.client_surface_frames(),
-            server.overlay_frames(),
-            server.lock_frames(),
+            client_sets.shm.as_slice(),
+            overlay.as_slice(),
+            lock.as_slice(),
         ] {
-            for frame in &frames {
+            for frame in frames {
                 full |= accumulate_surface(
                     old,
                     new,
@@ -466,12 +473,14 @@ impl CompositorRuntime {
         }
         // DMA-BUF contents are imported zero-copy, but their Wayland damage
         // metadata still constrains compositor rasterization.
+        let overlay_dmabuf = server.overlay_dmabuf_frames();
+        let lock_dmabuf = server.lock_dmabuf_frames();
         for frames in [
-            server.client_surface_dmabuf_frames(),
-            server.overlay_dmabuf_frames(),
-            server.lock_dmabuf_frames(),
+            client_sets.dmabuf.as_slice(),
+            overlay_dmabuf.as_slice(),
+            lock_dmabuf.as_slice(),
         ] {
-            for frame in &frames {
+            for frame in frames {
                 full |= accumulate_surface(
                     old,
                     new,
@@ -547,14 +556,21 @@ impl CompositorRuntime {
             // deadline elapsed or a decoded video frame is already waiting;
             // the mere existence of an animated source must not turn every
             // unrelated client event into a full-output composite.
-            || self
-                .wallpaper
-                .as_ref()
-                .is_some_and(|w| {
-                    w.has_model()
-                        || w.next_frame_in()
-                            .is_some_and(|remaining| remaining.is_zero())
-                })
+            // A fullscreen window covers the output completely, so the
+            // wallpaper cannot be visible: advancing it would repaint (and
+            // re-blur, via the backdrop term below) pixels that never reach
+            // the display at the animation's frame rate. The source still
+            // advances its wall clock, so unfullscreening resumes in step.
+            || (!session_locked
+                && !self.server.visible_fullscreen_window()
+                && self
+                    .wallpaper
+                    .as_ref()
+                    .is_some_and(|w| {
+                        w.has_model()
+                            || w.next_frame_in()
+                                .is_some_and(|remaining| remaining.is_zero())
+                    }))
             // Server-side topology: window list/geometry, workspace, output,
             // and Interaction Domain model changes all feed both the scene and the chrome.
             || self.last_windows_hash != Some(self.server.windows_signature())
@@ -586,11 +602,13 @@ impl CompositorRuntime {
             || self.damage.force_full_redraw
             || session_locked != self.damage.last_session_locked
             || self.server.transitions_pending()
-            || self.wallpaper.as_ref().is_some_and(|w| {
-                w.has_model()
-                    || w.next_frame_in()
-                        .is_some_and(|remaining| remaining.is_zero())
-            })
+            || (!session_locked
+                && !self.server.visible_fullscreen_window()
+                && self.wallpaper.as_ref().is_some_and(|w| {
+                    w.has_model()
+                        || w.next_frame_in()
+                            .is_some_and(|remaining| remaining.is_zero())
+                }))
             || self.last_windows_hash != Some(self.server.windows_signature())
             || self.last_ws_sig != Some(self.server.workspace_signature())
             || self.last_outputs_revision != Some(self.server.outputs_revision())

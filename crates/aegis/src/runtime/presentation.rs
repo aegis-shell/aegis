@@ -429,7 +429,20 @@ impl CompositorRuntime {
                     scale,
                 };
                 let switcher_state = self.server.window_switcher_snapshot();
-                let switcher_windows = self.server.windows();
+                // Only clone the window list when the switcher can actually
+                // present: `windows()` walks every live surface and clones
+                // each `Window` (title/app_id Strings included) — pure
+                // per-frame heap churn in the common no-switcher case. The
+                // shell check covers the closing animation, which outlives
+                // the server-side session and still needs the live set to
+                // keep its fading cards.
+                let switcher_windows = if switcher_state.is_some()
+                    || self.shell.window_switcher_active()
+                {
+                    self.server.windows()
+                } else {
+                    Vec::new()
+                };
                 let (switcher_order, switcher_selected) = switcher_state
                     .as_ref()
                     .map(|(order, selected)| (order.as_slice(), *selected))
@@ -1342,6 +1355,16 @@ impl CompositorRuntime {
                         self.canvas.end_checked()?;
                         begin_stencil_frame_overlay(&self.canvas, &frame, output_render_area)?;
                     }
+                    // Lens replay draws chrome text through flux-text, whose
+                    // glyph-atlas flushes upload outside any batch otherwise —
+                    // each flush is its own vkQueueSubmit plus a transient
+                    // command pool. The nesting semantics of v0.0.23 make this
+                    // scope safe even alongside the aegis-render batches: an
+                    // inner begin joins whatever batch is open, and only the
+                    // outermost flush submits. Errors are ignored here to
+                    // match the aegis-render call sites (worst case is the
+                    // pre-batching behaviour, never a lost draw).
+                    let _uploads = self.device.uploads_begin();
                     unsafe { self.shell.render(self.canvas.as_raw() as *mut _, &input)? };
                 }
                 // Protocol overlays sit above ordinary shell chrome. A modal

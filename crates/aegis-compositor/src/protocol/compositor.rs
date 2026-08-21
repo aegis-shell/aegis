@@ -1712,6 +1712,38 @@ unsafe extern "C" fn surface_set_buffer_scale(
         (*rec).pending_scale = value;
     }
 }
+/// Ceiling on rectangles accumulated between commits. `wl_surface.damage`
+/// can be called arbitrarily many times before a commit, and the committed
+/// path only drains the list at commit — without a bound, a client (or a
+/// buggy toolkit) streaming damage without committing grows the Vec without
+/// limit for as long as it likes. Crossing the bound collapses to the
+/// bounding box, which is conservative (it covers every declared rect).
+pub(crate) const MAX_PENDING_DAMAGE_RECTS: usize = 1024;
+
+/// Append a damage rectangle to a between-commits accumulator, collapsing to
+/// the bounding box once the rectangle budget is exhausted.
+pub(crate) fn push_pending_damage(list: &mut Vec<aegis_model::Rect>, rect: aegis_model::Rect) {
+    if list.len() < MAX_PENDING_DAMAGE_RECTS {
+        list.push(rect);
+        return;
+    }
+    // Budget exhausted: fold the whole list into its bounding box plus the
+    // new rect, keeping the list at one conservative entry instead of
+    // growing per request.
+    let mut bbox = damage_bbox(list).unwrap_or(rect);
+    if let Some(merged) = damage_bbox(&[bbox, rect]) {
+        bbox = merged;
+    } else {
+        // The span cannot be represented as one Rect; degrade to full
+        // surface damage semantics by clearing — the commit path treats an
+        // empty list with a committed buffer as unknown/full damage.
+        list.clear();
+        return;
+    }
+    list.clear();
+    list.push(bbox);
+}
+
 /// `wl_surface.damage` (v1): damage in surface-local logical coordinates. The renderer's
 /// texture is in buffer pixel coords, so under buffer_scale > 1 these rects
 /// cover only a fraction of the buffer. The renderer bypasses the
@@ -1730,9 +1762,7 @@ unsafe extern "C" fn surface_damage(
         if rec.is_null() || w <= 0 || h <= 0 {
             return;
         }
-        (*rec)
-            .pending_damage
-            .push(aegis_model::Rect::new(x, y, w, h));
+        push_pending_damage(&mut (*rec).pending_damage, aegis_model::Rect::new(x, y, w, h));
     }
 }
 
@@ -1805,9 +1835,10 @@ unsafe extern "C" fn surface_damage_buffer(
         if rec.is_null() || w <= 0 || h <= 0 {
             return;
         }
-        (*rec)
-            .pending_buffer_damage
-            .push(aegis_model::Rect::new(x, y, w, h));
+        push_pending_damage(
+            &mut (*rec).pending_buffer_damage,
+            aegis_model::Rect::new(x, y, w, h),
+        );
     }
 }
 
@@ -2016,11 +2047,32 @@ unsafe extern "C" fn region_add(
     unsafe {
         let region = ffi::wl_resource_get_user_data(resource) as *mut RegionRec;
         if !region.is_null() && width > 0 && height > 0 {
-            (*region)
-                .rects
-                .push(aegis_model::Rect::new(x, y, width, height));
+            push_region_rect(&mut (*region).rects, aegis_model::Rect::new(x, y, width, height));
         }
     }
+}
+
+/// Ceiling on rectangles retained by one `wl_region`. Regions are entirely
+/// client-controlled and live until the resource is destroyed; without a
+/// bound a client can push unlimited rects into one region and keep it
+/// alive, and those rects are later cloned into surface state and walked by
+/// the per-frame occlusion pass. Crossing the bound collapses to the
+/// bounding box — conservative (it covers every declared rect) and bounded.
+pub(crate) const MAX_REGION_RECTS: usize = 1024;
+
+/// Append a rectangle to a `wl_region`, collapsing to the bounding box once
+/// the rectangle budget is exhausted.
+pub(crate) fn push_region_rect(rects: &mut Vec<aegis_model::Rect>, rect: aegis_model::Rect) {
+    if rects.len() < MAX_REGION_RECTS {
+        rects.push(rect);
+        return;
+    }
+    let mut bbox = damage_bbox(rects).unwrap_or(rect);
+    if let Some(merged) = damage_bbox(&[bbox, rect]) {
+        bbox = merged;
+    }
+    rects.clear();
+    rects.push(bbox);
 }
 
 pub(crate) fn subtract_rect(

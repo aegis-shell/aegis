@@ -1,6 +1,19 @@
 use super::*;
 
-const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Background application rescan cadence. The full `.desktop` walk plus
+/// icon-theme resolution runs on the worker thread; the interval keeps that
+/// churn off the frame loop and off the disk on an otherwise idle session.
+/// Catalog/icon snapshots gate the expensive decode, so an unchanged system
+/// pays only the scan itself. Keep in sync with the seed interval in
+/// `runtime.rs` (see CHANGELOG 0.0.41: 5s regressed to visible IO churn).
+const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Cadence for probing `Host::touchpad_status`. The probe issues several
+/// libinput config queries per touchpad and builds a sorted `Vec<String>`;
+/// the result only changes on hotplug or a settings write (both of which
+/// refresh the cached status through their own paths), so per-frame probing
+/// was pure device interrogation on the render thread.
+const TOUCHPAD_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub(super) struct PendingScreenshot {
     pub(super) command: aegis_ipc::Command,
@@ -590,13 +603,31 @@ impl CompositorRuntime {
             self.poll_battery_warning();
         }
         while let Ok(stats) = self.resource_rx.try_recv() {
+            // Keep the shell's copy fresh regardless (opening the panel must
+            // not show stale numbers), but only schedule a chrome repaint
+            // when something can actually display it: resource figures are
+            // consumed by the command panel alone, and the sampler fires
+            // every few seconds — an unconditional dirty flag repainted the
+            // whole shell on that cadence even with the panel closed.
+            let panel_visible = self.shell.command_panel_active();
             self.shell.set_resource_stats(stats);
-            self.damage.chrome_dirty = true;
+            if panel_visible {
+                self.damage.chrome_dirty = true;
+            }
         }
-        let touchpad_status = self.host.touchpad_status();
-        if touchpad_status != self.system_status.touchpad {
-            self.system_status.touchpad = touchpad_status;
-            self.publish_settings();
+        // Touchpad presence/config only moves on hotplug or a settings
+        // write, and the probe interrogates libinput per device — throttle
+        // it instead of running it on every frame-loop wakeup. A device
+        // hotplug re-probes within the interval because the probe is due
+        // whenever the last one is older than the interval; the settings
+        // path below also refreshes immediately after applying a config.
+        if self.touchpad_status_last_probe.elapsed() >= TOUCHPAD_PROBE_INTERVAL {
+            self.touchpad_status_last_probe = std::time::Instant::now();
+            let touchpad_status = self.host.touchpad_status();
+            if touchpad_status != self.system_status.touchpad {
+                self.system_status.touchpad = touchpad_status;
+                self.publish_settings();
+            }
         }
         // Hot-reload the configuration when its mtime moves (ADR-0026). One
         // `stat` per frame is cheap and keeps the reload on this loop, where

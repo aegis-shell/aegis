@@ -411,3 +411,90 @@ fn test_persist_app_geometry_saves_state() {
 
     let _ = std::fs::remove_dir_all(temp_dir);
 }
+
+#[test]
+fn pending_damage_accumulator_is_bounded_and_conservative() {
+    let mut list = Vec::new();
+    for index in 0..MAX_PENDING_DAMAGE_RECTS {
+        push_pending_damage(
+            &mut list,
+            aegis_model::Rect::new((index * 2) as i32, 0, 1, 1),
+        );
+    }
+    assert_eq!(list.len(), MAX_PENDING_DAMAGE_RECTS);
+
+    // One past the budget: the list collapses to a single conservative
+    // bounding box that still covers every previously declared rect plus
+    // the new one — never a silent drop.
+    push_pending_damage(&mut list, aegis_model::Rect::new(0, 5, 4, 1));
+    assert_eq!(list.len(), 1);
+    let bbox = list[0];
+    assert!(bbox.contains(aegis_model::Point { x: 0, y: 0 }));
+    assert!(bbox.contains(aegis_model::Point { x: 2, y: 5 }));
+    // rects span x=0..((N-1)*2+1); the bbox must cover that whole strip.
+    assert!(aegis_model::Rect::new(
+        0,
+        0,
+        (MAX_PENDING_DAMAGE_RECTS * 2 - 1) as i32,
+        1
+    )
+    .fully_covered_by(&list));
+}
+
+#[test]
+fn wl_region_accumulator_is_bounded_and_conservative() {
+    let mut rects = Vec::new();
+    for index in 0..MAX_REGION_RECTS {
+        push_region_rect(
+            &mut rects,
+            aegis_model::Rect::new((index * 3) as i32, 0, 1, 1),
+        );
+    }
+    assert_eq!(rects.len(), MAX_REGION_RECTS);
+
+    push_region_rect(&mut rects, aegis_model::Rect::new(0, 7, 2, 1));
+    assert_eq!(rects.len(), 1);
+    // rects span x=0..((N-1)*3+1); the bbox must cover that whole strip.
+    assert!(aegis_model::Rect::new(
+        0,
+        0,
+        (MAX_REGION_RECTS * 3 - 2) as i32,
+        1
+    )
+    .fully_covered_by(&rects));
+    assert!(rects[0].contains(aegis_model::Point { x: 1, y: 7 }));
+}
+
+#[test]
+fn app_geometry_memory_is_bounded_like_the_persisted_store() {
+    // Client-churned app ids must not grow the in-memory geometry map past
+    // the store's own entry ceiling. The state path must be redirected to a
+    // scratch file before any persist call: `persist_app_geometry` writes
+    // the store through `State::window_state_path`, which otherwise points
+    // at the developer's real session state.
+    let temp_dir = std::env::temp_dir().join(format!(
+        "aegis_test_geometry_bound_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let mut state = State::new(std::ptr::null_mut());
+    state.window_state_path = temp_dir.join("window_state.json");
+    for index in 0..(crate::state::MAX_APP_GEOMETRY_ENTRIES + 25) {
+        state.persist_app_geometry(
+            &format!("com.example.churn-{index}"),
+            aegis_model::Rect::new(index as i32, 0, 10, 10),
+            None,
+            None,
+        );
+    }
+    assert!(
+        state.last_app_geometries.len() <= crate::state::MAX_APP_GEOMETRY_ENTRIES,
+        "in-memory map grew to {}",
+        state.last_app_geometries.len()
+    );
+    let _ = std::fs::remove_dir_all(temp_dir);
+}

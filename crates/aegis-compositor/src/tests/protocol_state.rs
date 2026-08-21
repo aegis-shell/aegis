@@ -495,7 +495,22 @@ fn layout_role_resolution_prefers_rule_then_transient_then_workspace() {
 
 #[test]
 fn initial_size_restores_main_windows_but_not_same_app_transients() {
+    // Isolate from the developer's real session state: `State::new` loads
+    // `window_state_store` from the production path, so a pre-existing
+    // entry for this app id (or the 500-entry prune evicting it right
+    // after `update`) would make the assertion machine-dependent.
+    let temp_dir = std::env::temp_dir().join(format!(
+        "aegis_test_initial_size_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
     let mut state = State::new(std::ptr::null_mut());
+    state.window_state_store = window_state::WindowStateStore::default();
+    state.window_state_path = temp_dir.join("window_state.json");
     state.window_state_store.update(
         "com.example.App".to_owned(),
         window_state::SavedWindowState {
@@ -514,6 +529,7 @@ fn initial_size_restores_main_windows_but_not_same_app_transients() {
 
     surface.window.parent = Some(0x1234);
     assert_eq!(unsafe { initial_toplevel_size(&mut surface) }, None);
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[test]

@@ -21,7 +21,7 @@ use std::os::raw::c_int;
 
 use crate::{State, SurfaceRec, ffi};
 
-mod activation;
+pub(crate) mod activation;
 mod color_management;
 mod cursor_shape;
 mod decoration;

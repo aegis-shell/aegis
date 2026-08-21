@@ -311,10 +311,21 @@ impl Server {
     /// Replace the minimize flight targets — the resting dock-icon rect per
     /// window — with the shell's latest report. Pushed every frame so even a
     /// client-initiated `xdg_toplevel.set_minimized` flies at the real icon.
+    /// The map is rebuilt only when the report actually changed: in the
+    /// steady state (no minimize in flight, dock layout static) the report
+    /// is identical frame over frame, and rebuilding the HashMap per frame
+    /// was pure allocation churn on the render path.
     pub fn set_minimize_targets(
         &mut self,
         targets: Vec<(aegis_model::window::WindowId, aegis_model::Rect)>,
     ) {
+        let unchanged = targets.len() == self.state.minimize_targets.len()
+            && targets
+                .iter()
+                .all(|(id, rect)| self.state.minimize_targets.get(id) == Some(rect));
+        if unchanged {
+            return;
+        }
         self.state.minimize_targets = targets.into_iter().collect();
     }
 
@@ -453,6 +464,11 @@ impl Server {
     pub fn settle_finished_transitions(&mut self) -> usize {
         let now = self.now_ms();
         let mut settled = 0;
+        // Retire activation tokens past their redemption window. The sweep
+        // rides this per-iteration call (it already exists to retire settled
+        // animation records) so a client that commits tokens and never
+        // activates — then disconnects — cannot pin them forever.
+        crate::extensions::activation::expire_activation_tokens(&mut self.state, now);
         if self
             .state
             .workspace_slide

@@ -21,6 +21,19 @@ use crate::{Error, Source};
 /// advance loop in `poll` never moves past them.
 const FOREVER: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 
+/// Ceiling on the composited frames retained in memory. Animated wallpaper
+/// frames are full-canvas BGRA8 (`width * height * 4` bytes each), so an
+/// unbounded retain turns a long 1080p animation into a multi-gigabyte
+/// resident set. When the retained set exceeds this budget the loader
+/// decimates it — dropping every other retained frame and merging its
+/// duration into the predecessor — so playback stays loop-correct and
+/// wall-clock accurate, just with fewer intermediate steps.
+const MAX_RETAINED_BYTES: usize = 256 * 1024 * 1024;
+
+/// Ceiling on retained frame *count* (independent of canvas size) so a
+/// pathological tiny-canvas/many-frame source cannot evade the byte budget.
+const MAX_RETAINED_FRAMES: usize = 512;
+
 /// In-memory still or animated image.
 pub(super) struct StillSource {
     /// Full-canvas BGRA8 frames. Static images have exactly one entry.
@@ -114,7 +127,7 @@ impl StillSource {
             .into_frames()
             .collect_frames()
             .map_err(|e| Error::Decode(path.to_path_buf(), e.to_string()))?;
-        Self::from_animation(path, &raw, w, h, "Gif")
+        Self::from_animation(path, raw, w, h, "Gif")
     }
 
     fn load_webp(path: &Path) -> Result<Self, Error> {
@@ -129,12 +142,12 @@ impl StillSource {
             .into_frames()
             .collect_frames()
             .map_err(|e| Error::Decode(path.to_path_buf(), e.to_string()))?;
-        Self::from_animation(path, &raw, w, h, "WebP")
+        Self::from_animation(path, raw, w, h, "WebP")
     }
 
     fn from_animation(
         path: &Path,
-        raw: &[image::Frame],
+        raw: Vec<image::Frame>,
         canvas_w: u32,
         canvas_h: u32,
         label: &str,
@@ -157,14 +170,29 @@ impl StillSource {
     }
 }
 
-/// Composite each animation frame onto the source's full canvas. GIF and
-/// animated WebP encode only the region that changed; we accumulate so
-/// every emitted frame is a complete image. Alpha is composited with
-/// "over" against the existing canvas contents.
-fn composite_frames(raw: &[image::Frame], canvas_w: u32, canvas_h: u32) -> Vec<Frame> {
+/// Composite each animation frame onto the source's full canvas, enforcing
+/// the retained-frame budget as frames are emitted.
+///
+/// GIF and animated WebP encode only the region that changed (and the `image`
+/// crate materializes WebP frames at full canvas size regardless); we
+/// accumulate onto one canvas so consumers always see uniformly-sized,
+/// tightly packed premultiplied BGRA8 buffers with alpha composited "over".
+///
+/// Memory: each emitted frame is `width * height * 4` bytes, so a long
+/// animation would otherwise retain gigabytes for the source's lifetime.
+/// Once the emitted set is over budget the compositor drops further frames'
+/// pixel data and merges their durations into the last retained frame — the
+/// surviving animation spans the same total wall-clock time and still loops
+/// seamlessly, with fewer intermediate steps. Consuming `raw` by value lets
+/// each decoded frame's memory be freed as soon as it is composited, so the
+/// transient decode peak tracks the retained set rather than the full source.
+fn composite_frames(raw: Vec<image::Frame>, canvas_w: u32, canvas_h: u32) -> Vec<Frame> {
     let canvas_bytes = (canvas_w as usize) * (canvas_h as usize) * 4;
+    let max_frames = (MAX_RETAINED_BYTES / canvas_bytes.max(1))
+        .clamp(1, MAX_RETAINED_FRAMES)
+        .max(1);
     let mut accum: Vec<u8> = vec![0u8; canvas_bytes];
-    let mut out = Vec::with_capacity(raw.len());
+    let mut out: Vec<Frame> = Vec::new();
 
     for f in raw {
         let buf = f.buffer();
@@ -213,11 +241,19 @@ fn composite_frames(raw: &[image::Frame], canvas_w: u32, canvas_h: u32) -> Vec<F
             }
         }
 
-        let duration = frame_duration(f);
-        out.push(Frame {
-            pixels: accum.clone(),
-            duration,
-        });
+        let duration = frame_duration(&f);
+        if out.len() < max_frames {
+            out.push(Frame {
+                pixels: accum.clone(),
+                duration,
+            });
+        } else if let Some(last) = out.last_mut() {
+            // Budget reached: keep compositing (the accumulator must still
+            // track every source frame so the loop point is correct) but
+            // stop retaining pixels; the dropped frame's display time folds
+            // into the final retained frame.
+            last.duration += duration;
+        }
     }
 
     out
@@ -334,6 +370,53 @@ mod tests {
             .expect("decode bundled png");
         assert_eq!(s.dimensions(), (1, 1));
         assert_eq!(&s.frames[0].pixels, &[56, 34, 12, 255]);
+    }
+
+    #[test]
+    fn animation_budget_keeps_loop_duration_and_caps_frames() {
+        // A wide-but-tiny canvas keeps the test fast while exercising the
+        // frame-count ceiling: 600 frames at 8x1 exceeds MAX_RETAINED_FRAMES
+        // (512), so the retained set must stop growing and fold the dropped
+        // frames' durations into the final retained frame. The surviving
+        // animation must still span the same total wall-clock time so the
+        // loop cadence is unchanged.
+        let frames: Vec<image::Frame> = (0..600)
+            .map(|i| {
+                image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(8, 1, image::Rgba([i as u8, 0, 0, 255])),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(16, 1),
+                )
+            })
+            .collect();
+        let out = composite_frames(frames.clone(), 8, 1);
+        assert!(
+            out.len() <= MAX_RETAINED_FRAMES,
+            "retained {} frames over the {} ceiling",
+            out.len(),
+            MAX_RETAINED_FRAMES
+        );
+        let total: Duration = out.iter().map(|f| f.duration).sum();
+        let expected: Duration = (0..600).map(|_| Duration::from_millis(16)).sum();
+        assert_eq!(total, expected, "loop wall-clock span must be preserved");
+    }
+
+    #[test]
+    fn animation_under_budget_retains_every_frame() {
+        let frames: Vec<image::Frame> = (0..8)
+            .map(|i| {
+                image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(4, 1, image::Rgba([i as u8, 0, 0, 255])),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(40, 1),
+                )
+            })
+            .collect();
+        let out = composite_frames(frames, 4, 1);
+        assert_eq!(out.len(), 8);
+        assert!(out.iter().all(|f| f.duration == Duration::from_millis(40)));
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

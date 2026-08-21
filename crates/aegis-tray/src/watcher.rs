@@ -82,9 +82,18 @@ struct Shared {
     /// Theme-icon resolution memo keyed by icon name: `None` entries are
     /// failed lookups (missing or undecodable), so a bad name never rescans
     /// the theme. Runs on the worker so the render thread only uploads
-    /// ready-made pixmaps.
+    /// ready-made pixmaps. Bounded by [`MAX_ICON_CACHE_ENTRIES`]: names come
+    /// from arbitrary SNI items on the session bus, and an item that cycles
+    /// icon names per state would otherwise grow the memo for the process
+    /// lifetime. Evicting only costs a theme re-scan on the next lookup.
     icon_cache: HashMap<String, Option<TrayPixmap>>,
 }
+
+/// Ceiling on the theme-icon memo. Realistic trays hold a few dozen distinct
+/// names; the ceiling exists so a churning item (or a hostile bus peer)
+/// cannot grow the memo without bound. Each entry is a name plus at most one
+/// 48×48 RGBA pixmap.
+const MAX_ICON_CACHE_ENTRIES: usize = 256;
 
 impl Shared {
     /// Rebuild the sorted render snapshot after any mutation.
@@ -118,6 +127,17 @@ fn resolve_named_icon(icon: &mut TrayIcon, cache: &mut HashMap<String, Option<Tr
         .or_insert_with(|| super::icon::resolve_theme_icon(name))
     {
         *icon = TrayIcon::Pixmap(pixmap.clone());
+    }
+    // Bound the memo: entries are retained even for items that later
+    // unregister (names are not tracked back to owners), so cap the count
+    // and drop arbitrary entries past the ceiling — a re-scan on the next
+    // lookup is the only cost.
+    if cache.len() > MAX_ICON_CACHE_ENTRIES {
+        let excess = cache.len() - MAX_ICON_CACHE_ENTRIES;
+        let victims: Vec<String> = cache.keys().take(excess).cloned().collect();
+        for victim in victims {
+            cache.remove(&victim);
+        }
     }
 }
 

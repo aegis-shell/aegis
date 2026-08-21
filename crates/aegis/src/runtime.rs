@@ -1076,6 +1076,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         previous_render_at,
         night_light: aegis_model::night_light::NightLight::default(),
         night_light_last_eval: std::time::Instant::now() - std::time::Duration::from_secs(2),
+        touchpad_status_last_probe: std::time::Instant::now()
+            - std::time::Duration::from_secs(3),
     }
     .run_loop()
 }

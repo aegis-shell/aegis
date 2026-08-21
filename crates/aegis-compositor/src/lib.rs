@@ -1457,7 +1457,14 @@ pub(crate) struct State {
     /// own their records; these indexes support lookup and surface teardown.
     xdg_foreign_exports: std::collections::HashMap<String, *mut ffi::wl_resource>,
     xdg_foreign_imports: Vec<*mut ffi::wl_resource>,
-    activation_tokens: std::collections::HashMap<String, SeatId>,
+    /// Committed xdg-activation-v1 tokens awaiting `activate`. The value
+    /// carries the seat plus the commit's wall-clock ms. Tokens are
+    /// single-use (removed on activate) but a client that commits tokens
+    /// and never activates — then disconnects — would otherwise leave
+    /// entries forever: `expire_activation_tokens` drops entries older
+    /// than [`ACTIVATION_TOKEN_TTL_MS`] and enforces a count ceiling so
+    /// the map cannot grow without bound.
+    activation_tokens: std::collections::HashMap<String, (SeatId, u64)>,
     pending_activation: Option<(SeatId, *mut ffi::wl_resource)>,
     /// First-map workspace placements registered by `Command::LaunchApp`.
     /// Each entry places exactly one root toplevel: the first map whose
@@ -1566,6 +1573,8 @@ pub(crate) struct State {
     /// the server API surface is otherwise immutable for readers.
     pub(crate) window_signature_memo: std::cell::Cell<(u64, u64, u64)>,
     /// Last remembered floating window position and size per application ID.
+    /// Bounded to [`MAX_APP_GEOMETRY_ENTRIES`] (mirroring the persisted
+    /// store's own ceiling) because `app_id` is client-supplied.
     pub(crate) last_app_geometries: std::collections::HashMap<String, aegis_model::Rect>,
     /// Persistent window state store across restarts.
     pub(crate) window_state_store: window_state::WindowStateStore,

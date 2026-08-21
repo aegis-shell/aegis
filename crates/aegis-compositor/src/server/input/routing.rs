@@ -396,6 +396,28 @@ impl Server {
         self.windows_in_set(&visible)
     }
 
+    /// Whether a visible, non-minimized toplevel is fullscreen on the
+    /// current workspace. A fullscreen window covers the whole output, so
+    /// consumers that only matter "under" client content (the animated
+    /// wallpaper) can suspend their work while this is true — the pixels
+    /// cannot reach the display until the window unfullscreens.
+    ///
+    /// Cheaper than [`Self::render_windows`]: no `Window` clones, just the
+    /// visible-set check over live surfaces.
+    pub fn visible_fullscreen_window(&self) -> bool {
+        let visible = self.visible();
+        self.state.live_surfaces().any(|pointer| {
+            // SAFETY: `live_surfaces` yields non-null records owned by this
+            // single-threaded server for the duration of the call.
+            let surface = unsafe { &*pointer };
+            !surface.xdg_toplevel.is_null()
+                && surface.mapped
+                && !surface.window.minimized
+                && surface.window.state.fullscreen
+                && visible.contains(&surface.window.id)
+        })
+    }
+
     /// Enumerate every mapped toplevel across all workspaces, not just the
     /// visible set. The dock consumes this so its running-window strip is
     /// global; ordering follows the same stable live-surface walk as
@@ -456,8 +478,7 @@ impl Server {
     /// (see `State::window_signature_memo`): the signature is a pure function
     /// of the surface table and `now`, so callers within one frame reuse the
     /// first evaluation instead of re-walking every surface.
-    pub fn windows_signature(&self) -> u64 {
-        let now = self.now_ms();
+    pub fn windows_signature(&self) -> u64 {        let now = self.now_ms();
         let (memo_now, memo_visible, memo_all) = self.state.window_signature_memo.get();
         if memo_now == now && memo_now != 0 {
             if memo_visible != 0 {

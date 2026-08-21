@@ -118,6 +118,16 @@ impl State {
             return;
         }
         self.last_app_geometries.insert(app_id.to_owned(), rect);
+        // The persisted store prunes itself to a fixed entry ceiling, but
+        // `app_id` is client-supplied (`xdg_toplevel.set_app_id`): a client
+        // churning ids would grow the in-memory map for the session while
+        // the store stays bounded. Mirror the store's ceiling here.
+        while self.last_app_geometries.len() > MAX_APP_GEOMETRY_ENTRIES {
+            let Some(first) = self.last_app_geometries.keys().next().cloned() else {
+                break;
+            };
+            self.last_app_geometries.remove(&first);
+        }
         self.window_state_store.update(
             app_id.to_owned(),
             window_state::SavedWindowState {
@@ -778,3 +788,8 @@ impl State {
         self.surfaces.iter().copied().filter(|p| !p.is_null())
     }
 }
+
+/// Ceiling on remembered per-`app_id` floating geometries. Matches the
+/// persisted window-state store's entry ceiling so the in-memory view and
+/// the on-disk view grow and prune together.
+pub(crate) const MAX_APP_GEOMETRY_ENTRIES: usize = 500;

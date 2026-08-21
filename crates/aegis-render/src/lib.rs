@@ -501,11 +501,24 @@ pub struct Renderer {
     gc_live: std::collections::HashSet<usize>,
     gc_dead_shm: Vec<usize>,
     gc_dead_dmabuf: Vec<(usize, u64)>,
+    /// Scratch staging buffer for incremental SHM damage uploads, grown to
+    /// the session's high-water damage-box size and reused across frames so
+    /// the partial-refresh path does not allocate (and zero) per frame.
+    /// Mirrors the `gc_*` scratch-buffer policy above.
+    shm_staging: Vec<u8>,
     /// Parsed ICC profiles (flux) keyed by a hash of the profile bytes, so a
-    /// color-tagged surface does not re-parse per texture creation.
-    icc_profiles: HashMap<u64, flux::IccProfile>,
+    /// color-tagged surface does not re-parse per texture creation. The
+    /// value's second field is the frame epoch of the last lookup (LRU).
+    ///
+    /// Bounded: profile blobs are client-supplied (up to the protocol's
+    /// 16 MiB cap each), so an unbounded map is a remote memory-exhaustion
+    /// vector. Eviction only costs a re-parse on the next texture
+    /// recreation; an already-imported texture keeps its baked color tag.
+    icc_profiles: HashMap<u64, (flux::IccProfile, u64)>,
     /// ICC byte-hashes that failed to parse; suppresses per-frame retries
     /// and log floods (the content falls back to sRGB interpretation).
+    /// Cleared wholesale when it exceeds [`MAX_ICC_FAILED`] — the worst case
+    /// is one repeat warn log per distinct blob.
     icc_failed: std::collections::HashSet<u64>,
 }
 
@@ -531,6 +544,19 @@ struct CachedImage {
 }
 
 const MAX_DMABUF_BUFFERS_PER_SURFACE: usize = 8;
+
+/// Parsed-ICC-profile cache ceiling. Profiles are client-supplied blobs (up
+/// to 16 MiB each through `wp_color_management_v1`), so the cache must be
+/// bounded even though hits are far more common than distinct profiles: a
+/// desktop realistically presents a handful (per-monitor EDID-derived tags).
+/// Eviction only costs a re-parse at the next texture recreation.
+const MAX_ICC_PROFILES: usize = 32;
+
+/// Ceiling for remembered ICC parse failures. Each entry is a u64 hash, so
+/// the set is small in absolute terms; the cap exists so a hostile client
+/// cannot grow it without bound by streaming garbage blobs. On overflow the
+/// set clears wholesale — the worst case is one repeated warn log.
+const MAX_ICC_FAILED: usize = 256;
 
 /// A sync_file belongs to one producer commit, not to every draw of the same
 /// imported image. Backdrop capture and final output may reference one buffer
@@ -694,6 +720,7 @@ impl Renderer {
             gc_live: std::collections::HashSet::new(),
             gc_dead_shm: Vec::new(),
             gc_dead_dmabuf: Vec::new(),
+            shm_staging: Vec::new(),
             icc_profiles: HashMap::new(),
             icc_failed: std::collections::HashSet::new(),
         }
@@ -736,24 +763,43 @@ impl Renderer {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         bytes.hash(&mut hasher);
         let key = hasher.finish();
+        if self.icc_profiles.contains_key(&key) {
+            if let Some(entry) = self.icc_profiles.get_mut(&key) {
+                entry.1 = self.frame_epoch;
+            }
+            return self.icc_profiles.get(&key).map(|(profile, _)| profile);
+        }
         if self.icc_failed.contains(&key) {
             return None;
         }
-        if !self.icc_profiles.contains_key(&key) {
-            match flux::IccProfile::new(bytes) {
-                Ok(profile) => {
-                    self.icc_profiles.insert(key, profile);
+        let profile = match flux::IccProfile::new(bytes) {
+            Ok(profile) => profile,
+            Err(error) => {
+                log::warn!(
+                    "[render] ICC profile parse failed ({error}); content renders as sRGB"
+                );
+                self.icc_failed.insert(key);
+                if self.icc_failed.len() > MAX_ICC_FAILED {
+                    self.icc_failed.clear();
                 }
-                Err(error) => {
-                    log::warn!(
-                        "[render] ICC profile parse failed ({error}); content renders as sRGB"
-                    );
-                    self.icc_failed.insert(key);
-                    return None;
-                }
+                return None;
+            }
+        };
+        if self.icc_profiles.len() >= MAX_ICC_PROFILES {
+            // Evict the least-recently-used profile. Profiles are only
+            // consulted at texture (re)creation, so a live texture is never
+            // affected; a re-tagged surface simply re-parses its blob.
+            if let Some(oldest) = self
+                .icc_profiles
+                .iter()
+                .min_by_key(|(_, (_, last_used))| *last_used)
+                .map(|(hash, _)| *hash)
+            {
+                self.icc_profiles.remove(&oldest);
             }
         }
-        self.icc_profiles.get(&key)
+        self.icc_profiles.insert(key, (profile, self.frame_epoch));
+        self.icc_profiles.get(&key).map(|(profile, _)| profile)
     }
 
     fn cache_image(&mut self, id: usize, entry: CachedImage) {
@@ -1127,8 +1173,20 @@ impl Renderer {
             {
                 let key = (ghost.id, ghost.dmabuf_fd as u64);
                 if !self.dmabuf_cache.contains_key(&key) {
-                    // SAFETY: the ghost's fd and layout describe the
-                    // snapshotted dma-buf exactly as the live path did.
+                    // Flux owns and closes the plane fd on a successful
+                    // import (see flux/dmabuf.h). The ghost's fd is owned by
+                    // its `DmabufBuffer`, which still closes it when the
+                    // closing frame settles — handing flux that same
+                    // descriptor would double-close it and could take an
+                    // unrelated fd down with it. Hand flux a fresh duplicate,
+                    // exactly as the live path does.
+                    let import_fd = unsafe { libc::dup(ghost.dmabuf_fd) };
+                    if import_fd < 0 {
+                        continue;
+                    }
+                    // SAFETY: the duplicate descriptor and the ghost's layout
+                    // describe the snapshotted dma-buf exactly as the live
+                    // path did.
                     let imported = unsafe {
                         let tag = self.image_color_tag(ghost.color.as_ref());
                         flux::Image::import_dmabuf_with_color_space(
@@ -1137,13 +1195,14 @@ impl Renderer {
                             ghost.buffer_height as u32,
                             fmt,
                             ghost.modifier,
-                            ghost.dmabuf_fd,
+                            import_fd,
                             ghost.offset,
                             ghost.stride,
                             None,
                             tag,
                         )
                     };
+                    // On error flux leaves the descriptor with the caller.
                     match imported {
                         Ok(img) => {
                             self.cache_dmabuf_image(
@@ -1159,7 +1218,10 @@ impl Renderer {
                                 },
                             );
                         }
-                        Err(_) => continue,
+                        Err(_) => {
+                            unsafe { libc::close(import_fd) };
+                            continue;
+                        }
                     }
                 }
                 if let Some(entry) = self.dmabuf_cache.get(&key) {
@@ -1350,21 +1412,28 @@ impl Renderer {
                             // snapshot, no extraction copy.
                             img.update_region(0, 0, bw, bh, f.pixels)
                         } else {
-                            // Tightly packed BGRA8: stride = width * 4.
+                            // Tightly packed BGRA8: stride = width * 4. The
+                            // staging scratch is reused across frames: a
+                            // terminal cursor blink or a scrolling browser
+                            // hits this path at commit rate, and a fresh
+                            // allocation per frame (up to several MiB for a
+                            // large damage box) showed up as avoidable heap
+                            // churn in the CPU profile.
                             let bpp = 4usize;
                             let stride = f.width as usize * bpp;
-                            let mut sub = vec![0u8; bw as usize * bh as usize * bpp];
+                            let row_bytes = bw as usize * bpp;
+                            self.shm_staging.clear();
+                            self.shm_staging.resize(bh as usize * row_bytes, 0);
                             for row in 0..bh as usize {
                                 let src_off = (y0 as usize + row) * stride + x0 as usize * bpp;
-                                let dst_off = row * (bw as usize * bpp);
-                                let len = bw as usize * bpp;
+                                let dst_off = row * row_bytes;
                                 // src_off + len must stay within f.pixels.
                                 let avail = f.pixels.len().saturating_sub(src_off);
-                                let take = len.min(avail);
-                                sub[dst_off..dst_off + take]
+                                let take = row_bytes.min(avail);
+                                self.shm_staging[dst_off..dst_off + take]
                                     .copy_from_slice(&f.pixels[src_off..src_off + take]);
                             }
-                            img.update_region(x0 as u32, y0 as u32, bw, bh, &sub)
+                            img.update_region(x0 as u32, y0 as u32, bw, bh, &self.shm_staging)
                         };
                         match updated {
                             Ok(()) => {

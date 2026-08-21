@@ -10,6 +10,25 @@ fn background_frame_callback_due(now_ms: u32, previous_ms: u32) -> bool {
     now_ms.wrapping_sub(previous_ms) >= BACKGROUND_FRAME_CALLBACK_INTERVAL_MS
 }
 
+/// The shared per-iteration desktop scene summary: the presentation-visible
+/// window set, the occlusion verdicts, and the SHM/dma-buf frame lists
+/// derived from them.
+///
+/// Produced by [`Server::desktop_frame_sets`] so the damage assessment, the
+/// scanout planner, and the render pass reuse one visibility/occlusion
+/// computation instead of each recomputing it (an O(windows × surfaces) walk
+/// with per-window allocations) inside the same iteration.
+pub struct DesktopFrameSets<'a> {
+    /// Presentation-visible toplevel ids (see [`Server::render_visible`]).
+    pub visible: std::collections::HashSet<aegis_model::window::WindowId>,
+    /// Toplevel ids fully covered by opaque windows above them.
+    pub occluded: std::collections::HashSet<aegis_model::window::WindowId>,
+    /// Mapped physical-desktop SHM surfaces (unordered backing store).
+    pub shm: Vec<SurfacePixels<'a>>,
+    /// Mapped physical-desktop dma-buf surfaces (unordered backing store).
+    pub dmabuf: Vec<SurfaceDmabuf>,
+}
+
 impl Server {
     /// The authoritative interaction-visible set: current-workspace
     /// toplevels on every output. Presentation may temporarily extend this
@@ -42,13 +61,23 @@ impl Server {
     pub(crate) fn occluded_window_ids(
         &self,
     ) -> std::collections::HashSet<aegis_model::window::WindowId> {
+        let visible = self.visible();
+        self.occluded_window_ids_with(&visible)
+    }
+
+    /// [`occluded_window_ids`](Self::occluded_window_ids) for callers that
+    /// already hold the presentation-visible window set, so the walk is not
+    /// recomputed per consumer.
+    fn occluded_window_ids_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+    ) -> std::collections::HashSet<aegis_model::window::WindowId> {
         // Occlusion is a physical-desktop optimization. While the session lock
         // or overview is active the renderer draws a different scene, and
         // excluding windows here would starve lock-screen compositing.
         if self.state.session_lock_phase.is_active() || self.workspace_slide_pending() {
             return std::collections::HashSet::new();
         }
-        let visible = self.visible();
         let live = self.state.live_surfaces().collect::<Vec<_>>();
         // Root order follows the scene's bottom-to-top surface order; reverse
         // it below so coverage is known before each lower window is tested.
@@ -172,6 +201,21 @@ impl Server {
             HUMAN_INTERACTION_DOMAIN,
             Some(&visible),
             Some(&occluded),
+        )
+    }
+
+    /// [`client_surface_frame_order`](Self::client_surface_frame_order) for
+    /// callers that already computed the visibility/occlusion snapshot
+    /// (see [`desktop_frame_sets`](Self::desktop_frame_sets)).
+    pub fn client_surface_frame_order_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
+    ) -> Vec<usize> {
+        self.client_surface_frame_order_for_interaction_domain(
+            HUMAN_INTERACTION_DOMAIN,
+            Some(visible),
+            Some(occluded),
         )
     }
 
@@ -387,7 +431,10 @@ impl Server {
         self.toplevel_dmabuf_frames_with(&visible, &occluded)
     }
 
-    fn toplevel_dmabuf_frames_with(
+    /// [`toplevel_dmabuf_frames`](Self::toplevel_dmabuf_frames) for callers
+    /// that already computed the visibility/occlusion snapshot (see
+    /// [`desktop_frame_sets`](Self::desktop_frame_sets)).
+    pub fn toplevel_dmabuf_frames_with(
         &self,
         visible: &std::collections::HashSet<aegis_model::window::WindowId>,
         occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
@@ -538,6 +585,35 @@ impl Server {
         frames.extend(self.subsurface_dmabuf_frames_below_with(&visible, &occluded));
         frames.extend(self.subsurface_dmabuf_frames_above_with(&visible, &occluded));
         frames
+    }
+
+    /// Both frame sets plus the occlusion verdicts in one pass.
+    ///
+    /// The damage assessment, scanout planner, and the render pass each need
+    /// the SHM and dma-buf frame lists, and every one of those previously
+    /// recomputed `render_visible()` + `occluded_window_ids()` from scratch —
+    /// each an O(windows × surfaces) walk with per-window allocations, so a
+    /// single presented frame paid for it roughly eight times while the
+    /// surface table cannot change (all of this runs inside one iteration
+    /// after `server.dispatch()`). This accessor computes the shared
+    /// visibility/occlusion snapshot once and derives both lists from it.
+    pub fn desktop_frame_sets(
+        &self,
+    ) -> DesktopFrameSets<'_> {
+        let visible = self.render_visible();
+        let occluded = self.occluded_window_ids_with(&visible);
+        let mut shm = self.toplevel_frames_with(&visible, &occluded);
+        shm.extend(self.subsurface_frames_below_with(&visible, &occluded));
+        shm.extend(self.subsurface_frames_above_with(&visible, &occluded));
+        let mut dmabuf = self.toplevel_dmabuf_frames_with(&visible, &occluded);
+        dmabuf.extend(self.subsurface_dmabuf_frames_below_with(&visible, &occluded));
+        dmabuf.extend(self.subsurface_dmabuf_frames_above_with(&visible, &occluded));
+        DesktopFrameSets {
+            visible,
+            occluded,
+            shm,
+            dmabuf,
+        }
     }
 
     /// DMA-BUF client surfaces available to offscreen previews, including

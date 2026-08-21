@@ -7,6 +7,79 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Close-transition dma-buf ghost frames handed Flux the closing frame's own
+  file descriptor. Flux closes the plane fd on a successful import (see
+  `flux/dmabuf.h`), and the ghost's `DmabufBuffer` closes the same fd again
+  when the transition settles — a double close that could take down an
+  unrelated descriptor (socket, shm, or another client's buffer) after the
+  number got recycled. The ghost import now duplicates the fd first and
+  closes the duplicate on error, mirroring the live surface path.
+
+- Two compositor tests read or wrote the developer's real session state:
+  `initial_size_restores_main_windows_but_not_same_app_transients` depended
+  on the contents of `~/.local/state/aegis/window_state.json` (a pre-existing
+  entry or the store's 500-entry prune made the assertion machine-dependent),
+  and the new geometry-bound test wrote churned entries to it. Both now run
+  against a scratch store and path.
+
+### Changed
+
+- Compositor frame-path cost on busy desktops. The damage assessment, the
+  direct-scanout planner, and the render pass each recomputed the
+  presentation-visible set plus the opaque-occlusion walk (an O(windows ×
+  surfaces) pass with per-window allocations) — eight identical computations
+  per presented frame. They now share one snapshot per iteration
+  (`Server::desktop_frame_sets`), and the scanout planner reads counts from
+  it instead of collecting full per-surface damage/opaque clones before the
+  cheap SHM rejection.
+- Animated wallpaper memory. Animated GIF/WebP wallpapers retained every
+  composited frame at full canvas size for the source's lifetime — a
+  1920×1080 animation of a few hundred frames pinned gigabytes of RSS. The
+  retained set is now budgeted (256 MiB / 512 frames); past the budget,
+  further frames composite into the accumulator but fold their durations
+  into the final retained frame, preserving the loop's wall-clock span.
+- Animated wallpapers under a fullscreen window or the session lock: the
+  animation kept scheduling full-output composites (plus backdrop
+  recapture where glass chrome exists) for pixels that cannot reach the
+  display. The damage terms are now gated on the wallpaper being visible.
+- Per-frame allocation churn: the incremental SHM damage upload allocates
+  its staging buffer per frame (up to several MiB for a large damage box at
+  commit rate); it now reuses a high-water scratch buffer like the GC path.
+  `Server::set_minimize_targets` rebuilt its HashMap every frame in the
+  steady state; it now no-ops when the report is unchanged. The switcher's
+  window snapshot is only cloned when the switcher can present (open or
+  closing) instead of every rendered frame.
+- Background application rescans ran every 5 s despite the documented 30 s
+  cadence (a second, shadowing constant kept the old interval). The
+  constants are unified at 30 s. Resource-stat samples no longer repaint
+  the whole shell every 2 s when the command panel (their only consumer)
+  is closed, and the touchpad-status probe (several libinput queries plus
+  a device-name allocation) moved off the per-frame path to a 3 s cadence.
+- Shell (chrome) rendering now opens an upload batch around the Lens
+  replay pass. Glyph-atlas flushes during chrome text draws previously
+  each performed their own queue submit and transient command-pool
+  allocation; the batch joins them into one submission per frame (nested
+  scopes compose safely with the aegis-render batches on Optics v0.0.23).
+
+### Security
+
+- The parsed-ICC-profile cache grew without bound: profiles are
+  client-supplied blobs (up to 16 MiB each through `wp_color_management_v1`),
+  so a same-uid client could grow compositor RSS for the session by
+  streaming distinct blobs. The cache is now LRU-bounded (32 profiles) and
+  the parse-failure set is capped.
+- Remaining unbounded client-controlled collections: committed
+  xdg-activation-v1 tokens (a client that commits and never activates, then
+  disconnects, pinned them forever) now carry a 30 s TTL and a count
+  ceiling; `wl_surface.damage` / `damage_buffer` accumulation between
+  commits and `wl_region` rectangle lists now collapse to a conservative
+  bounding box past a rectangle budget (they previously grew until the
+  client chose to commit or destroy the region); the in-memory
+  per-`app_id` geometry map mirrors the persisted store's 500-entry ceiling;
+  and the SNI tray's theme-icon memo is count-bounded.
+
 ## [0.0.43] - 2026-08-20
 
 ### Fixed

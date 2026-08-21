@@ -1350,11 +1350,12 @@ pub(super) fn draw_client_scene(
             server.client_preview_surface_frame_order(),
         )
     } else {
-        (
-            server.client_surface_frames(),
-            server.client_surface_dmabuf_frames(),
-            server.client_surface_frame_order(),
-        )
+        // One shared visibility/occlusion pass for both frame lists; the
+        // damage assessment and scanout planner used to each recompute the
+        // same O(windows × surfaces) walk per presented frame.
+        let sets = server.desktop_frame_sets();
+        let order = server.client_surface_frame_order_with(&sets.visible, &sets.occluded);
+        (sets.shm, sets.dmabuf, order)
     };
     let windows = server.render_windows();
     renderer.gc(server.live_surface_ids());
