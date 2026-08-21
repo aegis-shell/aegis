@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.44] - 2026-08-21
+
 ### Fixed
 
 - Close-transition dma-buf ghost frames handed Flux the closing frame's own
