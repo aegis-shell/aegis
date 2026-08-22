@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.45] - 2026-08-22
+
 ### Fixed
 
 - Routine capability polling no longer floods the durable audit store. The

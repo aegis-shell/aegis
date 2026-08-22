@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aegis"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-backend",
  "aegis-command-panel",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-atspi"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-ipc",
  "aegis-ipc-client",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-backend"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "aegis-wayland-protocols",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-command-panel"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -109,11 +109,12 @@ dependencies = [
 
 [[package]]
 name = "aegis-commands"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-config",
  "aegis-ipc",
  "aegis-model",
+ "aegis-security",
  "clap",
  "clap_complete",
  "serde",
@@ -125,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-compositor"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "aegis-semantic",
@@ -142,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-config"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "dirs",
@@ -156,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-design"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "lens",
@@ -165,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-desktop-entries"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "dirs",
@@ -177,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-dock"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -188,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-hud"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -204,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-idle"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-ipc",
  "aegis-logging",
@@ -218,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "aegis-security",
@@ -231,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc-client"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-ipc",
  "aegis-model",
@@ -244,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-launcher"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-desktop-entries",
  "aegis-model",
@@ -256,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-lock"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-config",
  "aegis-design",
@@ -282,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-logging"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "tracing-log",
  "tracing-subscriber",
@@ -290,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-mcp"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-desktop-entries",
  "aegis-ipc",
@@ -306,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-model"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "serde",
  "serde_json",
@@ -314,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-prism"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -326,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-render"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "flux",
@@ -337,10 +338,12 @@ dependencies = [
 
 [[package]]
 name = "aegis-security"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
+ "flate2",
  "getrandom 0.4.3",
+ "hmac",
  "libc",
  "serde",
  "serde_json",
@@ -352,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-semantic"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-model",
  "serde",
@@ -361,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-settings"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -372,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-shell"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-design",
  "aegis-desktop-entries",
@@ -401,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-tray"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-desktop-entries",
  "image",
@@ -411,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ui"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -421,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-wallpaper"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "flux",
  "flux-scene-graph",
@@ -434,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-wayland-protocols"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "cc",
 ]
@@ -1017,6 +1020,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -1428,6 +1432,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "image"
@@ -2336,6 +2349,12 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svgtypes"
