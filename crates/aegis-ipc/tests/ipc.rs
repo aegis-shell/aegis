@@ -63,6 +63,19 @@ struct TestHandler {
     wallpapers: Mutex<Vec<(u64, std::path::PathBuf)>>,
     idle_inhibits: Mutex<Vec<(u64, bool)>>,
     idle_disconnects: Mutex<Vec<u64>>,
+    /// Every `audit_capability_use` call: connection, session, capability,
+    /// action, effect. Refusals are duplicated into `refusals`.
+    capability_uses: Mutex<
+        Vec<(
+            u64,
+            ActorCapability,
+            aegis_ipc::CapabilityUseAction,
+            aegis_ipc::Effect,
+        )>,
+    >,
+    /// What `next_accessibility_action` answers: `Ok(None)` mimics the
+    /// timed-out long-poll heartbeat of the real adapter.
+    next_action_result: Mutex<Result<Option<aegis_semantic::SemanticActionRequest>, String>>,
     pair_result: Mutex<Result<aegis_ipc::PairedAgent, String>>,
     pair_calls: Mutex<Vec<PairCall>>,
     lookup_result: Mutex<Option<aegis_ipc::AgentIdentity>>,
@@ -120,6 +133,8 @@ impl TestHandler {
             wallpapers: Mutex::new(Vec::new()),
             idle_inhibits: Mutex::new(Vec::new()),
             idle_disconnects: Mutex::new(Vec::new()),
+            capability_uses: Mutex::new(Vec::new()),
+            next_action_result: Mutex::new(Ok(None)),
             pair_result: Mutex::new(Err("pairing not offered".into())),
             pair_calls: Mutex::new(Vec::new()),
             lookup_result: Mutex::new(None),
@@ -182,6 +197,8 @@ impl TestHandler {
             wallpapers: Mutex::new(Vec::new()),
             idle_inhibits: Mutex::new(Vec::new()),
             idle_disconnects: Mutex::new(Vec::new()),
+            capability_uses: Mutex::new(Vec::new()),
+            next_action_result: Mutex::new(Ok(None)),
             pair_result: Mutex::new(Err("pairing not offered".into())),
             pair_calls: Mutex::new(Vec::new()),
             lookup_result: Mutex::new(None),
@@ -574,6 +591,10 @@ impl Handler for TestHandler {
         action: aegis_ipc::CapabilityUseAction,
         effect: aegis_ipc::Effect,
     ) {
+        self.capability_uses
+            .lock()
+            .unwrap()
+            .push((conn_id, capability, action, effect.clone()));
         if let aegis_ipc::Effect::Refused { reason } = effect {
             self.refusals.lock().unwrap().push((
                 conn_id,
@@ -621,6 +642,14 @@ impl Handler for TestHandler {
     }
     fn idle_inhibit_disconnected(&self, conn_id: u64) {
         self.idle_disconnects.lock().unwrap().push(conn_id);
+    }
+    fn next_accessibility_action(
+        &self,
+        _session: aegis_security::authority::ActorSessionId,
+        _principal: &str,
+        _timeout: std::time::Duration,
+    ) -> Result<Option<aegis_semantic::SemanticActionRequest>, String> {
+        self.next_action_result.lock().unwrap().clone()
     }
     fn pick_target(
         &self,
@@ -975,6 +1004,8 @@ fn sample_outputs() -> Vec<aegis_ipc::OutputInfo> {
 
 #[path = "ipc/agent.rs"]
 mod agent;
+#[path = "ipc/audit_polling.rs"]
+mod audit_polling;
 #[path = "ipc/authority.rs"]
 mod authority;
 #[path = "ipc/basics.rs"]

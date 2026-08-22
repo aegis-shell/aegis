@@ -83,6 +83,7 @@ pub(super) fn physical_window_target(
         Command::Focus { id, .. }
         | Command::Minimize { id }
         | Command::SetMaximized { id, .. }
+        | Command::SetFullscreen { id, .. }
         | Command::SetAlwaysOnTop { id, .. }
         | Command::Close { id }
         | Command::Move { id }
@@ -113,6 +114,9 @@ pub(super) fn apply_command(
         Command::Minimize { id } => server.minimize_toplevel(*id),
         Command::SetMaximized { id, maximized } => {
             server.set_toplevel_maximized(*id, *maximized);
+        }
+        Command::SetFullscreen { id, fullscreen } => {
+            server.set_toplevel_fullscreen(*id, *fullscreen);
         }
         Command::SetAlwaysOnTop { id, on_top } => {
             server.set_toplevel_always_on_top(*id, *on_top);

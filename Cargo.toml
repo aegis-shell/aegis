@@ -51,7 +51,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 # linking an agent stack into the compositor (ADR-0047, ADR-0087).
 base64 = "0.22"
 fastrand = "2"
+flate2 = "1"
 getrandom = "0.4"
+hmac = "0.12"
 notify = "8.2"
 sha2 = "0.10"
 atspi = { version = "0.30", features = ["zbus"] }

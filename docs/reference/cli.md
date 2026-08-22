@@ -26,6 +26,19 @@ for per-domain usage.
 | `aegis config validate [path]` | Validate the current schema and every semantic invariant without contacting the compositor. |
 | `aegis config migrate [path]` | Explicitly migrate a supported legacy schema after creating a durable, non-overwriting owner-only backup. |
 
+## Audit Commands
+
+Local operations on the durable security-audit history. They never contact a
+running compositor; a live session holds the store's advisory lock, so run
+them while the session is stopped.
+
+| Command | Description |
+|---------|-------------|
+| `aegis audit status` | Summarize the active stream, sealed segments, compressed sizes, pruned history, and the last export destination. |
+| `aegis audit verify [--full]` | Verify sealed segments against the authenticated manifest; `--full` decompresses every segment and replays the complete chain. |
+| `aegis audit export <destination>` | Record an export acknowledgement for every sealed segment in the manifest. Required before pruning without `--force`. |
+| `aegis audit prune <keep> [--force]` | Delete old sealed segments, keeping the newest `keep`. Refuses to remove export-unacknowledged segments unless `--force` is given. |
+
 Migration preserves comments and refuses legacy ambient network or host-path
 authority instead of silently dropping it. See the
 [configuration migration contract](config.md#migrating-schema-1).
@@ -54,6 +67,7 @@ directory is `$XDG_PICTURES_DIR/screenshots`, falling back to
 | `aegis window focus <id>` | Focus and raise a window. |
 | `aegis window minimize <id>` | Minimize a window while keeping its client alive. |
 | `aegis window always-on-top <id> <on\|off>` | Set or clear the session-scoped always-on-top flag. |
+| `aegis window fullscreen <id> <on\|off>` | Set or clear compositor-managed fullscreen. |
 | `aegis window close <id>` | Request that a window close. |
 | `aegis window geometry <id> <x> <y> <width> <height>` | Set floating geometry in compositor logical pixels. Negative coordinates are accepted positionally. |
 

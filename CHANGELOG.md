@@ -7,6 +7,68 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Routine capability polling no longer floods the durable audit store. The
+  AT-SPI adapter long-polls `NextAccessibilityAction` every 100 ms and
+  re-queries `GetAccessibilityWindows` every 750 ms, and every timed-out
+  poll and successful scan query was appended to
+  `events-v2.jsonl` — about 5.4 KiB/s (460 MiB/day) of fsynced hash-chained
+  records that each recorded "nothing happened". Long-lived sessions wrote
+  2.64 million such records (99.5% of a 1.22 GiB file), filled the root
+  filesystem, and the resulting `ENOSPC` on the next audit append
+  fail-stopped the compositor (abort by design, ADR-0104). Per ADR-0135 a
+  timed-out poll and a successful scan query decide nothing and journal
+  nothing; action delivery, handler errors, and authorization refusals remain
+  durable, so the store now grows only with real authority decisions.
+
+- Opening a large durable audit history no longer keeps the compositor's
+  first frame behind a complete JSON/hash-chain scan or retains every decoded
+  record in memory. An owner-only, HMAC-authenticated checkpoint restores the
+  bounded live projection and small uncheckpointed tail on the startup path;
+  the older prefix is still completely verified in the background, and no
+  new authority record may extend it until that verification succeeds. A
+  first open without a checkpoint performs one complete streaming scan to
+  establish the anchor. The store now refuses writes before crossing its
+  configured hard size ceiling or filesystem reserve, without deleting or
+  rotating history (ADR-0136).
+
+### Added
+
+- The new startup-only `[audit]` configuration table sets
+  `max_store_mib` (default 2048), `min_free_mib` (default 512),
+  `checkpoint_interval_mib` (default 8), `segment_max_mib` (default 64),
+  and `retain_segments` (default 0, keep everything) for the durable audit
+  store.
+
+- Sealed audit segments and explicit retention (ADR-0137). When the active
+  stream reaches `segment_max_mib` it is sealed into a compressed immutable
+  segment under `audit/segments/` — the chain is verified end to end while
+  compressing, and the fresh active stream continues it without resetting
+  sequence numbers. An HMAC-authenticated manifest records every segment's
+  chain identity, compressed digest, and export acknowledgements; startup
+  verifies each segment against it and fails closed on mismatch. The new
+  `aegis audit status|verify|export|prune` commands manage the lifecycle:
+  pruning requires an export acknowledgement recorded by
+  `aegis audit export` (or `--force`), and every removal is preserved in the
+  manifest's pruned history. With `retain_segments` configured the store
+  reaches a bounded steady state instead of marching toward the
+  `max_store_mib` fail-stop.
+
+- `Super+F11` toggles the focused window between fullscreen and its prior
+  state. This is the compositor-side counterpart of the client's
+  `xdg_toplevel.set_fullscreen` request: a window that never asks for
+  fullscreen itself — a game that only ships a windowed mode, for example —
+  can be put into the same output-covering, chrome-suppressing state, with
+  the pre-fullscreen floating geometry restored on exit. The dock, HUD, and
+  wallpaper already stand down under `SpaceUse::Fullscreen`, so no new
+  chrome-suppression path was needed. The action is rebindable as
+  `fullscreen` in `[[keybind]]`; bare `F11` stays unbound so an
+  application's in-app fullscreen shortcut keeps working. The new IPC
+  command `SetFullscreen { id, fullscreen }` (protocol 30) and its
+  `TransactOp` mirror expose the same operation to clients and
+  `aegis window fullscreen <id> <on|off>`.
+
 ## [0.0.44] - 2026-08-21
 
 ### Fixed

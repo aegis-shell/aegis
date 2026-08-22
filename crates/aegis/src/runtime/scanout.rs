@@ -367,9 +367,7 @@ impl CompositorRuntime {
         let occluded = &sets.occluded;
         let shm_surface_count = sets.shm.len();
         let dmabuf_surface_count = sets.dmabuf.len();
-        let mut toplevel_dmabufs =
-            self.server
-                .toplevel_dmabuf_frames_with(visible, occluded);
+        let mut toplevel_dmabufs = self.server.toplevel_dmabuf_frames_with(visible, occluded);
         let candidate_matches_scene = dmabuf_surface_count == 1
             && toplevel_dmabufs.len() == 1
             && sets.dmabuf[0].id == toplevel_dmabufs[0].id;

@@ -428,7 +428,11 @@ impl CursorCache {
             // The hotspot can sit anywhere in the sprite, so the position
             // plus this half-extent always contains the drawn pixels.
             return Some(
-                loaded.width.max(loaded.height).max(loaded.xhot.max(loaded.yhot) * 2.0) / 2.0
+                loaded
+                    .width
+                    .max(loaded.height)
+                    .max(loaded.xhot.max(loaded.yhot) * 2.0)
+                    / 2.0
                     + 2.0,
             );
         }

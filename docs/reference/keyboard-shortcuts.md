@@ -18,6 +18,7 @@ application does not also receive the shortcut.
 | `Super+Right` | Switch to the next workspace |
 | `Super+Left` | Switch to the previous workspace |
 | `Super+T` | Toggle tiling on the current workspace |
+| `Super+F11` | Toggle the focused toplevel between fullscreen and its prior state |
 | `Super+L` | Lock the session |
 | `Print` | Open the interactive screenshot region selector |
 | `Super+Ctrl+Q` | Gracefully quit the current Aegis instance |
@@ -51,6 +52,16 @@ the quit shortcuts alone; see the
 then routes input only to its lock surfaces and retains an opaque fail-closed
 frame if the client exits unexpectedly. See
 [How to Configure Locking and Idle](../how-to/lock-and-idle.md).
+
+`Super+F11` is the compositor-side counterpart of the client's own
+`xdg_toplevel.set_fullscreen` request. It applies to any focused window —
+including one that never asks for fullscreen itself, such as a game that only
+ships a windowed mode — and produces the same state that request produces:
+the window is configured to cover the whole output, the dock, HUD, and
+wallpaper animations stand down, and the pre-fullscreen floating geometry is
+restored on exit. A window the client itself put fullscreen leaves through the
+same binding. Bare `F11` stays unbound so an application's in-app fullscreen
+shortcut keeps working unchanged.
 
 ## Direct-Display VT Shortcuts
 

@@ -36,7 +36,11 @@ pub use aegis_semantic::{
 
 /// The protocol major version this build speaks. A client offering a newer
 /// major version is refused at the [`Request::Hello`] handshake; an older
-/// client is answered at its own version. Version 29 makes output frame
+/// client is answered at its own version. Version 30 adds compositor-managed
+/// fullscreen (`Command::SetFullscreen` and its `TransactOp` mirror): the
+/// same output-covering state a client's own
+/// `xdg_toplevel.set_fullscreen` request produces, driven from chrome, key
+/// bindings, or the IPC. Version 29 makes output frame
 /// streams output-addressed and renegotiable (ADR-0126):
 /// `EnumerateOutputs` reports each connector's physical rectangle in
 /// desktop coordinates, `StreamTarget::Output` accepts an optional
@@ -97,7 +101,7 @@ pub use aegis_semantic::{
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 /// Built-in owner-only scope used by native `aegis` commands for Interaction Domain
 /// recovery and administration. The Unix socket remains user-private; naming
 /// this scope opts the connection into the high-risk Interaction Domain operation allowlist
@@ -314,6 +318,7 @@ impl CommandScopePolicy for Scope {
             Command::Focus { id, .. }
             | Command::Minimize { id }
             | Command::SetMaximized { id, .. }
+            | Command::SetFullscreen { id, .. }
             | Command::SetAlwaysOnTop { id, .. }
             | Command::Close { id }
             | Command::Move { id }
@@ -481,6 +486,11 @@ pub enum Command {
     Minimize { id: WindowId },
     /// Set or clear compositor-managed maximization for a toplevel. `control`.
     SetMaximized { id: WindowId, maximized: bool },
+    /// Set or clear compositor-managed fullscreen for a toplevel (protocol
+    /// 30). Mirrors the client's `xdg_toplevel.set_fullscreen` request from
+    /// the compositor side, so chrome, key bindings, and remote clients can
+    /// put any window into the output-covering fullscreen state. `control`.
+    SetFullscreen { id: WindowId, fullscreen: bool },
     /// Set or clear the compositor-internal always-on-top flag for a
     /// toplevel. `control`.
     SetAlwaysOnTop { id: WindowId, on_top: bool },
@@ -703,6 +713,7 @@ impl Command {
             Command::Focus { .. } => ActorCapability::Focus,
             Command::Minimize { .. } => ActorCapability::Minimize,
             Command::SetMaximized { .. } => ActorCapability::SetWindowGeometry,
+            Command::SetFullscreen { .. } => ActorCapability::SetWindowGeometry,
             Command::SetAlwaysOnTop { .. } => ActorCapability::SetWindowGeometry,
             Command::Close { .. } => ActorCapability::Close,
             Command::Move { .. } => ActorCapability::Move,
@@ -751,6 +762,10 @@ pub enum TransactOp {
     SetMaximized {
         id: WindowId,
         maximized: bool,
+    },
+    SetFullscreen {
+        id: WindowId,
+        fullscreen: bool,
     },
     SetAlwaysOnTop {
         id: WindowId,
@@ -801,6 +816,10 @@ impl TransactOp {
                 id: *id,
                 maximized: *maximized,
             },
+            Self::SetFullscreen { id, fullscreen } => Command::SetFullscreen {
+                id: *id,
+                fullscreen: *fullscreen,
+            },
             Self::SetAlwaysOnTop { id, on_top } => Command::SetAlwaysOnTop {
                 id: *id,
                 on_top: *on_top,
@@ -845,6 +864,10 @@ impl TransactOp {
             Command::SetMaximized { id, maximized } => Self::SetMaximized {
                 id: *id,
                 maximized: *maximized,
+            },
+            Command::SetFullscreen { id, fullscreen } => Self::SetFullscreen {
+                id: *id,
+                fullscreen: *fullscreen,
             },
             Command::SetAlwaysOnTop { id, on_top } => Self::SetAlwaysOnTop {
                 id: *id,

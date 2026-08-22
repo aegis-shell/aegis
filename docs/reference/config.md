@@ -44,6 +44,7 @@ untouched.
 | `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
 | `[appearance]` | table | system color scheme, normal contrast, standard fonts and scale | Desktop-wide color, contrast, and typography preferences. See [Appearance](#appearance). |
 | `[agent]` | table | lockdown on | Agent authorization policy: whether unpaired connections keep privileged capabilities. See [Agent Authorization](#agent-authorization). |
+| `[audit]` | table | 2048 MiB ceiling, 512 MiB reserve | Durable authority-history storage and checkpoint policy. See [Audit Storage](#audit-storage). |
 | `[interaction_domain_sandbox]` | table | default deny | Process-resource budgets for new Interaction Domain application launches; network and host files remain isolated. See [Interaction Domain Sandbox](#interaction-domain-sandbox). |
 | `[dev]` | table | all off | Development-only escape hatches; planned for removal before release. See [Development Options](#development-options). |
 
@@ -642,6 +643,43 @@ Pairing prompts, capability ceilings, and runtime grants are enforced per
 request by the IPC server. See the [aegis-mcp Bridge
 Reference](aegis-mcp.md) for the agent-side contract.
 
+## Audit Storage
+
+The startup-only `[audit]` table bounds the active durable authority history
+at `$XDG_DATA_HOME/aegis/audit/events-v2.jsonl`. Saving valid changes does not
+reconfigure an already-open stream; they apply on the next compositor start.
+See the [IPC Reference](ipc.md) for durability, verification, archival, and
+fail-stop behavior.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_store_mib` | integer | `2048` | Hard ceiling for the whole authority history (sealed plus active), 64–1048576 MiB. The next append is refused before crossing it; history is never deleted automatically. |
+| `min_free_mib` | integer | `512` | Filesystem space reserved from audit growth, 64–1048576 MiB. An append is refused while preserving at least this much space. |
+| `checkpoint_interval_mib` | integer | `8` | Maximum uncheckpointed byte tail, 1–256 MiB and no larger than `max_store_mib`. A checkpoint is also refreshed after 4096 events. |
+| `segment_max_mib` | integer | `64` | Active-stream size that triggers sealing into a compressed immutable segment, 1–256 MiB and no larger than `max_store_mib` ([ADR-0137](../adr/0137-audit-segment-manifest-and-retention.md)). |
+| `retain_segments` | integer | `0` | Sealed segments kept on disk (the newest); `0` keeps everything. Pruning also requires an export acknowledgement recorded via `aegis audit export`. |
+
+```toml
+[audit]
+max_store_mib = 2048
+min_free_mib = 512
+checkpoint_interval_mib = 8
+segment_max_mib = 64
+retain_segments = 8
+```
+
+The first upgraded start of an existing stream performs one complete
+verification to create its authenticated checkpoint. Later starts restore
+the bounded live projection first and verify older history in the background;
+new audit writes wait for that complete verification to succeed.
+
+When the active stream reaches `segment_max_mib`, it is sealed into a
+compressed immutable segment under `audit/segments/`, and the chain
+continues in a fresh active file without resetting sequence numbers. Manage
+the lifecycle — status, verification, export acknowledgement, and retention
+pruning — with `aegis audit`; see [How to Manage Audit
+History](../how-to/manage-audit-history.md).
+
 ## IPC
 
 The `[ipc]` table holds process-identity policy for the built-in IPC
@@ -744,6 +782,7 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | `workspace_next` | `next_workspace`, `ws_next` | Switch to the next workspace |
 | `workspace_prev` | `prev_workspace`, `ws_prev` | Switch to the previous workspace |
 | `tiling` | `toggle_tiling` | Toggle tiling on the current workspace |
+| `fullscreen` | `toggle_fullscreen`, `togglefullscreen` | Toggle the focused toplevel between fullscreen and its prior state |
 | `screenshot` | `snapshot`, `prtsc` | Open the interactive screenshot region selector |
 | `lock` | `lockscreen`, `lock_screen` | Secure the session with the first-party lock screen |
 | `quit` | `exit` | Quit the compositor |
@@ -768,6 +807,7 @@ configured:
 | `Super+Right` | `workspace_next` |
 | `Super+Left` | `workspace_prev` |
 | `Super+T` | `tiling` |
+| `Super+F11` | `fullscreen` |
 | `Super+L` | `lock` |
 | `Print` | `screenshot` |
 | `Super+Ctrl+Q` | `quit` |

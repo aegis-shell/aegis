@@ -930,15 +930,18 @@ pub(crate) fn state_configure_dimensions(size: aegis_model::Size) -> (i32, i32) 
     }
 }
 
-/// Common path for state transitions: update compositor-owned geometry and
-/// send a configure carrying both the new states array and the authoritative
-/// current size.
-pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
+/// Apply the compositor-side geometry effects of a state transition —
+/// fullscreen covers the whole output, maximization the chrome-inset work
+/// area, and both save the floating rectangle restored on exit — and return
+/// the size for the next configure. Split from the posting half of
+/// [`reconfigure_with_state`] so the save/restore contract can be
+/// unit-tested without a live `wl_resource`.
+pub(crate) unsafe fn apply_state_geometry(rec: *mut SurfaceRec) -> (i32, i32) {
     unsafe {
         if rec.is_null() {
-            return;
+            return (0, 0);
         }
-        let (w, h) = if (*rec).window.state.fullscreen {
+        if (*rec).window.state.fullscreen {
             if (*rec).saved_floating_rect.is_none() {
                 (*rec).saved_floating_rect = Some(aegis_model::Rect {
                     origin: (*rec).position,
@@ -982,7 +985,19 @@ pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
             }
             (*rec).layout_target = None;
             state_configure_dimensions((*rec).window.size)
-        };
+        }
+    }
+}
+
+/// Common path for state transitions: update compositor-owned geometry and
+/// send a configure carrying both the new states array and the authoritative
+/// current size.
+pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
+    unsafe {
+        if rec.is_null() {
+            return;
+        }
+        let (w, h) = apply_state_geometry(rec);
         reconfigure_with_size(rec, w, h);
     }
 }

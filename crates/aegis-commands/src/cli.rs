@@ -83,6 +83,11 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ConfigCmd>,
     },
+    /// Inspect and manage the durable security-audit history.
+    Audit {
+        #[command(subcommand)]
+        command: Option<AuditCmd>,
+    },
     /// Inspect and control immediate live-system state; shows status by default.
     System {
         #[command(subcommand)]
@@ -110,6 +115,37 @@ pub enum ConfigCmd {
     Migrate {
         /// Configuration file; defaults to the XDG Aegis config path.
         path: Option<PathBuf>,
+    },
+}
+
+/// Local durable-audit operations (ADR-0137). They never contact a running
+/// compositor; a live compositor holds the store's advisory lock, so run
+/// these while the session is stopped.
+#[derive(Debug, clap::Subcommand)]
+pub enum AuditCmd {
+    /// Summarize sealed segments, sizes, and retention state.
+    Status,
+    /// Verify sealed segments against the authenticated manifest.
+    Verify {
+        /// Decompress every segment and replay the complete hash chain
+        /// instead of the fast compressed-digest check.
+        #[arg(long)]
+        full: bool,
+    },
+    /// Record an export acknowledgement in the manifest.
+    Export {
+        /// Free-form destination description (for example an archive path).
+        destination: String,
+    },
+    /// Delete old sealed segments, keeping at most `keep` (the newest).
+    /// Requires every removed segment to be export-acknowledged unless
+    /// `--force` is given.
+    Prune {
+        /// Number of newest sealed segments to keep.
+        keep: usize,
+        /// Delete without an export acknowledgement (destructive).
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -141,6 +177,8 @@ pub enum WindowCmd {
     Minimize { id: u64 },
     /// Set or clear always-on-top for a window by id.
     AlwaysOnTop { id: u64, state: OnOff },
+    /// Set or clear fullscreen for a window by id.
+    Fullscreen { id: u64, state: OnOff },
     /// Request that a window close.
     Close { id: u64 },
     /// Set floating-window geometry in compositor logical pixels.

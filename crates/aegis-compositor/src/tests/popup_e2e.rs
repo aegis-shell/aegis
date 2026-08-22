@@ -401,6 +401,115 @@ fn edge_tooltip_slides_without_shrinking() {
     probe.kill();
 }
 
+/// A compositor-driven fullscreen round trip over real protocol traffic
+/// (`Server::set_toplevel_fullscreen`, the path behind `Super+F11`): the
+/// client never issues `set_fullscreen` itself, so the fullscreen configure
+/// it receives is entirely compositor-initiated. Asserts the client is told
+/// the fullscreen state and the full output size, and that clearing the
+/// state restores the saved floating geometry.
+#[test]
+#[ignore = "needs gcc + wayland-client headers to build the probe client"]
+fn compositor_fullscreen_configures_the_client_and_restores() {
+    let tag = "fullscreen";
+    let Some(binary) = probe_binary(tag) else {
+        return;
+    };
+    let Some(mut server) = new_test_server() else {
+        return;
+    };
+    let socket = server.socket().to_owned();
+    let mut probe = ProbeChild::spawn(&binary, &socket, &[tag]).expect("spawn probe");
+    assert!(
+        pump_until(&mut server, &probe, "toplevel-mapped", 800),
+        "probe toplevel never mapped:\n{}",
+        probe.log().join("\n")
+    );
+
+    let window_id = server
+        .state
+        .live_surfaces()
+        .find(|surface| unsafe { !(**surface).xdg_toplevel.is_null() && (**surface).mapped })
+        .map(|surface| unsafe { (*surface).window.id })
+        .expect("probe toplevel");
+    let floating = server
+        .state
+        .live_surfaces()
+        .find(|surface| unsafe { (**surface).window.id == window_id })
+        .map(|surface| unsafe { ((*surface).position, (*surface).window.size) })
+        .expect("surface record");
+
+    // Compositor-initiated fullscreen: the client sees the state and the
+    // whole-output size in one configure.
+    assert!(server.set_toplevel_fullscreen(window_id, true));
+    assert!(
+        pump_until(&mut server, &probe, "states=", 800),
+        "no state-carrying configure arrived:\n{}",
+        probe.log().join("\n")
+    );
+    pump(&mut server, 30);
+    let fullscreen_line = probe
+        .log()
+        .iter()
+        .rev()
+        .find(|line| line.contains("states=") && line.contains("fullscreen"))
+        .expect("fullscreen configure line")
+        .to_owned();
+    eprintln!("fullscreen configure: {fullscreen_line}");
+    assert!(
+        fullscreen_line.contains("w=1920") && fullscreen_line.contains("h=1080"),
+        "fullscreen configure does not cover the output: {fullscreen_line}"
+    );
+    let (origin, size) = toplevel_rect(&server);
+    assert_eq!(
+        (origin, size),
+        (
+            aegis_model::Point { x: 0, y: 0 },
+            aegis_model::Size { w: 1920, h: 1080 }
+        ),
+        "compositor geometry must cover the whole output"
+    );
+
+    // Idempotent while held.
+    assert!(!server.set_toplevel_fullscreen(window_id, true));
+
+    // Leaving restores the saved floating rect and drops the state from the
+    // configure the client receives.
+    let before = probe.log().len();
+    assert!(server.set_toplevel_fullscreen(window_id, false));
+    let mut restored_line = None;
+    for _ in 0..80 {
+        pump(&mut server, 10);
+        if let Some(line) = probe
+            .log()
+            .iter()
+            .skip(before)
+            .rev()
+            .find(|line| line.contains("states="))
+        {
+            restored_line = Some(line.to_owned());
+            break;
+        }
+    }
+    let restored_line = restored_line.unwrap_or_else(|| {
+        panic!(
+            "no configure after un-fullscreen:\n{}",
+            probe.log().join("\n")
+        )
+    });
+    eprintln!("restored configure: {restored_line}");
+    assert!(
+        !restored_line.contains("fullscreen"),
+        "fullscreen state lingered after clearing: {restored_line}"
+    );
+    let (origin, size) = toplevel_rect(&server);
+    assert_eq!(
+        (origin, size),
+        floating,
+        "the saved floating geometry must be restored exactly"
+    );
+    probe.kill();
+}
+
 /// Real-Chrome tooltip probe: sweep the pointer across the toolbar so Chrome
 /// opens its hover tooltips, then compare every popup's positioner-requested
 /// size against the size the compositor configured. A narrower configure is

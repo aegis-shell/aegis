@@ -566,6 +566,138 @@ fn state_only_configures_preserve_a_mapped_window_size() {
     );
 }
 
+/// Fullscreen save/restore behavior exercised through
+/// `reconfigure_with_state` — the shared geometry path the client's
+/// `set_fullscreen` request and the compositor's `set_toplevel_fullscreen`
+/// both drive.
+#[test]
+fn fullscreen_reconfigure_covers_the_output_and_restores_the_floating_rect() {
+    let mut state = State::new(std::ptr::null_mut());
+    state.output_geometry = aegis_model::output::OutputGeometry {
+        mode: aegis_model::output::OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        },
+        ..Default::default()
+    };
+    let mut rec = SurfaceRec::new(std::ptr::null_mut());
+    rec.state = &mut state;
+    rec.mapped = true;
+    rec.position = aegis_model::Point { x: 240, y: 120 };
+    rec.window.size = aegis_model::Size { w: 800, h: 600 };
+    rec.window.state.maximized = false;
+
+    // Entering fullscreen saves the floating rect and covers the whole
+    // output (not the chrome-inset work area).
+    rec.window.state.fullscreen = true;
+    let configure_size = unsafe { apply_state_geometry(&mut rec) };
+    assert_eq!(configure_size, (1920, 1080));
+    assert_eq!(
+        (rec.position, rec.window.size),
+        (
+            aegis_model::Point { x: 0, y: 0 },
+            aegis_model::Size { w: 1920, h: 1080 }
+        ),
+        "fullscreen covers the entire output"
+    );
+    assert_eq!(
+        rec.saved_floating_rect,
+        Some(aegis_model::Rect::new(240, 120, 800, 600)),
+        "the floating rect is saved exactly once on entry"
+    );
+    assert_eq!(
+        rec.layout_target,
+        Some(aegis_model::Rect::new(0, 0, 1920, 1080))
+    );
+
+    // Leaving fullscreen restores the saved floating rect.
+    rec.window.state.fullscreen = false;
+    let restored = unsafe { apply_state_geometry(&mut rec) };
+    assert_eq!(restored, (800, 600));
+    assert_eq!(rec.position, aegis_model::Point { x: 240, y: 120 });
+    assert_eq!(rec.window.size, aegis_model::Size { w: 800, h: 600 });
+    assert_eq!(rec.saved_floating_rect, None);
+    assert_eq!(rec.layout_target, None);
+}
+
+/// The compositor-side fullscreen setter: a human-controlled toplevel flips
+/// the same state bit and geometry the client's own request would, and a
+/// read-only mirror (an agent-controlled window) is refused. The FFI half of
+/// the setter (focus change + configure posting) needs a live client, so
+/// this exercises the authority guard and the state/geometry bookkeeping
+/// through `apply_state_geometry`.
+#[test]
+fn set_toplevel_fullscreen_guards_follow_window_authority() {
+    let mut state = State::new(std::ptr::null_mut());
+
+    // A human-controlled window.
+    let human_window = aegis_model::window::WindowId(9001);
+    let client = state.authority.register_client(None);
+    state
+        .authority
+        .create_interaction_group(client, &[human_window], HUMAN_INTERACTION_DOMAIN)
+        .expect("human interaction group");
+    assert!(
+        state
+            .authority
+            .seat_controls_window(HUMAN_SEAT, human_window)
+    );
+
+    // An agent-controlled window: a read-only mirror from the physical seat.
+    let agent = state
+        .authority
+        .create_agent_interaction_domain("fullscreen-agent", SeatCapabilities::default());
+    let agent_window = aegis_model::window::WindowId(9002);
+    let agent_client = state.authority.register_client(None);
+    let group = state
+        .authority
+        .create_interaction_group(agent_client, &[agent_window], HUMAN_INTERACTION_DOMAIN)
+        .expect("group");
+    state
+        .authority
+        .transfer_control(group, agent.interaction_domain, TransferOptions::default())
+        .expect("transfer");
+    assert!(
+        !state
+            .authority
+            .seat_controls_window(HUMAN_SEAT, agent_window)
+    );
+
+    // Unknown windows never control.
+    let unknown = aegis_model::window::WindowId(4242);
+    assert!(!state.authority.seat_controls_window(HUMAN_SEAT, unknown));
+
+    // The fullscreen geometry transition itself is state-exact: entering
+    // saves the floating rect and covers the output, leaving restores it,
+    // and asking for the held state is a no-op guarded by the caller.
+    state.output_geometry = aegis_model::output::OutputGeometry {
+        mode: aegis_model::output::OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        },
+        ..Default::default()
+    };
+    let mut rec = SurfaceRec::new(std::ptr::null_mut());
+    rec.state = &mut state;
+    rec.mapped = true;
+    rec.position = aegis_model::Point { x: 100, y: 80 };
+    rec.window.size = aegis_model::Size { w: 640, h: 480 };
+    rec.window.state.fullscreen = true;
+    let configure_size = unsafe { apply_state_geometry(&mut rec) };
+    assert_eq!(configure_size, (1920, 1080));
+    assert_eq!(
+        rec.saved_floating_rect,
+        Some(aegis_model::Rect::new(100, 80, 640, 480))
+    );
+    rec.window.state.fullscreen = false;
+    let restored = unsafe { apply_state_geometry(&mut rec) };
+    assert_eq!(restored, (640, 480));
+    assert_eq!(rec.position, aegis_model::Point { x: 100, y: 80 });
+    assert_eq!(rec.window.size, aegis_model::Size { w: 640, h: 480 });
+}
+
 #[test]
 fn newly_mapped_focus_policy_excludes_hidden_read_only_and_minimized_windows() {
     use MappedToplevelFocusInputs as Inputs;

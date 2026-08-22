@@ -153,6 +153,26 @@ static void create_popup(uint32_t grab_serial) {
 
 // ---------- toplevel ----------
 
+// Decode the toplevel states wl_array into a stable, loggable string
+// (e.g. "activated,fullscreen") so tests can assert on the exact state set
+// a compositor-driven configure carries.
+static void format_states(struct wl_array *states, char *out, size_t cap) {
+    size_t used = 0;
+    out[0] = '\0';
+    uint32_t *s;
+    wl_array_for_each(s, states) {
+        const char *name = NULL;
+        if (*s == XDG_TOPLEVEL_STATE_MAXIMIZED) name = "maximized";
+        else if (*s == XDG_TOPLEVEL_STATE_FULLSCREEN) name = "fullscreen";
+        else if (*s == XDG_TOPLEVEL_STATE_RESIZING) name = "resizing";
+        else if (*s == XDG_TOPLEVEL_STATE_ACTIVATED) name = "activated";
+        if (!name) continue;
+        int n = snprintf(out + used, cap - used, "%s%s", used ? "," : "", name);
+        if (n < 0 || (size_t)n >= cap - used) break;
+        used += (size_t)n;
+    }
+}
+
 static void tl_xdg_configure(void *data, struct xdg_surface *s, uint32_t serial) {
     (void)data;
     xdg_surface_ack_configure(s, serial);
@@ -164,7 +184,15 @@ static void tl_xdg_configure(void *data, struct xdg_surface *s, uint32_t serial)
         wl_surface_commit(tl_surface);
         wl_display_flush(g_display);
         log_line("toplevel-mapped w=%d h=%d", tl_w, tl_h);
+        return;
     }
+    // Later configures re-draw at the new size so the commit that acks the
+    // fullscreen state also presents a full-size buffer.
+    struct wl_buffer *buf = make_buffer(tl_w, tl_h, 0xff202020);
+    wl_surface_attach(tl_surface, buf, 0, 0);
+    wl_surface_damage(tl_surface, 0, 0, tl_w, tl_h);
+    wl_surface_commit(tl_surface);
+    wl_display_flush(g_display);
 }
 
 static const struct xdg_surface_listener tl_xdg_listener = {
@@ -173,9 +201,11 @@ static const struct xdg_surface_listener tl_xdg_listener = {
 
 static void tl_configure(void *data, struct xdg_toplevel *t, int32_t w, int32_t h,
                          struct wl_array *states) {
-    (void)data; (void)t; (void)states;
+    (void)data; (void)t;
     if (w > 0 && h > 0) { tl_w = w; tl_h = h; }
-    log_line("toplevel-configure w=%d h=%d", w, h);
+    char state_names[128];
+    format_states(states, state_names, sizeof(state_names));
+    log_line("toplevel-configure w=%d h=%d states=%s", w, h, state_names);
 }
 
 static void tl_close(void *data, struct xdg_toplevel *t) { (void)data; (void)t; }
@@ -289,7 +319,7 @@ static const struct wl_registry_listener registry_listener = {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: popup_probe menu|tooltip [X Y]\n");
+        fprintf(stderr, "usage: popup_probe menu|tooltip|fullscreen [X Y]\n");
         return 2;
     }
     mode = argv[1];

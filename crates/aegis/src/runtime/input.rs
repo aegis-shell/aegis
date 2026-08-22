@@ -477,6 +477,29 @@ impl CompositorRuntime {
                     origin,
                 );
             }
+            Action::ToggleFullscreen => {
+                // The compositor-side counterpart of the client's
+                // `xdg_toplevel.set_fullscreen`: flip the focused window's
+                // fullscreen bit through the same journaled command path IPC
+                // clients use, so windowed-only apps (games) reach the
+                // chrome-free, output-covering state.
+                if let Some(id) = self.server.focused_toplevel_id() {
+                    let cmd = aegis_ipc::Command::SetFullscreen {
+                        id,
+                        fullscreen: !self.server.toplevel_fullscreen(id),
+                    };
+                    apply_command_and_journal(
+                        &mut self.server,
+                        &self.notif_queue,
+                        &mut self.quit_requested,
+                        cmd,
+                        &self.ipc,
+                        &self.journal,
+                        ts,
+                        origin,
+                    );
+                }
+            }
             Action::Lock => self.idle_process.lock_now(),
             Action::Quit => {
                 let cmd = aegis_ipc::Command::Quit;

@@ -114,6 +114,10 @@ pub struct Config {
     #[serde(default)]
     pub agent: AgentConfig,
 
+    /// Durable security-audit storage policy, written as an `[audit]` table.
+    #[serde(default)]
+    pub audit: AuditConfig,
+
     /// IPC built-in scope process-identity policy (ADR-0128), written as an
     /// `[ipc]` table. Additive and optional; it needs no schema-version bump.
     #[serde(default)]
@@ -332,6 +336,59 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self { lockdown: true }
+    }
+}
+
+/// The `[audit]` section: hard storage and checkpoint bounds for the durable
+/// security decision stream. Reaching a bound refuses the next durable event;
+/// history is never silently deleted or overwritten.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditConfig {
+    /// Maximum active audit stream length in MiB.
+    #[serde(default = "default_audit_max_store_mib")]
+    pub max_store_mib: u64,
+    /// Filesystem space in MiB reserved from audit growth.
+    #[serde(default = "default_audit_min_free_mib")]
+    pub min_free_mib: u64,
+    /// Maximum uncheckpointed byte tail in MiB.
+    #[serde(default = "default_audit_checkpoint_interval_mib")]
+    pub checkpoint_interval_mib: u64,
+    /// Active-stream size in MiB that triggers sealing into a compressed
+    /// immutable segment (ADR-0137).
+    #[serde(default = "default_audit_segment_max_mib")]
+    pub segment_max_mib: u64,
+    /// Sealed segments kept on disk; `0` keeps everything. Pruning also
+    /// requires an export acknowledgement recorded in the manifest.
+    #[serde(default)]
+    pub retain_segments: usize,
+}
+
+fn default_audit_max_store_mib() -> u64 {
+    2_048
+}
+
+fn default_audit_min_free_mib() -> u64 {
+    512
+}
+
+fn default_audit_checkpoint_interval_mib() -> u64 {
+    8
+}
+
+fn default_audit_segment_max_mib() -> u64 {
+    64
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            max_store_mib: default_audit_max_store_mib(),
+            min_free_mib: default_audit_min_free_mib(),
+            checkpoint_interval_mib: default_audit_checkpoint_interval_mib(),
+            segment_max_mib: default_audit_segment_max_mib(),
+            retain_segments: 0,
+        }
     }
 }
 
@@ -934,6 +991,40 @@ impl Config {
         validate_wallpaper(&cfg.wallpaper, &mut diagnostics);
         validate_lock_screen(&cfg.lock_screen, &mut diagnostics);
         validate_night_light(&cfg.night_light, &mut diagnostics);
+        if !(64..=1_048_576).contains(&cfg.audit.max_store_mib) {
+            diagnostics.push(Diagnostic::new(
+                Some("audit.max_store_mib".into()),
+                "must be between 64 and 1048576",
+            ));
+        }
+        if !(64..=1_048_576).contains(&cfg.audit.min_free_mib) {
+            diagnostics.push(Diagnostic::new(
+                Some("audit.min_free_mib".into()),
+                "must be between 64 and 1048576",
+            ));
+        }
+        if !(1..=256).contains(&cfg.audit.checkpoint_interval_mib)
+            || cfg.audit.checkpoint_interval_mib > cfg.audit.max_store_mib
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("audit.checkpoint_interval_mib".into()),
+                "must be between 1 and 256 and no greater than max_store_mib",
+            ));
+        }
+        if !(1..=256).contains(&cfg.audit.segment_max_mib)
+            || cfg.audit.segment_max_mib > cfg.audit.max_store_mib
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("audit.segment_max_mib".into()),
+                "must be between 1 and 256 and no greater than max_store_mib",
+            ));
+        }
+        if cfg.audit.retain_segments > 100_000 {
+            diagnostics.push(Diagnostic::new(
+                Some("audit.retain_segments".into()),
+                "must not exceed 100000",
+            ));
+        }
         for (index, output) in cfg.outputs.iter().enumerate() {
             if output.connector.trim().is_empty() {
                 diagnostics.push(Diagnostic::new(

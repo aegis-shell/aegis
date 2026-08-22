@@ -757,17 +757,80 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
         })?;
     let journal_path = data_home.join("aegis/audit/events-v2.jsonl");
-    let journal = aegis_ipc::Journal::open_persistent(aegis_ipc::DEFAULT_CAPACITY, &journal_path)
-        .map_err(|error| match error {
+    let audit_policy = config
+        .as_ref()
+        .map(|config| config.audit)
+        .unwrap_or_default();
+    const MIB: u64 = 1024 * 1024;
+    let audit_options = aegis_security::audit::AuditStoreOptions {
+        max_store_bytes: audit_policy.max_store_mib * MIB,
+        min_free_bytes: audit_policy.min_free_mib * MIB,
+        checkpoint_interval_bytes: audit_policy.checkpoint_interval_mib * MIB,
+        checkpoint_interval_events: aegis_security::audit::DEFAULT_CHECKPOINT_INTERVAL_EVENTS,
+        segment_max_bytes: audit_policy.segment_max_mib * MIB,
+        retain_segments: audit_policy.retain_segments,
+    };
+    let audit_open_started = std::time::Instant::now();
+    let journal = aegis_ipc::Journal::open_persistent_with_options(
+        aegis_ipc::DEFAULT_CAPACITY,
+        &journal_path,
+        audit_options,
+    )
+    .map_err(|error| match error {
         locked @ aegis_security::audit::AuditError::Locked(_) => {
             std::io::Error::other(format!("{locked}; is another aegis instance running?"))
         }
+        capacity @ (aegis_security::audit::AuditError::QuotaExceeded { .. }
+        | aegis_security::audit::AuditError::LowSpace { .. }
+        | aegis_security::audit::AuditError::InvalidOptions(_)) => {
+            std::io::Error::other(capacity.to_string())
+        }
+        checkpoint @ (aegis_security::audit::AuditError::CheckpointAuthentication
+        | aegis_security::audit::AuditError::CheckpointDecode(_)
+        | aegis_security::audit::AuditError::CheckpointState(_)) => std::io::Error::other(format!(
+            "{checkpoint}; preserve {} and quarantine its .checkpoint and .key sidecars together; \
+             the next start will completely verify the durable history and rebuild them",
+            journal_path.display()
+        )),
+        io @ (aegis_security::audit::AuditError::Io { .. }
+        | aegis_security::audit::AuditError::Entropy(_)) => std::io::Error::other(io.to_string()),
         error => std::io::Error::other(format!(
             "{} failed verification: {error}; quarantine the file (rename it aside, e.g. \
                  with a .corrupt-<date>.bak suffix) to start a fresh chain",
             journal_path.display()
         )),
     })?;
+    log::info!(
+        "audit: restored {} live event(s), latest sequence {}, {:.1} MiB durable, {} in {:?}",
+        journal.len(),
+        journal.latest_seq(),
+        journal.persistent_bytes().unwrap_or(0) as f64 / MIB as f64,
+        if journal.historical_verification_pending() {
+            "authenticated checkpoint replay; complete history verification continues in background"
+        } else if journal.checkpoint_accelerated() {
+            "authenticated checkpoint replay; complete history already covered by the bounded replay"
+        } else {
+            "complete initial verification"
+        },
+        audit_open_started.elapsed(),
+    );
+    {
+        // Sealed-segment integrity gates the session the same way the active
+        // stream does: a manifest that does not match its compressed segments
+        // is a corrupted authority history (ADR-0137).
+        journal.verify_sealed_segments().map_err(|error| {
+            std::io::Error::other(format!("audit segment verification: {error}"))
+        })?;
+        if let Some(status) = journal.audit_status() {
+            log::info!(
+                "audit: {} sealed segment(s) verified, {:.1} MiB compressed, {:.1} MiB active, {} pruned segment(s) on record",
+                status.sealed_segments,
+                status.sealed_compressed_bytes as f64 / MIB as f64,
+                status.active_bytes as f64 / MIB as f64,
+                status.pruned_segments,
+            );
+        }
+    }
     let journal = std::sync::Arc::new(std::sync::Mutex::new(journal));
     let mut agent_registry = PrincipalRegistry::load(data_home.join("aegis/principals.json"));
     let grant_store = GrantStore::load(data_home.join("aegis/grants.json"));
@@ -1076,8 +1139,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         previous_render_at,
         night_light: aegis_model::night_light::NightLight::default(),
         night_light_last_eval: std::time::Instant::now() - std::time::Duration::from_secs(2),
-        touchpad_status_last_probe: std::time::Instant::now()
-            - std::time::Duration::from_secs(3),
+        touchpad_status_last_probe: std::time::Instant::now() - std::time::Duration::from_secs(3),
     }
     .run_loop()
 }

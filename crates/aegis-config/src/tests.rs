@@ -8,6 +8,45 @@ fn minimal_valid_config_loads() {
     assert_eq!(cfg.schema_version, 2);
     assert!(cfg.keybinds.is_empty());
     assert!(cfg.agent.lockdown, "agent IPC must fail closed by default");
+    assert_eq!(cfg.audit.max_store_mib, 2_048);
+    assert_eq!(cfg.audit.min_free_mib, 512);
+    assert_eq!(cfg.audit.checkpoint_interval_mib, 8);
+    assert_eq!(cfg.audit.segment_max_mib, 64);
+    assert_eq!(cfg.audit.retain_segments, 0, "retention is opt-in");
+}
+
+#[test]
+fn audit_storage_bounds_parse_and_validate() {
+    let configured = Config::parse(
+        "schema_version = 2\n\
+         [audit]\n\
+         max_store_mib = 4096\n\
+         min_free_mib = 1024\n\
+         checkpoint_interval_mib = 16\n\
+         segment_max_mib = 128\n\
+         retain_segments = 12\n",
+    )
+    .unwrap();
+    assert_eq!(configured.audit.max_store_mib, 4_096);
+    assert_eq!(configured.audit.min_free_mib, 1_024);
+    assert_eq!(configured.audit.checkpoint_interval_mib, 16);
+    assert_eq!(configured.audit.segment_max_mib, 128);
+    assert_eq!(configured.audit.retain_segments, 12);
+
+    for body in [
+        "max_store_mib = 32",
+        "min_free_mib = 0",
+        "checkpoint_interval_mib = 0",
+        "max_store_mib = 64\ncheckpoint_interval_mib = 128",
+        "segment_max_mib = 0",
+        "segment_max_mib = 4096\nmax_store_mib = 2048",
+        "retain_segments = 200000",
+    ] {
+        assert!(
+            Config::parse(&format!("schema_version = 2\n[audit]\n{body}\n")).is_err(),
+            "invalid audit policy was accepted: {body}"
+        );
+    }
 }
 
 #[test]

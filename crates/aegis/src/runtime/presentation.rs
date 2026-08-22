@@ -54,7 +54,7 @@ impl CompositorRuntime {
         let cursor_extent = self
             .cursor_cache
             .sprite_extent(cursor_shape, scale)
-            .unwrap_or(48.0);        // Upload and place compositor-owned theme cursors on dedicated KMS
+            .unwrap_or(48.0); // Upload and place compositor-owned theme cursors on dedicated KMS
         // planes before deciding whether a full-output client can scan out
         // directly. The cheap Arc clone ends the CursorCache borrow before
         // mutating the host; cursor buffers themselves are cached by exact
@@ -436,13 +436,12 @@ impl CompositorRuntime {
                 // shell check covers the closing animation, which outlives
                 // the server-side session and still needs the live set to
                 // keep its fading cards.
-                let switcher_windows = if switcher_state.is_some()
-                    || self.shell.window_switcher_active()
-                {
-                    self.server.windows()
-                } else {
-                    Vec::new()
-                };
+                let switcher_windows =
+                    if switcher_state.is_some() || self.shell.window_switcher_active() {
+                        self.server.windows()
+                    } else {
+                        Vec::new()
+                    };
                 let (switcher_order, switcher_selected) = switcher_state
                     .as_ref()
                     .map(|(order, selected)| (order.as_slice(), *selected))

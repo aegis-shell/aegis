@@ -476,13 +476,21 @@ pub(super) fn drive_read_loop<H: Handler>(
                         message: "accessibility process bindings are out of scope".into(),
                     }
                 };
-                audit_capability_response(
-                    handler,
-                    &live_scope,
-                    ActorCapability::PublishAccessibilityTree,
-                    crate::journal::CapabilityUseAction::Observe,
-                    &response,
-                );
+                // The scan query is routine snapshot polling and is not
+                // durably logged (ADR-0135): it decides nothing and the
+                // published revisions it feeds are audited at
+                // `PublishAccessibilityTree`. Only a refusal — an
+                // out-of-scope process trying to bind — is an authority
+                // decision worth durable history.
+                if matches!(response, Response::Error { .. }) {
+                    audit_capability_response(
+                        handler,
+                        &live_scope,
+                        ActorCapability::PublishAccessibilityTree,
+                        crate::journal::CapabilityUseAction::Observe,
+                        &response,
+                    );
+                }
                 response
             }
             Request::PublishAccessibilityTree { update } => {
@@ -541,22 +549,37 @@ pub(super) fn drive_read_loop<H: Handler>(
                         message: "accessibility providers require an authenticated principal"
                             .into(),
                     },
-                    (true, Some(principal)) => match handler.next_accessibility_action(
-                        session.id,
-                        principal,
-                        std::time::Duration::from_millis(timeout_ms.clamp(1, 30_000)),
-                    ) {
-                        Ok(request) => Response::AccessibilityAction { request },
-                        Err(message) => Response::Error { message },
-                    },
+                    (true, Some(principal)) => {
+                        match handler.next_accessibility_action(
+                            session.id,
+                            principal,
+                            std::time::Duration::from_millis(timeout_ms.clamp(1, 30_000)),
+                        ) {
+                            Ok(request) => Response::AccessibilityAction { request },
+                            Err(message) => Response::Error { message },
+                        }
+                    }
                 };
-                audit_capability_response(
-                    handler,
-                    &live_scope,
-                    ActorCapability::DispatchAccessibilityAction,
-                    crate::journal::CapabilityUseAction::Await,
-                    &response,
-                );
+                // A timed-out long-poll is connection maintenance, not an
+                // authority decision: the provider asked for work, found
+                // none, and changed nothing. Auditing every heartbeat here
+                // writes one durable event per poll interval for the whole
+                // life of the adapter (ADR-0135) — the unbounded growth
+                // that exhausted the disk. The durable trail keeps action
+                // delivery (`Ok(Some)`) and refusals.
+                match &response {
+                    Response::AccessibilityAction { request: Some(_) } | Response::Error { .. } => {
+                        audit_capability_response(
+                            handler,
+                            &live_scope,
+                            ActorCapability::DispatchAccessibilityAction,
+                            crate::journal::CapabilityUseAction::Await,
+                            &response,
+                        );
+                    }
+                    // `Ok(None)`: the poll expired without work.
+                    _ => {}
+                }
                 response
             }
             Request::CompleteAccessibilityAction {

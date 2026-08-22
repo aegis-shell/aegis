@@ -295,3 +295,42 @@ cargo check --locked --workspace
 ```
 
 The final command verifies the tagged remote dependency graph.
+
+## Aphrodite and Optics Cross-Repository Development
+
+Aphrodite follows the same linked-worktree model with one difference
+forced by its history: the repository currently has **no remote and no
+optics Git tags** — its workspace resolves the optics Rust bindings by
+absolute local path (`.cargo/config.toml`, committed). The canonical
+mode therefore already is "local sibling" mode.
+
+Until a remote exists and the bindings move to tagged Git dependencies
+(matching the Aegis table above), the aphrodite development worktree
+only needs the environment and hook hygiene:
+
+```bash
+git worktree add -b dev ../aphrodite-dev main
+cd ../aphrodite-dev
+git config core.hooksPath .githooks
+```
+
+The expected directory layout is unchanged:
+
+```text
+projects/
+├── aphrodite/
+├── aphrodite-dev/
+└── optics/
+```
+
+Work happens on `dev` in `../aphrodite-dev`; `../aphrodite` stays on
+`main` and is advanced with `git merge --ff-only dev`. Do not point
+`CARGO_TARGET_DIR` at a shared directory — the worktrees must keep
+separate `target/` trees. The Optics Meson build directory remains a
+single shared write location: never run concurrent Meson or Ninja
+commands against `../optics/build` from both worktrees.
+
+When Aphrodite gains its remote and the optics dependencies become
+tagged Git sources, this section collapses into the table above and
+`.cargo/optics-local.toml` appears (copy it to the ignored
+`.cargo/config.toml` inside the dev worktree only).

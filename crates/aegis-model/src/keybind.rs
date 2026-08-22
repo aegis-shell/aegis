@@ -40,6 +40,15 @@ pub enum Action {
     WorkspacePrev,
     /// Toggle the current workspace between tiled and floating (ADR-0024).
     ToggleTiling,
+    /// Toggle the focused toplevel between fullscreen and its prior state.
+    ///
+    /// The compositor-side counterpart of the client's
+    /// `xdg_toplevel.set_fullscreen`/`unset_fullscreen` requests: it puts a
+    /// window that never asked for fullscreen — a windowed game, for
+    /// example — into the same output-covering, chrome-suppressing state a
+    /// native fullscreen request produces (one `XDG_TOPLEVEL_STATE_FULLSCREEN`
+    /// configure, saved floating rect restored on exit).
+    ToggleFullscreen,
     /// Open the interactive screenshot region selector.
     Screenshot,
     /// Secure the current session with the trusted lock client.
@@ -103,6 +112,7 @@ impl Keymap {
                 kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
                 kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
                 kb(Mods::SUPER, 0x74, Action::ToggleTiling),   /* 't' */
+                kb(Mods::SUPER, 0xffc8, Action::ToggleFullscreen), /* F11 */
                 kb(Mods::SUPER, b'l' as u32, Action::Lock),
                 kb(Mods::NONE, XKB_KEY_Print, Action::Screenshot), /* Print Screen */
                 kb(Mods::SUPER | Mods::CTRL, b'q' as u32, Action::Quit),
@@ -195,6 +205,7 @@ pub fn action_from_name(s: &str) -> Option<Action> {
         "workspace_next" | "next_workspace" | "ws_next" => Action::WorkspaceNext,
         "workspace_prev" | "prev_workspace" | "ws_prev" => Action::WorkspacePrev,
         "tiling" | "toggle_tiling" => Action::ToggleTiling,
+        "fullscreen" | "toggle_fullscreen" | "togglefullscreen" => Action::ToggleFullscreen,
         "screenshot" | "snapshot" | "prtsc" => Action::Screenshot,
         "lock" | "lockscreen" | "lock_screen" => Action::Lock,
         "quit" | "exit" => Action::Quit,
@@ -304,6 +315,13 @@ mod tests {
         );
         // Super+L → secure session lock.
         assert_eq!(km.match_key(Mods::SUPER, b'l' as u32), Some(Action::Lock));
+        // Super+F11 → toggle fullscreen (0xffc8).
+        assert_eq!(
+            km.match_key(Mods::SUPER, 0xffc8),
+            Some(Action::ToggleFullscreen)
+        );
+        // Bare F11 is left to the focused client (in-app fullscreen).
+        assert_eq!(km.match_key(Mods::NONE, 0xffc8), None);
         // Bare modifier keys never match (no keysym).
         assert_eq!(km.match_key(Mods::SUPER, XKB_KEY_NoSymbol), None);
     }
@@ -397,6 +415,23 @@ mod tests {
         assert_eq!(action_from_name("prism"), Some(Action::TogglePrism));
         assert_eq!(action_from_name("toggleprism"), Some(Action::TogglePrism));
         assert_eq!(action_from_name("spotlight"), Some(Action::TogglePrism));
+    }
+
+    #[test]
+    fn fullscreen_action_accepts_documented_names() {
+        assert_eq!(
+            action_from_name("fullscreen"),
+            Some(Action::ToggleFullscreen)
+        );
+        assert_eq!(
+            action_from_name("toggle_fullscreen"),
+            Some(Action::ToggleFullscreen)
+        );
+        assert_eq!(
+            action_from_name("togglefullscreen"),
+            Some(Action::ToggleFullscreen)
+        );
+        assert_eq!(action_from_name("maximize"), None);
     }
 
     #[test]

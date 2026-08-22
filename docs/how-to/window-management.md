@@ -84,6 +84,31 @@ The change applies immediately and persists as `minimize_animation` in the
 restoring a window plays the flight in reverse out of the same tile. See
 the [configuration reference](../reference/config.md#dock) for the key.
 
+## Fullscreen a Window
+
+1. Focus the window to fill the screen with.
+2. Press `Super+F11`. Press it again to return to the previous window size
+   and position.
+
+This works for any focused window, including one that never asks for
+fullscreen itself — a game that only ships a windowed mode, for example.
+The window is configured to cover the whole output, the Dock, HUD, and
+wallpaper animation stand down, and the floating geometry from before the
+fullscreen entry is restored on exit. A window the application itself put
+fullscreen (its own in-app `F11` or menu item) leaves through the same
+`Super+F11` binding.
+
+Bare `F11` stays unbound, so an application's in-app fullscreen shortcut
+keeps working unchanged. The binding is rebindable with the `fullscreen`
+action in `[[keybind]]`; see the
+[Configuration Reference](../reference/config.md#key-bindings). To fullscreen
+another window without focusing it first, use the command line:
+
+```console
+aegis window fullscreen 42 on
+aegis window fullscreen 42 off
+```
+
 ## Keep a Window on Top
 
 1. Focus the window to keep above the others.
@@ -155,6 +180,7 @@ aegis window
 aegis window focus 42
 aegis window minimize 42
 aegis window always-on-top 42 on
+aegis window fullscreen 42 on
 aegis window close 42
 ```
 

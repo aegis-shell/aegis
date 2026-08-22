@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 27, carried as length-framed JSON over the
+The aegis IPC is protocol version 30, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -174,19 +174,36 @@ Capability, lease, validation, and scope refusals are journaled even when the
 mutation never reaches the compositor main loop. Interaction Domain actions
 rejected by live state carry the unchanged revision in both revision fields.
 
+Routine capability polling is not durably audited
+([ADR-0135](../adr/0135-routine-capability-polling-is-not-durably-audited.md)).
+A timed-out `NextAccessibilityAction` long-poll (`Ok(None)`) and a
+successful `GetAccessibilityWindows` scan query decide nothing and journal
+nothing; action delivery, handler errors, and authorization refusals remain
+durable records, so steady-state audit growth is independent of session
+length.
+
 The live journal is backed by
 `$XDG_DATA_HOME/aegis/audit/events-v2.jsonl` (or the equivalent default data
 directory). The owner-only append store synchronizes successful writes and
-verifies monotonic sequence numbers, record bounds, and a SHA-256 hash chain
-when reopening. An open store also holds an exclusive advisory lock for its
-lifetime, so a second live compositor fails fast instead of interleaving
-appends from stale sequence state. Hash mismatches, unsafe ownership/mode,
-symlinks, malformed JSON, sequence gaps, or an incomplete trailing record
-fail closed. Creation also
-synchronizes the containing directory before the store is accepted, so a
-reported durable log cannot depend on an uncommitted directory entry. This is
-a durable decision/audit log, not a promise to resurrect external Wayland
-client state after compositor restart.
+verifies monotonic sequence numbers, record bounds, and a SHA-256 hash chain.
+An owner-only local key authenticates an atomic replay checkpoint at
+`events-v2.jsonl.checkpoint`; the key is
+`events-v2.jsonl.key` ([ADR-0136](../adr/0136-authenticated-bounded-audit-replay-and-storage-guards.md)).
+Normal startup authenticates the checkpoint and synchronously verifies only
+the bounded live projection plus its uncheckpointed tail. A worker still
+verifies the complete older prefix from genesis, and no new authority record
+may be appended until that scan succeeds. An existing stream without a
+checkpoint pays one complete streaming scan to establish it; replay memory
+never grows beyond the live projection plus one record.
+
+An open store holds an exclusive advisory lock for its lifetime, so a second
+live compositor fails fast instead of interleaving appends from stale
+sequence state. Hash mismatches, unsafe ownership/mode, symlinks, malformed
+JSON, sequence gaps, an incomplete trailing record, or an invalid checkpoint
+fail closed. Creation and atomic checkpoint replacement synchronize the
+containing directory, so reported durable state cannot depend on an
+uncommitted directory entry. This is a durable decision/audit log, not a
+promise to resurrect external Wayland client state after compositor restart.
 
 `XDG_DATA_HOME` or `HOME` must resolve at startup; the production runtime does
 not downgrade the audit log to memory. Security lifecycle events and
@@ -194,15 +211,25 @@ authorization refusals are persisted before their IPC response is returned.
 An append, flush, or sync failure fail-stops the entire compositor, including
 when detected on a connection worker.
 
-Aegis never deletes or silently rotates this authority history. Production
-deployments must provision a filesystem quota and an operator-controlled
-archive/export policy for `events-v2.jsonl`; archival must preserve complete
-records and chain order. If the active store cannot accept another durable
-record, fail-stop is intentional. The unkeyed chain detects corruption and
-edits that do not recompute the chain, but it is not proof against an attacker
-who controls both the log and every trusted verification copy. Deployments
+Aegis never deletes or silently rotates this authority history. Before each
+append it enforces the `[audit]` hard history ceiling (2048 MiB by default)
+and filesystem reserve (512 MiB by default). When the active stream reaches
+`[audit] segment_max_mib` it is sealed into a compressed immutable segment;
+an HMAC-authenticated manifest records every sealed segment's chain
+identity, and startup verifies each segment against it
+([ADR-0137](../adr/0137-audit-segment-manifest-and-retention.md)).
+Retention is explicit: pruning requires a configured `retain_segments`
+plus an export acknowledgement recorded by `aegis audit export`, and every
+removal is preserved in the manifest's pruned history. Production
+deployments must monitor those bounds and provide an operator-controlled,
+lossless archive/export policy; archival must preserve complete records,
+chain order, the manifest, and both checkpoint sidecars. If the active
+store cannot accept another durable record, fail-stop is intentional. The
+hash chain and local checkpoint HMAC detect accidental or blind edits under
+the owner trust model, but they are not proof against an attacker who
+controls the log, key, and every trusted verification copy. Deployments
 that require hostile-owner tamper evidence must continuously export records
-or signed checkpoints to a separately administered system.
+or independently signed anchors to a separately administered system.
 
 ## Commands
 
@@ -214,6 +241,7 @@ or signed checkpoints to a separately administered system.
 | `Move { id }` | `control` | `Move` | Window |
 | `SetWindowGeometry { id, rect }` | `control` | `SetWindowGeometry` | Window |
 | `SetAlwaysOnTop { id, on_top }` | `control` | `SetWindowGeometry` | Window |
+| `SetFullscreen { id, fullscreen }` | `control` | `SetWindowGeometry` | Window |
 | `InjectInput { id, actions }` | `input` | `InjectInput` | Window |
 | `LaunchInInteractionDomain { interaction_domain, desktop_id }` | `interaction_domain` | `LaunchInInteractionDomain` | Interaction Domain |
 | `LaunchApp { desktop_id, placement }` | `control` | `LaunchApp` | Workspace, when the placement names one |
@@ -246,7 +274,8 @@ cannot fall through to an unrelated window underneath.
 
 `Transact { expected_journal_seq?, ops }` (protocol 28, ADR-0125) is the
 Transact primitive: an ordered batch of `TransactOp`s drawn from the
-`Command` vocabulary — window focus/minimize/maximize/always-on-top/close/
+`Command` vocabulary — window focus/minimize/maximize/fullscreen/always-on-top/
+close/
 geometry, workspace switch and move, tiling, and notification post/dismiss.
 Interactive, input, capture, launch, session, and shell-owned commands stay
 outside the transaction vocabulary and keep their own request paths.

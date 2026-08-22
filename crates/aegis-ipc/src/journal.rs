@@ -58,6 +58,10 @@ pub enum AuditedCommand {
         id: aegis_model::window::WindowId,
         maximized: bool,
     },
+    SetFullscreen {
+        id: aegis_model::window::WindowId,
+        fullscreen: bool,
+    },
     SetAlwaysOnTop {
         id: aegis_model::window::WindowId,
         on_top: bool,
@@ -125,6 +129,7 @@ impl AuditedCommand {
             Self::Focus { id }
             | Self::Minimize { id }
             | Self::SetMaximized { id, .. }
+            | Self::SetFullscreen { id, .. }
             | Self::SetAlwaysOnTop { id, .. }
             | Self::Close { id }
             | Self::Move { id }
@@ -161,6 +166,10 @@ impl From<&Command> for AuditedCommand {
             Command::SetMaximized { id, maximized } => Self::SetMaximized {
                 id: *id,
                 maximized: *maximized,
+            },
+            Command::SetFullscreen { id, fullscreen } => Self::SetFullscreen {
+                id: *id,
+                fullscreen: *fullscreen,
             },
             Command::SetAlwaysOnTop { id, on_top } => Self::SetAlwaysOnTop {
                 id: *id,

@@ -14,6 +14,7 @@ path = "src/lib.rs"
 aegis-ipc = { workspace = true }
 aegis-model = { workspace = true, features = ["serde"] }
 aegis-config = { workspace = true }
+aegis-security = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zeroize.workspace = true

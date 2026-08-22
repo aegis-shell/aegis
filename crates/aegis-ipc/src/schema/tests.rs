@@ -430,6 +430,35 @@ fn set_maximized_command_round_trips_and_uses_geometry_authority() {
 }
 
 #[test]
+fn set_fullscreen_command_round_trips_and_uses_geometry_authority() {
+    let command = Command::SetFullscreen {
+        id: WindowId(42),
+        fullscreen: true,
+    };
+    let json = serde_json::to_string(&command).unwrap();
+    assert!(json.contains(r#""type":"SetFullscreen""#), "{json}");
+    assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+    assert_eq!(command.op_class(), ActorCapability::SetWindowGeometry);
+    assert!(command.required_cap().control);
+    // The TransactOp mirror maps back to the same command in both
+    // directions, so a batch op can never drift from its command.
+    let op = TransactOp::from_command(&command).expect("fullscreen op");
+    assert_eq!(op.command(), command);
+    // Scope filtering treats it like every other window-targeted geometry
+    // command: allowed with the window and op, refused without the window.
+    let scope = Scope {
+        windows: Some(vec![WindowId(42)]),
+        ops: Some(vec![ActorCapability::SetWindowGeometry]),
+        ..Scope::default()
+    };
+    assert!(scope.permits(&command));
+    assert!(!scope.permits(&Command::SetFullscreen {
+        id: WindowId(43),
+        fullscreen: true,
+    }));
+}
+
+#[test]
 fn switch_workspace_command_round_trips() {
     // A nested internally-tagged enum (Command variant carrying `Switch`).
     let cmd = Command::SwitchWorkspace { dir: Switch::Next };

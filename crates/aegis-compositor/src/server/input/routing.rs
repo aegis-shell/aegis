@@ -478,7 +478,8 @@ impl Server {
     /// (see `State::window_signature_memo`): the signature is a pure function
     /// of the surface table and `now`, so callers within one frame reuse the
     /// first evaluation instead of re-walking every surface.
-    pub fn windows_signature(&self) -> u64 {        let now = self.now_ms();
+    pub fn windows_signature(&self) -> u64 {
+        let now = self.now_ms();
         let (memo_now, memo_visible, memo_all) = self.state.window_signature_memo.get();
         if memo_now == now && memo_now != 0 {
             if memo_visible != 0 {
@@ -676,6 +677,55 @@ impl Server {
         self.change_keyboard_focus(unsafe { (*rec).resource });
         unsafe {
             (*rec).window.state.maximized = maximized;
+            reconfigure_with_state(rec);
+            ffi::wl_display_flush_clients(self.state.display);
+        }
+        true
+    }
+
+    /// Whether a live toplevel currently holds the fullscreen state bit.
+    /// The keybinding dispatcher reads this to compute the toggle target of
+    /// `Action::ToggleFullscreen`.
+    pub fn toplevel_fullscreen(&self, surface_id: aegis_model::window::WindowId) -> bool {
+        let rec = self.find_surface_by_window_id(surface_id);
+        !rec.is_null() && unsafe { (*rec).window.state.fullscreen }
+    }
+
+    /// Set or clear compositor-managed fullscreen. This is the compositor's
+    /// half of the xdg-shell fullscreen state: it flips the same
+    /// `XDG_TOPLEVEL_STATE_FULLSCREEN` bit a client's own
+    /// `set_fullscreen`/`unset_fullscreen` request would set, then runs the
+    /// shared `reconfigure_with_state` path — the window covers the whole
+    /// output (not the chrome-inset work area), the floating rect is saved on
+    /// entry and restored on exit, and the chrome-suppressing `SpaceUse`
+    /// derivation follows from the same state. A window that is already
+    /// fullscreen, minimized, or not controlled by the physical seat is a
+    /// no-op.
+    ///
+    /// Clearing fullscreen on a window that also holds the maximized bit
+    /// keeps that bit set and lands the window in the maximized rect, which
+    /// is what a client sees when it unsets fullscreen after maximizing.
+    pub fn set_toplevel_fullscreen(
+        &mut self,
+        surface_id: aegis_model::window::WindowId,
+        fullscreen: bool,
+    ) -> bool {
+        if !self.human_controls_window(surface_id) {
+            return false;
+        }
+        let rec = self.find_surface_by_window_id(surface_id);
+        if rec.is_null()
+            || unsafe {
+                (*rec).xdg_toplevel.is_null()
+                    || (*rec).window.minimized
+                    || (*rec).window.state.fullscreen == fullscreen
+            }
+        {
+            return false;
+        }
+        self.change_keyboard_focus(unsafe { (*rec).resource });
+        unsafe {
+            (*rec).window.state.fullscreen = fullscreen;
             reconfigure_with_state(rec);
             ffi::wl_display_flush_clients(self.state.display);
         }

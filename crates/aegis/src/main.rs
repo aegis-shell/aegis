@@ -54,7 +54,11 @@ fn run_session_command(cli: aegis_commands::Cli) -> ExitCode {
     aegis_logging::init("warn");
     let local_only = matches!(
         cli.command.as_ref(),
-        Some(aegis_commands::Command::Completions { .. } | aegis_commands::Command::Config { .. })
+        Some(
+            aegis_commands::Command::Completions { .. }
+                | aegis_commands::Command::Config { .. }
+                | aegis_commands::Command::Audit { .. },
+        )
     );
     let socket = if local_only {
         std::path::PathBuf::new()
