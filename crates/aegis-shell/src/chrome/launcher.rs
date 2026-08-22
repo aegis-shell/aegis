@@ -107,12 +107,10 @@ pub struct Launcher {
     design: Design,
 }
 
-#[derive(Clone, Copy, Default)]
-struct SpringState {
-    value: f32,
-    velocity: f32,
-}
-
+/// The reveal spring state, shared from `aegis-ui::motion` (ADR-0139).
+/// The launcher owns the feel (`OPEN_STIFFNESS`/`OPEN_DAMPING`); the
+/// integrator and the reduced-motion rule are written once.
+type SpringState = aegis_ui::motion::Spring;
 /// One resolved grid cell for the current frame.
 struct Cell {
     app_index: usize,
@@ -276,25 +274,20 @@ impl Launcher {
     fn advance_visibility(&mut self, target: f32, dt: f32) -> f32 {
         if self.reduced_motion {
             // ADR-0029: the reveal resolves to its end state in one frame.
-            self.visibility.value = target;
-            self.visibility.velocity = 0.0;
+            self.visibility.snap_to(target);
             self.anim_active = false;
             return target;
         }
-        let omega = OPEN_STIFFNESS.sqrt();
-        let damping = 2.0 * OPEN_DAMPING * omega;
-        let dt = dt.clamp(0.0, 1.0 / 30.0);
-        let force =
-            OPEN_STIFFNESS * (target - self.visibility.value) - damping * self.visibility.velocity;
-        self.visibility.velocity += force * dt;
-        self.visibility.value += self.visibility.velocity * dt;
+        // Shared analytic spring integrator (ADR-0139); `dt` is clamped
+        // inside. The reveal is a 0..=1 progress scalar, so the launch
+        // overshoot envelope is bounded by the clamp below as before.
+        self.visibility
+            .advance(target, OPEN_STIFFNESS, OPEN_DAMPING, dt);
         self.visibility.value = self.visibility.value.clamp(-0.04, 1.04);
 
-        self.anim_active =
-            (self.visibility.value - target).abs() > 0.002 || self.visibility.velocity.abs() > 0.02;
+        self.anim_active = !self.visibility.settled_on(target, 0.002, 0.02);
         if !self.anim_active {
-            self.visibility.value = target;
-            self.visibility.velocity = 0.0;
+            self.visibility.snap_to(target);
         }
         self.visibility.value.clamp(0.0, 1.0)
     }
@@ -397,7 +390,9 @@ impl Chrome for Launcher {
             // ADR-0029: no page-change slide.
             self.page_shift = 0.0;
         } else if self.page_shift.abs() > 0.05 {
-            self.page_shift *= (-18.0 * dt).exp();
+            // Shared exponential decay (ADR-0139); the local clamp keeps a
+            // long stall from erasing the slide in one frame.
+            self.page_shift = aegis_ui::motion::decay::toward_zero(self.page_shift, 18.0, dt);
         } else {
             self.page_shift = 0.0;
         }

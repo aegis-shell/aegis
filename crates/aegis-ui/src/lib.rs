@@ -34,7 +34,7 @@ pub use menu::{
     DEFAULT_MENU_HEADER_HEIGHT, DEFAULT_MENU_PAD, DEFAULT_MENU_ROW_HEIGHT,
     DEFAULT_MENU_SECTION_HEIGHT, DEFAULT_MENU_WIDTH, menu_item_layout, menu_panel_layout,
 };
-pub use motion::{ease_out_cubic, lerp, stagger};
+pub use motion::{Spring, approach, decay, ease_in_cubic, ease_out_cubic, frame_dt, lerp, stagger};
 pub use picker::{
     DEFAULT_DOUBLE_CLICK_TIMEOUT, DEFAULT_PICKER_ROW_HEIGHT, DEFAULT_WHEEL_SCROLL_ROWS,
     clamp_scroll_window, picker_row_layout,

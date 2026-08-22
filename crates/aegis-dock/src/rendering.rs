@@ -412,21 +412,21 @@ impl Chrome for Dock {
                     } else {
                         DOCK_TILE_BIRTH
                     },
-                    vel: 0.0,
+                    velocity: 0.0,
                 }),
             };
             // A context menu must not become a moving target. Freeze the
             // complete wave exactly where it was opened; once the menu closes,
             // the same springs resume toward the live pointer targets.
             if menu_was_open {
-                state.vel = 0.0;
+                state.velocity = 0.0;
                 eased.push(state.value);
                 continue;
             }
             if self.reduced_motion {
                 // ADR-0029: springs resolve to their target in one frame.
                 state.value = target;
-                state.vel = 0.0;
+                state.velocity = 0.0;
                 eased.push(target);
                 continue;
             }
@@ -434,7 +434,7 @@ impl Chrome for Dock {
             // A spring is still animating while it is meaningfully off its
             // target or still moving. Sub-pixel drift is ignored so we don't
             // tick forever chasing float noise.
-            let drifting = (state.value - target).abs() > 0.15 || state.vel.abs() > 0.5;
+            let drifting = (state.value - target).abs() > 0.15 || state.velocity.abs() > 0.5;
             unsettled |= drifting;
         }
         // An active drag keeps frames ticking: the preview follows the cursor

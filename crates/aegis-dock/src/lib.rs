@@ -416,15 +416,11 @@ struct TileCache {
 }
 
 /// A damped-spring state for one animated scalar (a tile's edge length).
-/// Integrated from the analytic solution each frame so it stays stable across
-/// a wide range of `dt` and produces the macOS-style slight overshoot.
-#[derive(Clone, Copy, Default)]
-struct SpringState {
-    /// Current eased value (logical px).
-    value: f32,
-    /// Current velocity (px/s).
-    vel: f32,
-}
+/// The shared analytic integrator from `aegis-ui::motion` (ADR-0139): stable
+/// across a wide range of `dt` and reproducing the macOS-style slight
+/// overshoot. The dock owns the *feel* (the `SPRING_*` constants); the math
+/// is written once for every chrome component.
+type SpringState = aegis_ui::motion::Spring;
 
 impl Dock {
     /// An empty dock. The pinned apps and decoded icons arrive through
@@ -917,32 +913,12 @@ impl Dock {
         best.map(|(_, position)| position)
     }
 
-    /// Advance a damped spring one `dt` seconds toward `target`. The exact
-    /// under-damped solution is stable at every accepted frame interval and
-    /// retains the single gentle macOS-style overshoot. `value` and `vel` are
-    /// updated in place and the new value is returned.
+    /// Advance a damped spring one `dt` seconds toward `target`. Thin
+    /// wrapper over the shared [`aegis_ui::motion::Spring`] integrator
+    /// (ADR-0139) carrying the dock's feel constants; `state` is updated in
+    /// place and the new value is returned.
     fn spring(state: &mut SpringState, target: f32, dt: f32) -> f32 {
-        // Clamp a long stall so the Dock catches up over subsequent frames
-        // instead of jumping straight to rest.
-        let dt = dt.clamp(0.0, 1.0 / 30.0);
-        if dt == 0.0 {
-            return state.value;
-        }
-
-        let displacement = state.value - target;
-        let omega0 = SPRING_STIFFNESS.sqrt();
-        let decay_rate = SPRING_DAMPING * omega0;
-        let omega_d = omega0 * (1.0 - SPRING_DAMPING * SPRING_DAMPING).sqrt();
-        let decay = (-decay_rate * dt).exp();
-        let sin = (omega_d * dt).sin();
-        let cos = (omega_d * dt).cos();
-        let velocity_term = (state.vel + decay_rate * displacement) / omega_d;
-
-        state.value = target + decay * (displacement * cos + velocity_term * sin);
-        state.vel = decay
-            * (state.vel * cos
-                - (decay_rate * state.vel + omega0 * omega0 * displacement) / omega_d * sin);
-        state.value
+        state.advance(target, SPRING_STIFFNESS, SPRING_DAMPING, dt)
     }
 
     /// The current frame's tile strip: the Launchpad tile, then every pinned

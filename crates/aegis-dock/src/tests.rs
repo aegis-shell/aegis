@@ -75,7 +75,7 @@ fn spring_approaches_target_at_rest() {
     // No time elapses → nothing moves.
     let mut s = SpringState {
         value: 10.0,
-        vel: 0.0,
+        velocity: 0.0,
     };
     assert_eq!(Dock::spring(&mut s, 20.0, 0.0), 10.0);
 }
@@ -85,7 +85,7 @@ fn spring_settles_on_target() {
     // Many small steps from rest must converge to the target.
     let mut s = SpringState {
         value: 10.0,
-        vel: 0.0,
+        velocity: 0.0,
     };
     for _ in 0..2000 {
         Dock::spring(&mut s, 20.0, 1.0 / 120.0);
@@ -99,7 +99,7 @@ fn spring_overshoots_then_settles() {
     // before settling (the macOS lift-and-bounce).
     let mut s = SpringState {
         value: 0.0,
-        vel: 0.0,
+        velocity: 0.0,
     };
     let mut overshot = false;
     for _ in 0..2000 {
@@ -117,18 +117,18 @@ fn spring_is_dt_stable() {
     // A single large step (a long frame stall) must not blow up.
     let mut s = SpringState {
         value: 0.0,
-        vel: 0.0,
+        velocity: 0.0,
     };
     let v = Dock::spring(&mut s, 100.0, 1.0 / 5.0);
     assert!(v.is_finite(), "value diverged: {v}");
-    assert!(s.vel.is_finite(), "velocity diverged: {}", s.vel);
+    assert!(s.velocity.is_finite(), "velocity diverged: {}", s.velocity);
 }
 
 #[test]
 fn spring_remains_bounded_and_settles_at_thirty_fps() {
     let mut s = SpringState {
         value: DOCK_TILE,
-        vel: 0.0,
+        velocity: 0.0,
     };
     for _ in 0..300 {
         Dock::spring(&mut s, DOCK_TILE_MAX, 1.0 / 30.0);
@@ -139,7 +139,7 @@ fn spring_remains_bounded_and_settles_at_thirty_fps() {
         );
     }
     assert!((s.value - DOCK_TILE_MAX).abs() < 0.01);
-    assert!(s.vel.abs() < 0.01);
+    assert!(s.velocity.abs() < 0.01);
 }
 
 #[test]
@@ -367,14 +367,14 @@ fn pointer_bounds_stay_at_rest_while_tiles_are_magnified() {
         "launchpad".into(),
         SpringState {
             value: DOCK_TILE_MAX,
-            vel: 0.0,
+            velocity: 0.0,
         },
     );
     dock.sizes.insert(
         "app:firefox.desktop".into(),
         SpringState {
             value: DOCK_TILE_MAX,
-            vel: 0.0,
+            velocity: 0.0,
         },
     );
 

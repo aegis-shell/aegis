@@ -12,6 +12,9 @@ build = "build.rs"
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
 aegis-shell = { workspace = true }
+# Shared motion vocabulary (ADR-0139): the magnification springs live here
+# instead of a dock-local integrator.
+aegis-ui = { workspace = true }
 lens = { workspace = true }
 # Direct dep purely so this crate's build script receives DEP_LENS_RPATHS
 # (published via the -sys crate's `links` metadata) and can re-emit the rpaths

@@ -7,6 +7,14 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- Motion mechanism is now shared instead of duplicated: the dock's tile
+  magnification wave and the launcher's reveal spring use the analytic
+  spring from `aegis-ui::motion` instead of per-component integrators
+  (ADR-0139). Motion feel is unchanged — the same stiffness, damping, and
+  settle thresholds are preserved.
+
 ## [0.0.46] - 2026-08-22
 
 ### Changed
