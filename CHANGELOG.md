@@ -7,6 +7,16 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.46] - 2026-08-22
+
+### Changed
+
+- Promoted Optics dependencies from `v0.0.23` to `v0.0.25` across all workspace
+  crates. Adopts Optics v0.0.25 C ABI size guards (`lens_desc.size`), updated
+  SONAME definitions (`libflux.so.0.0` / `liblens.so.0.0`), and resolves runtime
+  compatibility issues when running against system-installed Optics 0.0.25
+  libraries.
+
 ## [0.0.45] - 2026-08-22
 
 ### Fixed
