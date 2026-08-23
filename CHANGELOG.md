@@ -7,6 +7,15 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.47] - 2026-08-23
+
+### Changed
+
+- Promoted Optics dependencies from `v0.0.25` to `v0.0.26` across all
+  workspace crates: the canvas hot-path lock elision (per-submit pipeline
+  memo, lock-free default-sampler handle) and the continuous Wayland
+  scroll channel reaching `scroll_pixels_*`.
+
 ### Fixed
 
 - Cursor motion no longer queues behind composite frames. A cursor-only
