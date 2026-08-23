@@ -638,7 +638,11 @@ fn decode_hash(value: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut result = [0u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    // The 64-byte length guard above makes the remainder slice empty, so
+    // `as_chunks::<2>()` (clippy 1.98's chunks_exact_to_as_chunks) covers
+    // every byte.
+    let (pairs, _) = value.as_bytes().as_chunks::<2>();
+    for (index, pair) in pairs.iter().enumerate() {
         let high = decode_hex_nibble(pair[0])?;
         let low = decode_hex_nibble(pair[1])?;
         result[index] = high << 4 | low;

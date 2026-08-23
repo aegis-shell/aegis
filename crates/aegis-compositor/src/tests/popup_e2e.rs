@@ -736,7 +736,10 @@ fn dump_scene_ppm(server: &Server, path: &std::path::Path) {
     let h = rect.size.h.max(1) as usize;
     // Opaque dark backdrop stands in for the wallpaper.
     let mut out = vec![0x20u8; w * h * 4];
-    for px in out.chunks_exact_mut(4) {
+    // Length is a whole number of pixels; as_chunks_mut (clippy 1.98's
+    // chunks_exact_to_as_chunks) covers every byte.
+    let (pixels, _) = out.as_chunks_mut::<4>();
+    for px in pixels {
         px[3] = 0xff;
     }
     let frames = server.client_surface_frames();
@@ -795,7 +798,9 @@ fn dump_scene_ppm(server: &Server, path: &std::path::Path) {
         }
     }
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-    for px in out.chunks_exact(4) {
+    // as_chunks: the length is a whole number of RGBA pixels.
+    let (pixels, _) = out.as_chunks::<4>();
+    for px in pixels {
         ppm.extend_from_slice(&px[..3]);
     }
     std::fs::write(path, ppm).expect("write scene ppm");
