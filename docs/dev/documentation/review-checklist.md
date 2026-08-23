@@ -39,6 +39,9 @@ Use this checklist before approving documentation changes.
 
 - New terms are added to the glossary when the project has one.
 - New ADRs are registered in `docs/adr/index.md`.
+- Incident records are numbered, immutable, and registered in the
+  postmortem index; their lessons are also applied to the layer that
+  needs them (see [Knowledge Layers](knowledge-layers.md)).
 - Config, API, CLI, and schema changes are reflected in `docs/reference/`.
 - User-visible changes have a `CHANGELOG.md` "Unreleased" entry when the
   project uses a changelog.

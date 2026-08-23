@@ -8,6 +8,7 @@ that owns it; those surfaces correspond to the gates in
 | Change | Documentation action | Gate |
 |--------|----------------------|------|
 | Architectural decision made | Write a new ADR in `docs/adr/` | Time |
+| Incident, near-miss, or latent risk discovered | Write a numbered postmortem in `docs/dev/postmortems/`; see [Knowledge Layers](knowledge-layers.md) | Audience |
 | Development environment or test commands changed | Update `docs/dev/` | Audience |
 | Public API, CLI flag, config key, schema field, or option changed | Update `docs/reference/` | Cognitive mode |
 | New user-discoverable feature added | Add or update a how-to guide in `docs/how-to/` | Cognitive mode |
