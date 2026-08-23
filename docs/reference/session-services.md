@@ -30,6 +30,7 @@ restarting a different locker cannot take over that lock.
 | `--display-off-after SECONDS\|off` | `660` | Set or disable physical display power-off. |
 | `--suspend-after SECONDS\|off` | `1800` | Set or disable the logind suspend request. |
 | `--dim-percent 1..100` | `30` | Set the dimmed hardware-backlight percentage. |
+| `--mode balanced\|awake\|secure` | `balanced` | Select the session power mode (ADR-0140): which stages stay armed. The running coordinator also accepts a live `MODE <name>` control datagram, which re-arms without a restart. |
 | `--socket PATH` | `$XDG_RUNTIME_DIR/aegis.sock` | Select the compositor IPC socket used for output power. |
 | `--control-socket PATH` | `$XDG_RUNTIME_DIR/aegis-idle.sock` | Select the owner-only datagram control socket. |
 | `--no-logind` | off | Disable lock-before-sleep monitoring, the sleep delay inhibitor, and automatic suspend. |

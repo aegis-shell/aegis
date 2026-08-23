@@ -10,7 +10,7 @@
 
 use aegis_model::Size;
 use aegis_model::input::{
-    InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
+    InputEvent, InputStatus, PointerGestureEvent, TextInputEvent, TextInputState,
 };
 use aegis_model::output::{OutputGeometry, OutputInfo, OutputMode, Scale};
 use std::time::Duration;
@@ -97,17 +97,26 @@ pub trait Backend {
     /// without gamma tables ignore the call.
     fn set_gamma_gains(&mut self, _gains: Option<[f32; 3]>) {}
 
-    /// Install the touchpad profile and return the resulting live status.
-    fn set_touchpad_config(&mut self, config: TouchpadConfig) -> TouchpadStatus {
-        TouchpadStatus {
-            config,
-            ..TouchpadStatus::default()
+    /// Install the complete input profile (touchpad, mouse, keyboard) and
+    /// return the resulting live status.
+    fn set_input_config(&mut self, config: aegis_model::input::InputConfig) -> InputStatus {
+        InputStatus {
+            touchpad: aegis_model::input::TouchpadStatus {
+                config: config.touchpad,
+                ..aegis_model::input::TouchpadStatus::default()
+            },
+            mouse: aegis_model::input::MouseStatus {
+                config: config.mouse,
+                ..aegis_model::input::MouseStatus::default()
+            },
+            keyboard: config.keyboard,
+            ..InputStatus::default()
         }
     }
 
-    /// Describe attached touchpads and the profile currently selected.
-    fn touchpad_status(&self) -> TouchpadStatus {
-        TouchpadStatus::default()
+    /// Describe attached input devices and the profiles currently selected.
+    fn input_status(&self) -> InputStatus {
+        InputStatus::default()
     }
 
     /// Pump backend events (input, resize, redraw requests). Returns `false`

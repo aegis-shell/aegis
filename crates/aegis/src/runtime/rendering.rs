@@ -2022,17 +2022,24 @@ impl WindowShadowRenderer {
             // Physical extent: the window rect inflated by the blur
             // footprint so the Gaussian skirt fits inside the image.
             let margin = (SHADOW_BLUR_SIGMA * 3.0 + SHADOW_OFFSET_Y.abs() + 2.0) * scale;
-            let px_w = (window.size.w as f32 * scale + margin * 2.0).ceil().max(1.0) as u32;
-            let px_h = (window.size.h as f32 * scale + margin * 2.0).ceil().max(1.0) as u32;
+            let px_w = (window.size.w as f32 * scale + margin * 2.0)
+                .ceil()
+                .max(1.0) as u32;
+            let px_h = (window.size.h as f32 * scale + margin * 2.0)
+                .ceil()
+                .max(1.0) as u32;
             if self.masks.len() <= slot {
                 self.masks.resize_with(slot + 1, || None);
             }
             let rebuild = !matches!(&self.masks[slot],
                 Some(existing) if existing.size().0 == px_w && existing.size().1 == px_h);
             if rebuild {
-                let Ok(image) =
-                    flux::Image::render_target(device, px_w, px_h, flux::Format::FLUX_FORMAT_RGBA8_UNORM)
-                else {
+                let Ok(image) = flux::Image::render_target(
+                    device,
+                    px_w,
+                    px_h,
+                    flux::Format::FLUX_FORMAT_RGBA8_UNORM,
+                ) else {
                     continue;
                 };
                 self.masks[slot] = Some(image);

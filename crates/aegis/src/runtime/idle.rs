@@ -25,12 +25,12 @@ pub(super) enum IdleControl {
     Disconnect,
 }
 
-/// Reserved registry id for the session-owned "always on" toggle
-/// (`SystemAction::SetIdleInhibit`, the command panel's Always On row).
-/// Real IPC connection ids count up from 1, so `u64::MAX` can never
-/// collide; holding the toggle in the same registry keeps the two
-/// inhibitor sources folded into one effective flag — a disconnecting
-/// IPC client can never clear the panel's toggle, nor vice versa.
+/// Reserved registry id for the session-owned power mode (ADR-0140,
+/// `SystemAction::SetPowerMode`; historically the command panel's Always On
+/// row). Real IPC connection ids count up from 1, so `u64::MAX` can never
+/// collide; holding the mode in the same registry keeps the two inhibitor
+/// sources folded into one effective flag — a disconnecting IPC client can
+/// never clear the session's mode, nor vice versa.
 pub(super) const SESSION_IDLE_INHIBIT_ID: u64 = u64::MAX;
 
 /// IPC connections currently holding a global idle inhibitor.

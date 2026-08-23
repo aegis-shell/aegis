@@ -26,9 +26,10 @@ use output::*;
 
 use aegis_model::Size;
 use aegis_model::input::{
-    ButtonState, InputEvent, PointerAxis, PointerAxisFrame, PointerAxisRelativeDirection,
-    PointerAxisSource, PointerGestureEvent, TabletEvent, TabletToolInfo, TouchpadCapabilities,
-    TouchpadConfig, TouchpadScrollMethod, TouchpadStatus,
+    ButtonState, InputEvent, InputStatus, MouseCapabilities, MouseConfig, MouseStatus, PointerAxis,
+    PointerAxisFrame, PointerAxisRelativeDirection, PointerAxisSource, PointerGestureEvent,
+    TabletEvent, TabletToolInfo, TouchpadCapabilities, TouchpadConfig, TouchpadScrollMethod,
+    TouchpadStatus,
 };
 use aegis_model::output::{
     ColorPolicy, ModeSpec, OutputKind, OutputMode, Scale, automatic_scale, physical_ppi,
@@ -804,6 +805,9 @@ pub struct DrmBackend {
     /// Retained libinput handles for touchpads currently on the seat.
     touchpads: HashMap<String, Device>,
     touchpad_config: TouchpadConfig,
+    /// Retained libinput handles for plain mice (non-touchpad pointers).
+    mice: HashMap<String, Device>,
+    mouse_config: MouseConfig,
     /// The compositor's Wayland server event-loop fd, registered via
     /// `Backend::set_wakeup_fd`. Polled for readability only — the main loop
     /// dispatches the server itself once the wait wakes.
@@ -880,7 +884,38 @@ impl DrmBackend {
     }
 }
 
-fn wheel_axis(event: &PointerScrollWheelEvent, axis: Axis) -> PointerAxis {
+/// Scale one high-resolution wheel axis value (`value120`) by a scroll
+/// multiplier, keeping the three representations consistent: the continuous
+/// value (10 surface units per detent), whole steps for legacy v5–7 clients,
+/// and the original 120ths for high-resolution clients.
+///
+/// `discrete` reports only whole scaled detents — high-resolution wheels
+/// legitimately emit fractions of a detent per frame and legacy clients must
+/// not see a full click for each — except a click slowed below one detent,
+/// which still steps once so a slowed wheel never feels dead to a legacy
+/// client. A scale that rounds the frame to zero 120ths suppresses it.
+fn scaled_wheel_value(value120: i32, factor: f32) -> PointerAxis {
+    let scaled = value120 as f32 * factor;
+    let scaled120 = scaled.round() as i32;
+    if scaled120 == 0 {
+        return PointerAxis::default();
+    }
+    let whole_detents = scaled120 / 120;
+    let discrete = if whole_detents == 0 && value120.abs() >= 120 {
+        // One deliberate click, slowed below one detent: step once.
+        Some(scaled120.signum())
+    } else {
+        (whole_detents != 0).then_some(whole_detents)
+    };
+    PointerAxis {
+        value: Some(scaled / 12.0),
+        discrete,
+        value120: Some(scaled120),
+        ..PointerAxis::default()
+    }
+}
+
+fn wheel_axis(event: &PointerScrollWheelEvent, axis: Axis, factor: f32) -> PointerAxis {
     if !event.has_axis(axis) {
         return PointerAxis::default();
     }
@@ -888,22 +923,22 @@ fn wheel_axis(event: &PointerScrollWheelEvent, axis: Axis) -> PointerAxis {
     if value120 == 0 {
         return PointerAxis::default();
     }
-    PointerAxis {
-        value: Some(value120 as f32 / 12.0),
-        discrete: (value120 % 120 == 0).then_some(value120 / 120),
-        value120: Some(value120),
-        ..PointerAxis::default()
-    }
+    scaled_wheel_value(value120, factor)
 }
 
-fn sequence_axis<T: PointerScrollEvent>(event: &T, axis: Axis, inverted: bool) -> PointerAxis {
+fn sequence_axis<T: PointerScrollEvent>(
+    event: &T,
+    axis: Axis,
+    inverted: bool,
+    factor: f32,
+) -> PointerAxis {
     if !event.has_axis(axis) {
         return PointerAxis::default();
     }
-    let value = event.scroll_value(axis) as f32;
+    let value = event.scroll_value(axis) as f32 * factor;
     PointerAxis {
         value: (value != 0.0).then_some(value),
-        stop: value == 0.0,
+        stop: event.scroll_value(axis) == 0.0,
         relative_direction: (value != 0.0).then_some(if inverted {
             PointerAxisRelativeDirection::Inverted
         } else {
@@ -919,6 +954,7 @@ fn legacy_axis(
     axis: Axis,
     source: PointerAxisSource,
     inverted: bool,
+    factor: f32,
 ) -> PointerAxis {
     if !event.has_axis(axis) {
         return PointerAxis::default();
@@ -930,9 +966,9 @@ fn legacy_axis(
         .filter(|value| *value != 0);
     let value = match (source, discrete) {
         (PointerAxisSource::Wheel | PointerAxisSource::WheelTilt, Some(steps)) => {
-            steps as f32 * 10.0
+            steps as f32 * 10.0 * factor
         }
-        _ => raw,
+        _ => raw * factor,
     };
     PointerAxis {
         value: (value != 0.0).then_some(value),
@@ -988,16 +1024,22 @@ impl Backend for DrmBackend {
             .collect()
     }
 
-    fn set_touchpad_config(&mut self, config: TouchpadConfig) -> TouchpadStatus {
-        self.touchpad_config = config;
+    fn set_input_config(&mut self, config: aegis_model::input::InputConfig) -> InputStatus {
+        self.touchpad_config = config.touchpad;
         for device in self.touchpads.values_mut() {
-            Self::apply_touchpad_profile(device, config);
+            Self::apply_touchpad_profile(device, config.touchpad);
         }
-        self.current_touchpad_status()
+        self.mouse_config = config.mouse;
+        for device in self.mice.values_mut() {
+            Self::apply_mouse_profile(device, config.mouse);
+        }
+        let mut status = self.current_input_status();
+        status.keyboard = config.keyboard;
+        status
     }
 
-    fn touchpad_status(&self) -> TouchpadStatus {
-        self.current_touchpad_status()
+    fn input_status(&self) -> InputStatus {
+        self.current_input_status()
     }
 
     fn set_configured_modes(&mut self, modes: HashMap<String, ModeSpec>) {
@@ -1250,6 +1292,44 @@ impl Drop for DrmBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_scaling_keeps_value120_and_steps_consistent() {
+        // Neutral factor: one full detent unchanged.
+        let neutral = scaled_wheel_value(120, 1.0);
+        assert_eq!(neutral.value, Some(10.0));
+        assert_eq!(neutral.discrete, Some(1));
+        assert_eq!(neutral.value120, Some(120));
+        // Double speed doubles every representation.
+        let doubled = scaled_wheel_value(120, 2.0);
+        assert_eq!(doubled.value, Some(20.0));
+        assert_eq!(doubled.discrete, Some(2));
+        assert_eq!(doubled.value120, Some(240));
+        // Half a detent doubled becomes exactly one detent.
+        let fraction = scaled_wheel_value(60, 2.0);
+        assert_eq!(fraction.discrete, Some(1));
+        assert_eq!(fraction.value120, Some(120));
+        // A click slowed below one detent still steps once for legacy v5–7
+        // clients while the continuous value carries the fraction.
+        let slow = scaled_wheel_value(120, 0.5);
+        assert_eq!(slow.value, Some(5.0));
+        assert_eq!(slow.discrete, Some(1));
+        assert_eq!(slow.value120, Some(60));
+        // High-resolution fractions carry no whole step at neutral speed so
+        // legacy clients do not see one full click per fraction.
+        let fraction = scaled_wheel_value(30, 1.0);
+        assert_eq!(fraction.discrete, None);
+        assert_eq!(fraction.value120, Some(30));
+        // A fraction scaled below the reporting floor (rounds to zero 120ths)
+        // is suppressed entirely.
+        assert_eq!(scaled_wheel_value(10, 0.04), PointerAxis::default());
+        // A negative factor inverts direction (defensive; the UI range is
+        // positive).
+        let inverted = scaled_wheel_value(120, -1.0);
+        assert_eq!(inverted.value, Some(-10.0));
+        assert_eq!(inverted.discrete, Some(-1));
+        assert_eq!(inverted.value120, Some(-120));
+    }
 
     #[test]
     fn scanout_ownership_must_match_primary_plane_source() {

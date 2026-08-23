@@ -7,6 +7,41 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Cursor motion no longer queues behind composite frames. A cursor-only
+  atomic commit previously restated the primary-plane FB/CRTC and requested
+  a page-flip event, which made it participate in primary-plane
+  bookkeeping: while any composite flip was in flight the commit returned
+  `EBUSY` and pointer motion was deferred to the next render transaction —
+  serializing the hardware cursor to the composite frame rate exactly when
+  the compositor was busiest (dock animations, live backdrop effects,
+  streams, continuously updating clients) and making the pointer visibly
+  step at 60–95 fps on a 120 Hz panel. The cursor plane is now committed
+  independently: the request touches no primary-plane property, requests no
+  flip event (KMS executes commits from one file description in submission
+  order and the request restates complete cursor state, so consecutive
+  commits supersede rather than race), and plain pointer motion is landed
+  out-of-band from the render schedule instead of waiting for the next
+  render transaction to open. Software-cursor fallback, client cursor
+  surfaces, chrome pointer ownership, drags, and the session lock keep the
+  ordinary composited path.
+
+### Added
+
+- Session power modes (ADR-0140) replace the single Always On toggle's
+  blanket idle inhibition with policy over the staged idle pipeline.
+  `balanced` (the default) arms dim, lock, display-off, and suspend;
+  `secure` arms dim and lock but never blanks; `awake` arms dim only. The
+  command panel's Quick Controls compose the mode from two switches —
+  Keep Screen Awake and Automatic Lock — `aegis system power-mode <mode>`
+  selects it from the CLI, and `Command::System { action: SetPowerMode }`
+  carries it over IPC. Mode changes re-arm the coordinator's idle
+  notifications live, without a process restart. The mode is session-scoped
+  and not persisted; manual locking and lock-before-sleep apply in every
+  mode. `SystemStatus.power_mode` is additive (no protocol bump), and
+  `idle_inhibited` remains as a derived mirror for older readers.
+
 ### Changed
 
 - Motion mechanism is now shared instead of duplicated: the dock's tile
@@ -14,6 +49,37 @@ project cuts a tagged release.
   spring from `aegis-ui::motion` instead of per-component integrators
   (ADR-0139). Motion feel is unchanged — the same stiffness, damping, and
   settle thresholds are preserved.
+- Renamed the System Settings **Touchpad** page into **Input**. The single
+  `input` module now owns keyboard, mouse, and touchpad policy; the
+  placeholder `mouse` and `keyboard` routes are gone. The settings IPC
+  snapshot's `touchpad` field became `input` (`InputStatus`) and the
+  `SetTouchpad` action became `SetInput` carrying the complete
+  `InputConfig` (protocol version 31).
+
+### Added
+
+- Floating windows can now cast a **soft blurred shadow** through the new
+  Optics `flux_shadow_filter` operator (ADR-0139 / optics ADR-0074):
+  `[ui] window_shadow = "soft"` renders a rounded-rect mask per floating
+  window, blurs it on the GPU at the frame's pass boundary, and composites
+  the premultiplied shadow beneath each window tree. Focus modulates the
+  shadow's opacity. `"resize"` (default) keeps the historic 4-px stroke
+  shadow; `"none"` disables shadows entirely. Tiled, maximized, fullscreen,
+  and minimized windows never cast one. Live reload applies immediately.
+- Keyboard repeat speed and repeat delay are now configurable
+  (`[input.keyboard]`, `repeat_rate` / `repeat_delay_ms`). The compositor
+  advertises the values as `wl_keyboard.repeat_info` so clients repeat
+  locally; already-bound keyboards receive the new rate immediately. The
+  input-method keyboard grab now advertises the same policy instead of a
+  divergent hardcoded 25 cps / 600 ms pair.
+- Mouse pointer speed and scrolling are now configurable
+  (`[input.mouse]`): natural scrolling, libinput acceleration
+  (`pointer_speed`), and a wheel motion multiplier (`scroll_speed`). Plain
+  mice are retained and configured by the direct DRM backend instead of
+  being dropped at hotplug.
+- Touchpad scroll speed is now configurable
+  (`[input.touchpad] scroll_speed`), applied by the compositor to both
+  two-finger/edge sequences and high-resolution wheel motion.
 
 ## [0.0.46] - 2026-08-22
 
@@ -54,15 +120,6 @@ project cuts a tagged release.
   rotating history (ADR-0136).
 
 ### Added
-
-- Floating windows can now cast a **soft blurred shadow** through the new
-  Optics `flux_shadow_filter` operator (ADR-0139 / optics ADR-0074):
-  `[ui] window_shadow = "soft"` renders a rounded-rect mask per floating
-  window, blurs it on the GPU at the frame's pass boundary, and composites
-  the premultiplied shadow beneath each window tree. Focus modulates the
-  shadow's opacity. `"resize"` (default) keeps the historic 4-px stroke
-  shadow; `"none"` disables shadows entirely. Tiled, maximized, fullscreen,
-  and minimized windows never cast one. Live reload applies immediately.
 
 - The new startup-only `[audit]` configuration table sets
   `max_store_mib` (default 2048), `min_free_mib` (default 512),

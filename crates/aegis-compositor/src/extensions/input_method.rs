@@ -554,11 +554,12 @@ unsafe extern "C" fn input_method_grab_keyboard(
                 keyboard.keymap_size() as u32,
             );
         }
+        let repeat = (*state).keyboard_repeat;
         ffi::wl_resource_post_event(
             resource,
             ffi::ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_REPEAT_INFO,
-            25i32,
-            600i32,
+            repeat.repeat_rate as i32,
+            repeat.repeat_delay_ms as i32,
         );
         // A grab can be created while one or more modifiers are already
         // physically held. input-method-v2 has no wl_keyboard.enter-style

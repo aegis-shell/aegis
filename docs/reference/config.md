@@ -17,7 +17,7 @@ settings transactions to the compositor, which validates authority, serializes
 all configuration writes, and applies live state. Dock pin changes use the
 same serialized path.
 
-`aegis-config::ConfigStore` translates the accepted dock, touchpad, output,
+`aegis-config::ConfigStore` translates the accepted dock, input, output,
 desktop-preference, and idle-policy edits into TOML. Each edit preserves
 comments and unrelated keys, validates the complete resulting schema, flushes
 a temporary file in the same directory, and atomically replaces the
@@ -35,7 +35,7 @@ untouched.
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
 | `[hud]` | table | `enabled = true` | Whether the display-only session HUD chips are registered at startup. See [HUD](#hud). |
 | `[ui]` | table | `hicolor` icons, `default` 24 px cursor, borderless windows, full motion | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
-| `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
+| `[input.keyboard]`, `[input.mouse]`, `[input.touchpad]` | tables | repeat 25/250 ms, neutral mouse, natural touchpad | Keyboard repeat, and mouse and touchpad motion and scrolling. See [Input](#input). |
 | `[wallpaper]` | table | built-in image | Image, video, 3D, or multi-plane parallax wallpaper. See [Wallpaper](#wallpaper). |
 | `[lock_screen]` | table | cinematic layout, built-in lock artwork | Lock-screen composition and independently selected background. See [Lock Screen](#lock-screen). |
 | `[idle]` | table | dim 5 min, lock 10 min, display off 11 min, suspend 30 min | Ordered inactivity, session-lock, display-power, and suspend policy. See [Idle and Locking](#idle-and-locking). |
@@ -230,14 +230,49 @@ follow the freedesktop Icon Theme Specification.
 effects do not override it. Changes to `window_decorations` reconfigure
 existing decoration-aware Wayland windows as well as newly created windows.
 
-## Touchpad
+## Input
 
-The `[input.touchpad]` table is applied live to every libinput touchpad in a
-direct DRM session. The command panel's Touchpad tab submits this profile to
-the compositor,
-which persists it without replacing comments or unrelated sections. In a
-nested session the outer compositor owns the physical device, so changes are
-saved for the next direct session.
+The `[input]` section carries the seat's device policy in three tables:
+`[input.keyboard]`, `[input.mouse]`, and `[input.touchpad]`. The command
+panel's Input tab submits the complete profile to the compositor, which
+persists it without replacing comments or unrelated sections. In a nested
+session the outer compositor owns the physical devices, so changes are saved
+for the next direct session.
+
+### Keyboard
+
+The compositor does not repeat keys itself; it advertises these values as
+`wl_keyboard.repeat_info` and clients repeat locally.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `repeat_rate` | integer | `25` | Repeats per second, `0` to disable repetition. At most `150`. |
+| `repeat_delay_ms` | integer | `250` | Milliseconds a key is held before repeating starts. `1`–`2000`. |
+
+```toml
+[input.keyboard]
+repeat_rate = 30
+repeat_delay_ms = 200
+```
+
+### Mouse
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `natural_scroll` | boolean | `false` | Move content in the same direction as the wheel. |
+| `pointer_speed` | float | `0.0` | libinput acceleration speed from `-1.0` (slowest) to `1.0` (fastest). |
+| `scroll_speed` | float | `1.0` | Multiplier applied to wheel motion. `0.1`–`10.0`; `1.0` leaves device motion untouched. |
+
+```toml
+[input.mouse]
+natural_scroll = false
+pointer_speed = 0.0
+scroll_speed = 1.0
+```
+
+### Touchpad
+
+Applied live to every libinput touchpad in a direct DRM session.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -247,6 +282,7 @@ saved for the next direct session.
 | `drag_lock` | boolean | `false` | Keep a tap-drag active briefly after the finger lifts. |
 | `disable_while_typing` | boolean | `true` | Suppress accidental touchpad input while typing. |
 | `pointer_speed` | float | `0.0` | libinput acceleration speed from `-1.0` (slowest) to `1.0` (fastest). |
+| `scroll_speed` | float | `1.0` | Multiplier applied to touchpad scroll motion. `0.1`–`10.0`. |
 | `scroll_method` | string | `"two-finger"` | `"two-finger"` or `"edge"`. Unsupported methods fall back to one supported by the device. |
 
 ```toml
@@ -257,6 +293,7 @@ tap_and_drag = true
 drag_lock = false
 disable_while_typing = true
 pointer_speed = 0.2
+scroll_speed = 1.0
 scroll_method = "two-finger"
 ```
 
@@ -300,11 +337,23 @@ Per-surface `zwp_idle_inhibit_v1` inhibitors and authorized portal
 those inhibitors. Activity restores a dimmed backlight and wakes powered-down
 outputs behind the lock.
 
-The command panel's System tab (`Super+S`) offers two related controls:
+The command panel's Quick Controls (`Super+S`) offer the related controls:
 Lock Now locks the session immediately through the same path as `Super+L`,
-and Always On holds a session-wide idle inhibitor that keeps every stage
-resumed until it is switched off. Always On is a session toggle; it is not
-persisted to this file.
+and the two session switches compose into the session power mode
+(ADR-0140): *Keep Screen Awake* is the display axis (never blank) and
+*Automatic Lock* is the security axis. The three resulting modes:
+
+| Mode | Dim | Lock | Display off | Suspend |
+|------|-----|------|-------------|---------|
+| `balanced` (default) | ✓ | ✓ | ✓ | ✓ |
+| `awake` | ✓ | — | — | — |
+| `secure` | ✓ | ✓ | — | — |
+
+The mode is a session toggle; it is not persisted to this file. Manual
+locking (`Super+L`, Lock Now) and lock-before-sleep apply in every mode.
+Switching modes changes which stages are armed without restarting the idle
+coordinator. `aegis system power-mode <mode>` selects the same mode from
+the CLI.
 
 In a nested session, locking remains active but the outer desktop retains
 brightness, physical output-power, and suspend ownership. The dim,

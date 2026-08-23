@@ -608,8 +608,8 @@ impl CommandPanel {
                 "appearance" => Icon::PenTool,
                 "dock" => Icon::Sidebar,
                 "power" => Icon::Zap,
-                "touchpad" | "mouse" => Icon::MousePointer,
-                "keyboard" | "keybindings" => Icon::Edit,
+                "input" | "touchpad" | "mouse" | "keyboard" => Icon::MousePointer,
+                "keybindings" => Icon::Edit,
                 "users" | "persona" => Icon::Users,
                 "window-rules" => Icon::Grid,
                 "network" | "wifi" => Icon::Globe,
@@ -1144,13 +1144,35 @@ impl CommandPanel {
                             }
                             f.spacer(4.0);
 
-                            // The daily toggles: always-on and
-                            // do-not-disturb as switch rows.
+                            // The daily toggles: keep-awake, automatic
+                            // locking, and do-not-disturb as switch rows.
+                            // The first two compose into the session power
+                            // mode (ADR-0140): keep-awake is the display
+                            // axis (never blank), auto-lock is the security
+                            // axis. "No auto-lock" projects onto Awake: the
+                            // security boundary forbids blanking or
+                            // suspending an unlocked session, so dimming is
+                            // the strongest idle response left.
                             group_header(f, i18n.text(Message::Session));
-                            let mut always_on = status.idle_inhibited;
-                            if f.switch(i18n.text(Message::AlwaysOn), &mut always_on) {
+                            let mode = status.power_mode;
+                            let keep_awake = !mode.blanks_display();
+                            let mut keep_awake_value = keep_awake;
+                            if f.switch(i18n.text(Message::KeepAwake), &mut keep_awake_value)
+                                && keep_awake_value != keep_awake
+                            {
+                                let next =
+                                    power_mode_for(keep_awake_value, mode.locks_automatically());
                                 out.system_actions
-                                    .push(SystemAction::SetIdleInhibit { inhibit: always_on });
+                                    .push(SystemAction::SetPowerMode { mode: next });
+                            }
+                            let auto_lock = mode.locks_automatically();
+                            let mut auto_lock_value = auto_lock;
+                            if f.switch(i18n.text(Message::AutoLock), &mut auto_lock_value)
+                                && auto_lock_value != auto_lock
+                            {
+                                let next = power_mode_for(keep_awake, auto_lock_value);
+                                out.system_actions
+                                    .push(SystemAction::SetPowerMode { mode: next });
                             }
                             let mut do_not_disturb = status.do_not_disturb;
                             if f.switch(i18n.text(Message::DoNotDisturb), &mut do_not_disturb) {
@@ -1717,5 +1739,25 @@ impl CommandPanel {
             }
             None => {}
         }
+    }
+}
+
+/// Project the two Quick Controls toggles onto the session power mode
+/// (ADR-0140).
+///
+/// `keep_awake` is the display axis ("never blank the screen"); `auto_lock`
+/// is the security axis ("lock on schedule"). The one combination the
+/// security boundary forbids — an unlocked session that blanks — projects
+/// onto [`aegis_model::power::PowerMode::Awake`]: with no automatic lock there is nothing to
+/// power off or suspend behind, so dimming is the strongest idle response
+/// the pipeline may keep. The toggles then read the mode back honestly:
+/// "keep awake" shows on (the display indeed never blanks) even though the
+/// user turned it off, telling them the security axis won the conflict.
+pub(crate) fn power_mode_for(keep_awake: bool, auto_lock: bool) -> aegis_model::power::PowerMode {
+    use aegis_model::power::PowerMode;
+    match (keep_awake, auto_lock) {
+        (false, true) => PowerMode::Balanced,
+        (true, true) => PowerMode::Secure,
+        (_, false) => PowerMode::Awake,
     }
 }

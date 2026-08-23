@@ -1509,6 +1509,10 @@ pub(crate) struct State {
     /// Accessibility reduced-motion policy (ADR-0029): when true, window
     /// transitions resolve in one frame and none are recorded.
     reduced_motion: bool,
+    /// Keyboard repeat policy advertised as `wl_keyboard.repeat_info`
+    /// (`[input.keyboard]`). Clients repeat locally from these values; the
+    /// compositor itself does not repeat keys (ADR-0010).
+    pub(crate) keyboard_repeat: aegis_model::input::KeyboardConfig,
     /// The configured minimize flight style (`[dock] minimize_animation`).
     pub(crate) minimize_animation: aegis_model::dock::MinimizeAnimationStyle,
     /// Resting dock-icon rectangles per window, pushed by the shell every

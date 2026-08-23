@@ -227,6 +227,10 @@ pub struct TouchpadConfig {
     pub disable_while_typing: bool,
     /// libinput pointer acceleration in the inclusive range `-1.0..=1.0`.
     pub pointer_speed: f32,
+    /// Multiplier applied to touchpad scroll motion, `1.0` leaving device
+    /// motion untouched. Applied by the compositor; libinput has no
+    /// equivalent device setting.
+    pub scroll_speed: f32,
     /// Gesture used to produce scroll events.
     pub scroll_method: TouchpadScrollMethod,
 }
@@ -240,9 +244,90 @@ impl Default for TouchpadConfig {
             drag_lock: false,
             disable_while_typing: true,
             pointer_speed: 0.0,
+            scroll_speed: 1.0,
             scroll_method: TouchpadScrollMethod::TwoFinger,
         }
     }
+}
+
+/// Multiplier range accepted for scroll-speed settings, shared by the mouse
+/// and touchpad profiles so validation and the settings UI stay in sync.
+pub const SCROLL_SPEED_RANGE: std::ops::RangeInclusive<f32> = 0.1..=10.0;
+
+/// User-selected mouse policy.
+///
+/// Like [`TouchpadConfig`], this stays backend-agnostic: configuration, the
+/// settings UI, and libinput exchange the same value. `pointer_speed` and
+/// `natural_scroll` map onto libinput device settings; `scroll_speed` has no
+/// libinput counterpart and is applied by the compositor when it translates
+/// wheel motion into `wl_pointer` axis frames.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MouseConfig {
+    /// Make content follow the wheel instead of the scrollbar thumb.
+    pub natural_scroll: bool,
+    /// libinput pointer acceleration in the inclusive range `-1.0..=1.0`.
+    pub pointer_speed: f32,
+    /// Wheel scroll multiplier, `1.0` leaving device motion untouched.
+    pub scroll_speed: f32,
+}
+
+impl Default for MouseConfig {
+    fn default() -> Self {
+        Self {
+            natural_scroll: false,
+            pointer_speed: 0.0,
+            scroll_speed: 1.0,
+        }
+    }
+}
+
+/// Longest accepted keyboard repeat delay, in milliseconds.
+pub const MAX_REPEAT_DELAY_MS: u32 = 2_000;
+/// Fastest accepted keyboard repeat rate, in repeats per second.
+pub const MAX_REPEAT_RATE: u32 = 150;
+
+/// User-selected keyboard policy.
+///
+/// The compositor does not repeat keys itself; it advertises these values as
+/// `wl_keyboard.repeat_info` so clients repeat locally (ADR-0010). A rate of
+/// zero disables repetition.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardConfig {
+    /// Repeats per second, `0` to disable repetition.
+    pub repeat_rate: u32,
+    /// Milliseconds a key must be held before repeating starts.
+    pub repeat_delay_ms: u32,
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        // Weston and Mutter's out-of-the-box defaults.
+        Self {
+            repeat_rate: 25,
+            repeat_delay_ms: 250,
+        }
+    }
+}
+
+/// Complete `[input]` policy for the seat: keyboard, mouse, and touchpad.
+///
+/// The settings UI edits and persists this as one domain ("Input"), so a
+/// single transaction always carries a coherent profile for every device
+/// class.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct InputConfig {
+    /// Written as `[input.touchpad]`.
+    pub touchpad: TouchpadConfig,
+    /// Written as `[input.mouse]`.
+    pub mouse: MouseConfig,
+    /// Written as `[input.keyboard]`.
+    pub keyboard: KeyboardConfig,
 }
 
 /// Features supported by the currently attached touchpad set.
@@ -274,6 +359,44 @@ impl TouchpadStatus {
     pub fn device_count(&self) -> usize {
         self.device_names.len()
     }
+}
+
+/// Features supported by the currently attached mouse set.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MouseCapabilities {
+    pub natural_scroll: bool,
+    pub pointer_speed: bool,
+}
+
+/// Live mouse state exposed to shell settings, mirroring
+/// [`TouchpadStatus`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MouseStatus {
+    /// Whether this compositor directly owns the physical input devices.
+    pub configurable: bool,
+    pub device_names: Vec<String>,
+    pub capabilities: MouseCapabilities,
+    pub config: MouseConfig,
+}
+
+impl MouseStatus {
+    pub fn device_count(&self) -> usize {
+        self.device_names.len()
+    }
+}
+
+/// Live input state for the whole seat, exposed to shell settings: the
+/// touchpad and mouse device sets plus the keyboard profile.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InputStatus {
+    /// Whether this compositor directly owns the physical input devices.
+    pub configurable: bool,
+    pub touchpad: TouchpadStatus,
+    pub mouse: MouseStatus,
+    pub keyboard: KeyboardConfig,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -730,6 +853,20 @@ mod tests {
     #[test]
     fn touchpad_defaults_to_natural_scrolling() {
         assert!(TouchpadConfig::default().natural_scroll);
+    }
+
+    #[test]
+    fn input_defaults_match_documented_values() {
+        let input = InputConfig::default();
+        assert_eq!(input.touchpad, TouchpadConfig::default());
+        assert_eq!(input.mouse, MouseConfig::default());
+        assert!(!input.mouse.natural_scroll);
+        assert_eq!(input.mouse.scroll_speed, 1.0);
+        assert_eq!(input.keyboard, KeyboardConfig::default());
+        // Weston/Mutter defaults (ADR-0010).
+        assert_eq!(input.keyboard.repeat_rate, 25);
+        assert_eq!(input.keyboard.repeat_delay_ms, 250);
+        assert_eq!(input.touchpad.scroll_speed, 1.0);
     }
 
     #[test]

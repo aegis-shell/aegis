@@ -5,7 +5,7 @@
 //! of truth is the corresponding system service, not the compositor config.
 
 use crate::Point;
-use crate::input::{TouchpadConfig, TouchpadStatus};
+use crate::input::InputStatus;
 use crate::output::{ModeSpec, OutputInfo};
 
 /// Desktop-wide color-scheme preference, using the freedesktop Settings
@@ -294,7 +294,7 @@ pub struct DisplaySettings {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SettingsSnapshot {
     pub revision: u64,
-    pub touchpad: TouchpadStatus,
+    pub input: InputStatus,
     pub display: DisplayStatus,
     pub preferences: DesktopPreferences,
     pub idle: IdleSettings,
@@ -306,7 +306,7 @@ pub struct SettingsSnapshot {
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsAction {
-    SetTouchpad { config: TouchpadConfig },
+    SetInput { config: crate::input::InputConfig },
     SetDisplay { settings: DisplaySettings },
     SetDesktopPreferences { preferences: DesktopPreferences },
     SetIdle { settings: IdleSettings },
@@ -318,11 +318,36 @@ impl SettingsAction {
     /// membership remain authoritative main-loop work.
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
-            Self::SetTouchpad { config }
-                if !config.pointer_speed.is_finite()
-                    || !(-1.0..=1.0).contains(&config.pointer_speed) =>
-            {
-                Err("touchpad pointer speed is outside -1.0..=1.0")
+            Self::SetInput { config } => {
+                if !config.touchpad.pointer_speed.is_finite()
+                    || !(-1.0..=1.0).contains(&config.touchpad.pointer_speed)
+                {
+                    return Err("touchpad pointer speed is outside -1.0..=1.0");
+                }
+                if !config.touchpad.scroll_speed.is_finite()
+                    || !crate::input::SCROLL_SPEED_RANGE.contains(&config.touchpad.scroll_speed)
+                {
+                    return Err("touchpad scroll speed is outside 0.1..=10.0");
+                }
+                if !config.mouse.pointer_speed.is_finite()
+                    || !(-1.0..=1.0).contains(&config.mouse.pointer_speed)
+                {
+                    return Err("mouse pointer speed is outside -1.0..=1.0");
+                }
+                if !config.mouse.scroll_speed.is_finite()
+                    || !crate::input::SCROLL_SPEED_RANGE.contains(&config.mouse.scroll_speed)
+                {
+                    return Err("mouse scroll speed is outside 0.1..=10.0");
+                }
+                if config.keyboard.repeat_rate > crate::input::MAX_REPEAT_RATE {
+                    return Err("keyboard repeat rate is above 150 repeats per second");
+                }
+                if config.keyboard.repeat_delay_ms == 0
+                    || config.keyboard.repeat_delay_ms > crate::input::MAX_REPEAT_DELAY_MS
+                {
+                    return Err("keyboard repeat delay is outside 1..=2000 ms");
+                }
+                Ok(())
             }
             Self::SetDisplay { settings }
                 if settings.connector.trim().is_empty() || settings.connector.len() > 128 =>
@@ -367,11 +392,53 @@ mod tests {
 
     #[test]
     fn action_validation_rejects_unbounded_values() {
-        let config = TouchpadConfig {
+        let config = crate::input::TouchpadConfig {
             pointer_speed: 1.5,
             ..Default::default()
         };
-        assert!(SettingsAction::SetTouchpad { config }.validate().is_err());
+        assert!(
+            SettingsAction::SetInput {
+                config: crate::input::InputConfig {
+                    touchpad: config,
+                    ..Default::default()
+                },
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SettingsAction::SetInput {
+                config: crate::input::InputConfig {
+                    mouse: crate::input::MouseConfig {
+                        scroll_speed: 0.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SettingsAction::SetInput {
+                config: crate::input::InputConfig {
+                    keyboard: crate::input::KeyboardConfig {
+                        repeat_rate: 500,
+                        repeat_delay_ms: 250,
+                    },
+                    ..Default::default()
+                },
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SettingsAction::SetInput {
+                config: crate::input::InputConfig::default(),
+            }
+            .validate()
+            .is_ok()
+        );
 
         let display = DisplaySettings {
             connector: "DP-1".into(),

@@ -147,3 +147,4 @@ background and how the decisions fit together, see
 | [0137](0137-audit-segment-manifest-and-retention.md) | Audit segment manifest and explicit retention (amends [0104](0104-actor-sessions-resource-grants-and-accessibility-adapter.md), [0136](0136-authenticated-bounded-audit-replay-and-storage-guards.md)) | Accepted |
 | [0138](0138-the-input-settings-domain.md) | The Input settings domain (amends [0049](0049-standalone-modular-control-center.md), [0056](0056-system-settings-identity-and-boundary.md), [0010](0010-keyboard-pipeline-and-xkbcommon-ownership.md); IPC protocol 31) | Accepted |
 | [0139](0139-animation-effect-placement.md) | Animation effect placement — Optics mechanism, Aegis policy (amends [0029](0029-animation-and-effect-policy.md)) | Accepted |
+| [0140](0140-session-power-modes.md) | Session power modes over the staged idle pipeline (amends [0078](0078-out-of-process-idle-and-session-lock.md)) | Accepted |

@@ -89,9 +89,20 @@ fn settings_query_and_confirmed_transaction_round_trip() {
 
     let before = client.settings().expect("settings snapshot");
     assert_eq!(before.revision, 7);
-    let mut config = before.touchpad.config;
+    let mut config = before.input.touchpad.config;
     config.natural_scroll = !config.natural_scroll;
-    let action = SettingsAction::SetTouchpad { config };
+    let config = aegis_model::input::InputConfig {
+        touchpad: config,
+        mouse: aegis_model::input::MouseConfig {
+            scroll_speed: 2.0,
+            ..before.input.mouse.config
+        },
+        keyboard: aegis_model::input::KeyboardConfig {
+            repeat_rate: 40,
+            ..before.input.keyboard
+        },
+    };
+    let action = SettingsAction::SetInput { config };
     let receipt = client
         .apply_settings(Some(before.revision), action.clone())
         .expect("confirmed apply");
@@ -100,7 +111,12 @@ fn settings_query_and_confirmed_transaction_round_trip() {
         handler.settings_actions.lock().unwrap().as_slice(),
         std::slice::from_ref(&action)
     );
-    assert_eq!(client.settings().unwrap().touchpad.config, config);
+    assert_eq!(
+        client.settings().unwrap().input.touchpad.config,
+        config.touchpad
+    );
+    assert_eq!(client.settings().unwrap().input.mouse.config, config.mouse);
+    assert_eq!(client.settings().unwrap().input.keyboard, config.keyboard);
 
     let preferences = aegis_model::settings::DesktopPreferences {
         color_scheme: aegis_model::settings::ColorScheme::Dark,
@@ -243,8 +259,8 @@ fn settings_transaction_rejects_stale_revision() {
     let error = client
         .apply_settings(
             Some(6),
-            SettingsAction::SetTouchpad {
-                config: aegis_model::input::TouchpadConfig::default(),
+            SettingsAction::SetInput {
+                config: aegis_model::input::InputConfig::default(),
             },
         )
         .unwrap_err();
@@ -261,8 +277,8 @@ fn settings_mutation_requires_session_capability_and_is_audited() {
     let error = client
         .apply_settings(
             None,
-            SettingsAction::SetTouchpad {
-                config: aegis_model::input::TouchpadConfig::default(),
+            SettingsAction::SetInput {
+                config: aegis_model::input::InputConfig::default(),
             },
         )
         .unwrap_err();

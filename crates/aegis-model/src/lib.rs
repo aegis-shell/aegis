@@ -20,6 +20,7 @@ pub mod night_light;
 pub mod notify;
 pub mod output;
 pub mod overview;
+pub mod power;
 pub mod semantic;
 pub mod settings;
 pub mod system;

@@ -1762,7 +1762,10 @@ unsafe extern "C" fn surface_damage(
         if rec.is_null() || w <= 0 || h <= 0 {
             return;
         }
-        push_pending_damage(&mut (*rec).pending_damage, aegis_model::Rect::new(x, y, w, h));
+        push_pending_damage(
+            &mut (*rec).pending_damage,
+            aegis_model::Rect::new(x, y, w, h),
+        );
     }
 }
 
@@ -2047,7 +2050,10 @@ unsafe extern "C" fn region_add(
     unsafe {
         let region = ffi::wl_resource_get_user_data(resource) as *mut RegionRec;
         if !region.is_null() && width > 0 && height > 0 {
-            push_region_rect(&mut (*region).rects, aegis_model::Rect::new(x, y, width, height));
+            push_region_rect(
+                &mut (*region).rects,
+                aegis_model::Rect::new(x, y, width, height),
+            );
         }
     }
 }

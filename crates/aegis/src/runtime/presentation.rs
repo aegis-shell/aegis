@@ -10,6 +10,106 @@ mod capture;
 use capture::FrameCapture;
 
 impl CompositorRuntime {
+    /// Land a pointer-motion cursor update on the hardware cursor plane
+    /// without rendering a frame.
+    ///
+    /// This is the out-of-band half of the pointer fast path
+    /// (ADR-0101): the backend's cursor-only atomic commit is independent
+    /// of an in-flight primary-plane flip, so it is issued directly from
+    /// the input path while a composite frame is still owned by KMS. The
+    /// render transaction (`render_and_present`) performs the same commit
+    /// when it reaches presentation with no other damage, which keeps the
+    /// two halves consistent without a shared baseline protocol.
+    ///
+    /// Returns `Ok(false)` when the cursor plane was not updated (software
+    /// cursor, session locked, sprite unavailable, or the plane hidden) —
+    /// callers must not treat that as an error, the composite path repaints
+    /// the software cursor as before.
+    pub(super) fn present_pointer_cursor(&mut self, state: &FrameState) -> bool {
+        if state.session_locked || !self.host.supports_hardware_cursor() || !self.host.is_active() {
+            return false;
+        }
+        let cursor_hidden = state.cursor_hidden;
+        let cursor_shape = state.cursor_shape;
+        if cursor_hidden {
+            // Hiding is itself a cursor-plane commit the render path
+            // performs (FB_ID 0); a hidden cursor needs no position update.
+            return false;
+        }
+        // Re-arm a rejected cursor plane opportunistically; when the backoff
+        // has elapsed, this out-of-band commit is the probe. A renewed
+        // rejection disables the plane inside the backend and the render
+        // path repaints the software cursor.
+        self.host.poll_hardware_cursor_retry();
+        let scale = self
+            .server
+            .output_infos()
+            .first()
+            .map(|o| o.geometry.scale.as_f32())
+            .filter(|s| *s > 0.0)
+            .unwrap_or_else(|| self.host.scale());
+        let cursor_position = (
+            (self.input_acc.cursor.0 * scale).round() as i32,
+            (self.input_acc.cursor.1 * scale).round() as i32,
+        );
+        let Some((pixels, size, hotspot)) = self
+            .cursor_cache
+            .get(&self.device, cursor_shape, scale)
+            .map(|cursor| {
+                (
+                    std::sync::Arc::clone(&cursor.pixels),
+                    (cursor.width as u32, cursor.height as u32),
+                    (cursor.xhot as u32, cursor.yhot as u32),
+                )
+            })
+        else {
+            // Sprite rasterization failed: the render path owns the
+            // fallback decision (disable + software cursor).
+            return false;
+        };
+        // Same sprite, hotspot, and position as the last committed cursor:
+        // the plane already shows exactly this state.
+        if self.damage.last_presented_cursor == Some((cursor_shape, cursor_hidden))
+            && self.damage.last_presented_cursor_position == Some(cursor_position)
+            && self.damage.last_presented_cursor_hotspot == Some(hotspot)
+            && self.damage.last_presented_cursor_pixels == Some(size)
+        {
+            return true;
+        }
+        if !self.host.set_hardware_cursor(Some(HardwareCursor {
+            pixels: &pixels,
+            size,
+            hotspot,
+            position: cursor_position,
+        })) {
+            // The backend rejected the sprite or disabled the plane; the
+            // render path repaints the software cursor.
+            return false;
+        }
+        // Deliberately not vetoed by live output streams (ADR-0130): this
+        // commit occupies no primary-plane flip, so it cannot delay a
+        // stream-paced composite, and stream captures sample the cursor
+        // at their own cadence either way. The physical pointer stops
+        // riding the stream's frame rate.
+        match self.host.present_cursor() {
+            Ok(()) => {
+                self.damage.last_present_minute = Some(wall_clock_minute());
+                self.damage.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                self.damage.last_presented_cursor_position = Some(cursor_position);
+                self.damage.last_presented_cursor_hotspot = Some(hotspot);
+                self.damage.last_presented_cursor_pixels = Some(size);
+                true
+            }
+            Err(_) => {
+                // Busy/Inactive/Reconfigured: the plane state is unchanged
+                // and the composite path restates cursor properties with its
+                // next commit, so the delta is not lost. Fallback decisions
+                // stay with the render path.
+                false
+            }
+        }
+    }
+
     pub(super) fn render_and_present(
         &mut self,
         state: FrameState,
@@ -21,6 +121,7 @@ impl CompositorRuntime {
             cursor_shape,
             had_input,
             input_pointer_only,
+            cursor_fast_path: _,
             mut pending_screenshots,
         } = state;
         // Scene colors track the desktop appearance: the shell's design
@@ -536,40 +637,38 @@ impl CompositorRuntime {
                     .as_ref()
                     .map(|c| c.ui.window_shadow)
                     .unwrap_or_default();
-                let rendered_shadows = if shadow_style
-                    == aegis_model::window::WindowShadowStyle::Soft
-                {
-                    let windows = self.server.render_windows();
-                    self.window_shadows.prepare(
-                        &self.device,
-                        &self.canvas,
-                        &frame,
-                        &windows,
-                        scale,
-                        shadow_style,
-                    )
-                } else {
-                    Vec::new()
-                };
+                let rendered_shadows =
+                    if shadow_style == aegis_model::window::WindowShadowStyle::Soft {
+                        let windows = self.server.render_windows();
+                        self.window_shadows.prepare(
+                            &self.device,
+                            &self.canvas,
+                            &frame,
+                            &windows,
+                            scale,
+                            shadow_style,
+                        )
+                    } else {
+                        Vec::new()
+                    };
                 // Borrow the raw effect outputs as draw-only entries for the
                 // renderer. The images stay valid for this frame: the filter
                 // slot is not applied again until the next rotation, after
                 // this frame submits (ADR-0074 lifetime).
-                let soft_shadow_entries: Vec<aegis_render::SoftShadowEntry<'_>> =
-                    rendered_shadows
-                        .iter()
-                        .map(|shadow| aegis_render::SoftShadowEntry {
-                            window: shadow.window,
-                            raw: shadow.raw,
-                            _borrow: std::marker::PhantomData,
-                            x: shadow.x,
-                            y: shadow.y,
-                            w: shadow.w,
-                            h: shadow.h,
-                        })
-                        .collect();
-                let soft_shadow_layer = (!soft_shadow_entries.is_empty())
-                    .then(|| aegis_render::SoftShadowLayer {
+                let soft_shadow_entries: Vec<aegis_render::SoftShadowEntry<'_>> = rendered_shadows
+                    .iter()
+                    .map(|shadow| aegis_render::SoftShadowEntry {
+                        window: shadow.window,
+                        raw: shadow.raw,
+                        _borrow: std::marker::PhantomData,
+                        x: shadow.x,
+                        y: shadow.y,
+                        w: shadow.w,
+                        h: shadow.h,
+                    })
+                    .collect();
+                let soft_shadow_layer =
+                    (!soft_shadow_entries.is_empty()).then(|| aegis_render::SoftShadowLayer {
                         entries: soft_shadow_entries.as_slice(),
                     });
                 // Restrict the backdrop capture to the union of the declared
@@ -1961,6 +2060,7 @@ impl CompositorRuntime {
                             &self.notif_queue,
                             &mut self.system_status,
                             &mut self.ipc_idle_inhibits,
+                            &mut self.idle_process,
                             action,
                         ) {
                             Ok(()) => {

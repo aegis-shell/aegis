@@ -19,12 +19,14 @@ pub(super) fn publish_system_status_parts(
 /// Host commands are spawned without blocking the compositor. The status
 /// snapshot is updated optimistically and the status poller reconciles it
 /// against the host service immediately afterwards.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_system_action(
     server: &mut aegis_compositor::Server,
     host: &mut aegis_backend::host::Host,
     notifications: &std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
     status: &mut aegis_model::system::SystemStatus,
     idle_inhibits: &mut super::idle::IdleInhibits,
+    idle_process: &mut super::session::IdleProcess,
     action: aegis_model::system::SystemAction,
 ) -> Result<(), String> {
     use aegis_model::system::SystemAction;
@@ -88,15 +90,18 @@ pub(super) fn apply_system_action(
             host.set_outputs_powered(powered)?;
         }
         SystemAction::SetIdleInhibit { inhibit } => {
-            // The session-owned "always on" toggle: held in the same
-            // registry as connection-scoped IPC inhibitors under a reserved
-            // id, so both sources fold into one effective flag and a
-            // disconnecting IPC client can never clear the panel's toggle.
-            // The status snapshot mirrors the session toggle only, so the
-            // command panel's checkbox tracks the user's own setting.
-            let effective = idle_inhibits.set(super::idle::SESSION_IDLE_INHIBIT_ID, inhibit);
-            server.set_ipc_idle_inhibit(effective);
-            status.idle_inhibited = inhibit;
+            // Legacy single-bit shape (ADR-0140 maps it onto the mode):
+            // "inhibit" meant "keep every stage resumed", which is exactly
+            // the Awake mode; releasing returns to the balanced default.
+            let mode = if inhibit {
+                aegis_model::power::PowerMode::Awake
+            } else {
+                aegis_model::power::PowerMode::Balanced
+            };
+            apply_power_mode(server, status, idle_inhibits, idle_process, mode);
+        }
+        SystemAction::SetPowerMode { mode } => {
+            apply_power_mode(server, status, idle_inhibits, idle_process, mode);
         }
     }
     Ok(())
@@ -115,6 +120,33 @@ fn validate_session_boundary(
     } else {
         Ok(())
     }
+}
+
+/// Apply a session power mode (ADR-0140).
+///
+/// The mode is session-owned runtime state: the coordinator re-arms its
+/// stage notifications live, `SystemStatus` mirrors it, and `idle_inhibited`
+/// is republished as the derived legacy view (true exactly when the mode
+/// disarms the automatic lock stage) so single-bit chrome keeps reading
+/// correctly. The panel toggle no longer holds a separate inhibitor: the
+/// mode covers it, and the connection-scoped IPC inhibitors fold into the
+/// same effective compositor flag exactly as before.
+fn apply_power_mode(
+    server: &mut aegis_compositor::Server,
+    status: &mut aegis_model::system::SystemStatus,
+    idle_inhibits: &mut super::idle::IdleInhibits,
+    idle_process: &mut super::session::IdleProcess,
+    mode: aegis_model::power::PowerMode,
+) {
+    let session_holds_inhibitor = !mode.locks_automatically();
+    let effective = idle_inhibits.set(
+        super::idle::SESSION_IDLE_INHIBIT_ID,
+        session_holds_inhibitor,
+    );
+    server.set_ipc_idle_inhibit(effective);
+    idle_process.set_mode(mode);
+    status.power_mode = mode;
+    status.idle_inhibited = session_holds_inhibitor;
 }
 
 /// Spawn a short-lived host control command without blocking the compositor

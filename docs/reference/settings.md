@@ -23,9 +23,7 @@ command-line deep links; external tools use the settings IPC instead.
 | Route | Category | Apply behavior | Backend |
 |-------|----------|----------------|---------|
 | `display` | Hardware | Explicit Apply button | Available; aegis output model and direct DRM backend |
-| `mouse` | Hardware | Instant | Not available yet; libinput mouse policy required |
-| `touchpad` | Hardware | Instant | Available; aegis input policy and libinput backend |
-| `keyboard` | Hardware | Explicit | Not available yet; keymap, repeat, compose, and shortcut backend required |
+| `input` | Hardware | Instant | Available; aegis input policy and libinput backend (keyboard repeat, mouse and touchpad speed/scrolling) |
 | `appearance` | Personalization | Explicit Apply button | Available; Aegis desktop-preference authority and portal projection |
 | `dock` | Personalization | Instant | Available; Aegis `[dock]` configuration authority |
 | `power` | System | Explicit Apply button | Available; Aegis idle policy, session lock, output power, and logind sleep coordination |
@@ -35,7 +33,7 @@ command-line deep links; external tools use the settings IPC instead.
 ## Settings Transactions
 
 The panel holds one revisioned settings snapshot, pushed by the
-compositor on startup and after every commit. Display, touchpad,
+compositor on startup and after every commit. Display, input,
 appearance, and idle-policy changes are submitted as typed actions with
 the observed revision through the panel's in-process chrome channel; the
 compositor main loop drains them into the same commit path the settings

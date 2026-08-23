@@ -152,7 +152,7 @@ seed surface (ADR-0027): versioned length-framed JSON over
 `SwitchWorkspace[To]`/`MoveToWorkspace`/`ToggleTiling`/`Quit`) applied on the
 main loop, and `WindowsChanged`/`WorkspaceChanged`/`Notified` event streams.
 Protocol version 4 extends the same boundary with revisioned persistent
-settings snapshots, confirmed display/touchpad transactions, and settings
+settings snapshots, confirmed display/input transactions, and settings
 journal entries for the standalone modular System Settings application.
 Layout, dock, UI policy, window rules, and agent scopes all load from the
 same file and apply live. See

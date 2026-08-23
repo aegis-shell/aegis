@@ -308,6 +308,30 @@ impl Server {
         self.state.minimize_animation = style;
     }
 
+    /// Set the keyboard repeat policy (`[input.keyboard]`), advertised to
+    /// clients as `wl_keyboard.repeat_info` (ADR-0010). New keyboards and
+    /// input-method grabs bind with the new values immediately;
+    /// already-bound version-4+ keyboards receive a fresh `repeat_info`
+    /// event, which the protocol explicitly allows at any time. Live grabs
+    /// re-grab on the next focus change and pick the values up then.
+    pub fn set_keyboard_repeat(&mut self, config: aegis_model::input::KeyboardConfig) {
+        self.state.keyboard_repeat = config;
+        for runtime in self.state.seats.values_mut() {
+            for resource in &runtime.keyboard_resources {
+                if unsafe { ffi::wl_resource_get_version(*resource) } >= 4 {
+                    unsafe {
+                        ffi::wl_resource_post_event(
+                            *resource,
+                            ffi::WL_KEYBOARD_REPEAT_INFO,
+                            config.repeat_rate,
+                            config.repeat_delay_ms,
+                        );
+                    };
+                }
+            }
+        }
+    }
+
     /// Replace the minimize flight targets — the resting dock-icon rect per
     /// window — with the shell's latest report. Pushed every frame so even a
     /// client-initiated `xdg_toplevel.set_minimized` flies at the real icon.

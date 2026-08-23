@@ -25,6 +25,9 @@ use wayland_protocols::ext::idle_notify::v1::client::{
 const CONTROL_MESSAGE_LOCK: &[u8] = b"LOCK";
 const CONTROL_MESSAGE_PING: &[u8] = b"PING";
 const CONTROL_MESSAGE_STOP: &[u8] = b"STOP";
+/// Select the session power mode: `MODE <name>` where name is a
+/// [`aegis_model::power::PowerMode`] wire name (ADR-0140).
+const CONTROL_MESSAGE_MODE_PREFIX: &[u8] = b"MODE ";
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const POWER_RETRY_INITIAL: Duration = Duration::from_millis(250);
 const POWER_RETRY_MAX: Duration = Duration::from_secs(5);
@@ -149,6 +152,9 @@ struct Daemon {
     seat: Option<wl_seat::WlSeat>,
     notifications: Vec<ext_idle_notification_v1::ExtIdleNotificationV1>,
     armed: bool,
+    /// Saved queue handle so a live mode change (ADR-0140) can re-arm the
+    /// stage notifications outside the initial registry roundtrip.
+    queue_handle: wayland_client::QueueHandle<Self>,
     control: UnixDatagram,
     ipc_socket: PathBuf,
     dimmer: Dimmer,
@@ -204,6 +210,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         seat: None,
         notifications: Vec::new(),
         armed: false,
+        queue_handle: qh.clone(),
         control,
         ipc_socket: options.ipc_socket,
         dimmer: Dimmer::new(policy.dim_percent),
@@ -507,9 +514,76 @@ impl Daemon {
                 CONTROL_MESSAGE_LOCK => self.require_lock(),
                 CONTROL_MESSAGE_PING => {}
                 CONTROL_MESSAGE_STOP => self.exit = true,
+                rest if rest.starts_with(CONTROL_MESSAGE_MODE_PREFIX) => {
+                    let name: Result<aegis_model::power::PowerMode, String> =
+                        std::str::from_utf8(&rest[CONTROL_MESSAGE_MODE_PREFIX.len()..])
+                            .map_err(|_| "mode name is not UTF-8".to_owned())
+                            .and_then(|name| {
+                                aegis_model::power::PowerMode::from_name(name)
+                                    .ok_or_else(|| "unknown power mode".to_owned())
+                            });
+                    match name {
+                        Ok(mode) => self.set_mode(mode),
+                        Err(reason) => log::warn!("idle: rejected mode change: {reason}"),
+                    }
+                }
                 _ => log::debug!("idle: ignored unknown control datagram"),
             }
         }
+    }
+
+    /// Switch the session power mode live (ADR-0140): tear down the armed
+    /// stage notifications and re-arm for the new mode's stage set.
+    ///
+    /// Security stages the new mode disarms are simply never re-armed, so
+    /// their timers stop; `display_off_pending`/`suspend_pending` are
+    /// cleared when the mode no longer wants the action, but the actions
+    /// themselves still only ever run behind a compositor-confirmed lock.
+    /// Manual locking (`LOCK`) is unaffected: it does not enter through a
+    /// stage notification.
+    fn set_mode(&mut self, mode: aegis_model::power::PowerMode) {
+        if self.policy.mode == mode {
+            return;
+        }
+        log::info!(
+            "idle: session power mode {} -> {}",
+            self.policy.mode.as_str(),
+            mode.as_str()
+        );
+        self.policy.mode = mode;
+        // Dropping the notification objects destroys their wl resources; the
+        // compositor removes the records on the next update pass. Re-arming
+        // creates fresh objects whose timers start from now — the same
+        // behavior as a coordinator restart, without the process bounce and
+        // without waking the outputs behind the coordinator-recovery path.
+        self.notifications.clear();
+        self.armed = false;
+        if self.lock_desired {
+            // A mode switch while a lock is pending must not strand the
+            // dimmed display or a pending power action the new mode no
+            // longer wants. The lock intent itself stands: manual and
+            // already-required locks are mode-independent.
+            if !self.still_wants_lock_stage() {
+                self.dimmer.restore();
+                self.display_off_pending = false;
+                self.suspend_pending = false;
+                self.reconcile_output_power();
+            }
+        } else {
+            self.dimmer.restore();
+            self.display_off_pending = false;
+            self.suspend_pending = false;
+            self.reconcile_output_power();
+        }
+        self.arm(&self.queue_handle.clone());
+    }
+
+    /// Whether the new mode still arms the automatic lock stage, given the
+    /// product timeouts.
+    fn still_wants_lock_stage(&self) -> bool {
+        self.policy
+            .stages()
+            .any(|(stage, _)| matches!(stage, IdleStage::Lock))
     }
 }
 
@@ -764,6 +838,11 @@ impl Options {
                     options.policy.dim_percent =
                         args.next().ok_or("--dim-percent needs a value")?.parse()?;
                 }
+                "--mode" => {
+                    let name = args.next().ok_or("--mode needs a value")?;
+                    options.policy.mode = aegis_model::power::PowerMode::from_name(&name)
+                        .ok_or_else(|| format!("unknown power mode '{name}'"))?;
+                }
                 "--help" | "-h" => {
                     println!(
                         "Usage: aegis-idle [OPTIONS]\n\
@@ -775,6 +854,7 @@ impl Options {
                          \n  --display-off-after SECONDS|off\
                          \n  --suspend-after SECONDS|off\
                          \n  --dim-percent 1..100\
+                         \n  --mode balanced|awake|secure\
                          \n  --no-logind                Disable host sleep integration"
                     );
                     std::process::exit(0);

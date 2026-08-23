@@ -269,10 +269,10 @@ pub(super) struct CompositorRuntime {
     /// (aegis_model::night_light; applied through the backend's GAMMA_LUT).
     pub(super) night_light: aegis_model::night_light::NightLight,
     pub(super) night_light_last_eval: std::time::Instant,
-    /// Last probe of `Host::touchpad_status`. The probe interrogates every
-    /// libinput touchpad (several config queries each) and allocates a
+    /// Last probe of `Host::input_status`. The probe interrogates every
+    /// libinput device (several config queries each) and allocates a
     /// `Vec<String>` of device names, so it must not run per frame — the
     /// device set only moves on hotplug, which the same event iteration
     /// observes anyway. Probed at `TOUCHPAD_PROBE_INTERVAL` instead.
-    pub(super) touchpad_status_last_probe: std::time::Instant,
+    pub(super) input_status_last_probe: std::time::Instant,
 }

@@ -263,6 +263,29 @@ pub enum SystemCmd {
     Bluetooth { state: OnOff },
     /// Enable or disable notification suppression.
     DoNotDisturb { state: OnOff },
+    /// Select the session power mode: balanced, awake, or secure.
+    PowerMode { mode: PowerModeArg },
+}
+
+/// The session power mode (ADR-0140), spelled as on the wire.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum PowerModeArg {
+    /// Full staged policy: dim, lock, display-off, suspend.
+    Balanced,
+    /// Keep the session awake and unlocked: only dimming stays armed.
+    Awake,
+    /// Lock on schedule but never blank the display.
+    Secure,
+}
+
+impl From<PowerModeArg> for aegis_model::power::PowerMode {
+    fn from(value: PowerModeArg) -> Self {
+        match value {
+            PowerModeArg::Balanced => aegis_model::power::PowerMode::Balanced,
+            PowerModeArg::Awake => aegis_model::power::PowerMode::Awake,
+            PowerModeArg::Secure => aegis_model::power::PowerMode::Secure,
+        }
+    }
 }
 
 /// Subcommands grouped under `aegis interaction-domain`. They all share the

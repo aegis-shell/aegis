@@ -432,13 +432,10 @@ fn pending_damage_accumulator_is_bounded_and_conservative() {
     assert!(bbox.contains(aegis_model::Point { x: 0, y: 0 }));
     assert!(bbox.contains(aegis_model::Point { x: 2, y: 5 }));
     // rects span x=0..((N-1)*2+1); the bbox must cover that whole strip.
-    assert!(aegis_model::Rect::new(
-        0,
-        0,
-        (MAX_PENDING_DAMAGE_RECTS * 2 - 1) as i32,
-        1
-    )
-    .fully_covered_by(&list));
+    assert!(
+        aegis_model::Rect::new(0, 0, (MAX_PENDING_DAMAGE_RECTS * 2 - 1) as i32, 1)
+            .fully_covered_by(&list)
+    );
 }
 
 #[test]
@@ -455,13 +452,9 @@ fn wl_region_accumulator_is_bounded_and_conservative() {
     push_region_rect(&mut rects, aegis_model::Rect::new(0, 7, 2, 1));
     assert_eq!(rects.len(), 1);
     // rects span x=0..((N-1)*3+1); the bbox must cover that whole strip.
-    assert!(aegis_model::Rect::new(
-        0,
-        0,
-        (MAX_REGION_RECTS * 3 - 2) as i32,
-        1
-    )
-    .fully_covered_by(&rects));
+    assert!(
+        aegis_model::Rect::new(0, 0, (MAX_REGION_RECTS * 3 - 2) as i32, 1).fully_covered_by(&rects)
+    );
     assert!(rects[0].contains(aegis_model::Point { x: 1, y: 7 }));
 }
 

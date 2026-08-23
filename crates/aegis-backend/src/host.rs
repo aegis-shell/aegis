@@ -11,7 +11,7 @@ use crate::drm::{DrmBackend, DrmError};
 use crate::nested::{DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS, NestedError, NestedHost};
 use aegis_model::Size;
 use aegis_model::input::{
-    InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
+    InputConfig, InputEvent, InputStatus, PointerGestureEvent, TextInputEvent, TextInputState,
 };
 use aegis_model::output::ModeSpec;
 
@@ -496,17 +496,17 @@ impl Backend for Host {
         }
     }
 
-    fn set_touchpad_config(&mut self, config: TouchpadConfig) -> TouchpadStatus {
+    fn set_input_config(&mut self, config: InputConfig) -> InputStatus {
         match self {
-            Self::Nested(host) => host.set_touchpad_config(config),
-            Self::Drm(host) => host.set_touchpad_config(config),
+            Self::Nested(host) => host.set_input_config(config),
+            Self::Drm(host) => host.set_input_config(config),
         }
     }
 
-    fn touchpad_status(&self) -> TouchpadStatus {
+    fn input_status(&self) -> InputStatus {
         match self {
-            Self::Nested(host) => host.touchpad_status(),
-            Self::Drm(host) => host.touchpad_status(),
+            Self::Nested(host) => host.input_status(),
+            Self::Drm(host) => host.input_status(),
         }
     }
 

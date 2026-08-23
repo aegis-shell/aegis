@@ -115,6 +115,7 @@ persistent compositor settings.
 | `aegis system wifi <on\|off>` | Enable or disable Wi-Fi. |
 | `aegis system bluetooth <on\|off>` | Enable or disable Bluetooth radios. |
 | `aegis system do-not-disturb <on\|off>` | Enable or disable notification suppression. |
+| `aegis system power-mode <balanced\|awake\|secure>` | Select the session power mode (ADR-0140): which idle stages stay armed. Session-scoped; not persisted. |
 
 Control acknowledgments mean the action was queued. Run
 `aegis system status` or `aegis events` to observe reconciled service state.

@@ -347,11 +347,7 @@ impl Chrome for AgentFeedback {
         })
     }
 
-    fn damage_region(
-        &self,
-        windows: &[Window],
-        display: (f32, f32),
-    ) -> Option<aegis_model::Rect> {
+    fn damage_region(&self, windows: &[Window], display: (f32, f32)) -> Option<aegis_model::Rect> {
         let now = Instant::now();
         let display = (display.0.max(1.0), display.1.max(1.0));
         // The fade animates the whole feedback overlay (mask, sprites, label,

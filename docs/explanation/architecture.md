@@ -272,6 +272,21 @@ drives libwayland-client with xdg-shell interface tables generated from the
 protocol definition, and `ash` creates the `VkSurfaceKHR` on flux's Vulkan
 instance.
 
+## Pointer Latency and the Cursor Plane
+
+The cursor plane is the one KMS plane whose contents do not depend on the
+composited scene, so pointer motion must not queue behind primary-plane
+work. Aegis issues cursor updates through a dedicated cursor-only atomic
+commit that touches no primary-plane property and requests no page-flip
+event; KMS executes commits from one file description in submission order,
+and the request restates the complete cursor-plane state, so consecutive
+motion commits supersede rather than race. Plain pointer motion is landed
+out-of-band from the render schedule — while a composite frame is being
+built or while KMS still owns the previous flip — instead of waiting for the
+next render transaction to open. Anything that makes the pointer visible
+scene content (software-cursor fallback, client cursor surfaces, chrome
+ownership, drags, session lock) returns to the ordinary composited path.
+
 ## Per-Frame Data Flow
 
 Each frame follows this sequence:
@@ -291,7 +306,10 @@ Each frame follows this sequence:
 4. A successful nested submission returns pacing to the outer compositor. A
    successful DRM submission transfers either primary-plane source, plus the
    cursor plane when available, as one atomic batch and waits asynchronously
-   for every CRTC page flip. Pending client frame callbacks complete on
+   for every CRTC page flip. Pointer motion alone never queues behind that
+   batch: the cursor plane is committed independently (see
+   [Pointer Latency and the Cursor Plane](#pointer-latency-and-the-cursor-plane)).
+   Pending client frame callbacks complete on
    successful submission; callback-only work uses an estimated refresh
    boundary without creating an empty atomic commit.
 5. VT loss or output recreation cancels the old presentation epoch. Resume

@@ -1155,11 +1155,7 @@ impl Chrome for Dock {
         self.anim_active || (effective_autohide && (target - self.autohide_reveal).abs() > 0.002)
     }
 
-    fn damage_region(
-        &self,
-        _windows: &[Window],
-        display: (f32, f32),
-    ) -> Option<aegis_model::Rect> {
+    fn damage_region(&self, _windows: &[Window], display: (f32, f32)) -> Option<aegis_model::Rect> {
         if self.fullscreen_locked() {
             return None;
         }
@@ -1169,12 +1165,7 @@ impl Chrome for Dock {
         // magnification plus overshoot.
         let mut region = {
             let rect = self.capture_footprint(display);
-            aegis_model::Rect::new(
-                rect.x as i32,
-                rect.y as i32,
-                rect.w as i32,
-                rect.h as i32,
-            )
+            aegis_model::Rect::new(rect.x as i32, rect.y as i32, rect.w as i32, rect.h as i32)
         };
         // A live-preview panel animates open above the strip (or beside it
         // for a side dock); its panel rect is computed for presentation each
@@ -1195,22 +1186,12 @@ impl Chrome for Dock {
                 }
                 DockPosition::Left => {
                     let x1 = DOCK_EDGE_MARGIN + DOCK_PANEL_HEIGHT + TOOLTIP_BAND;
-                    aegis_model::Rect::new(
-                        0,
-                        0,
-                        x1.min(display.0) as i32,
-                        display.1 as i32,
-                    )
+                    aegis_model::Rect::new(0, 0, x1.min(display.0) as i32, display.1 as i32)
                 }
                 DockPosition::Right => {
-                    let x0 = (display.0 - DOCK_EDGE_MARGIN - DOCK_PANEL_HEIGHT - TOOLTIP_BAND)
-                        .max(0.0);
-                    aegis_model::Rect::new(
-                        x0 as i32,
-                        0,
-                        (display.0 - x0) as i32,
-                        display.1 as i32,
-                    )
+                    let x0 =
+                        (display.0 - DOCK_EDGE_MARGIN - DOCK_PANEL_HEIGHT - TOOLTIP_BAND).max(0.0);
+                    aegis_model::Rect::new(x0 as i32, 0, (display.0 - x0) as i32, display.1 as i32)
                 }
             };
             region = region.union(band);

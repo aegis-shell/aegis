@@ -318,3 +318,44 @@ fn command_panel_emits_liquid_glass_regions_when_open() {
     let last = regions.last().unwrap();
     assert_eq!(last.opacity, 1.0); // Right Content View
 }
+
+#[test]
+fn power_mode_projection_covers_the_four_toggle_combinations() {
+    use aegis_model::power::PowerMode;
+    // Display axis × security axis, the four user scenarios:
+    // (keep awake, auto lock) → mode.
+    assert_eq!(
+        crate::presentation::power_mode_for(false, true),
+        PowerMode::Balanced
+    );
+    assert_eq!(
+        crate::presentation::power_mode_for(true, true),
+        PowerMode::Secure
+    );
+    assert_eq!(
+        crate::presentation::power_mode_for(true, false),
+        PowerMode::Awake
+    );
+    // The forbidden combination (blank while never locking) projects onto
+    // Awake: the security boundary wins and the display axis reads back
+    // honestly as "awake".
+    assert_eq!(
+        crate::presentation::power_mode_for(false, false),
+        PowerMode::Awake
+    );
+}
+
+#[test]
+fn projected_modes_never_blank_an_unlocked_session() {
+    for keep_awake in [false, true] {
+        for auto_lock in [false, true] {
+            let mode = crate::presentation::power_mode_for(keep_awake, auto_lock);
+            if !mode.locks_automatically() {
+                assert!(
+                    !mode.blanks_display(),
+                    "{mode:?} would blank a never-locking session"
+                );
+            }
+        }
+    }
+}

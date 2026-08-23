@@ -615,8 +615,8 @@ fn compute_mac(key: &[u8], body: &ManifestBody) -> Result<String, AuditError> {
 
 fn verify_mac(key: &[u8], body: &ManifestBody, encoded: &str) -> Result<(), AuditError> {
     let bytes = serde_json::to_vec(body).map_err(AuditError::Encode)?;
-    let expected = decode_hash(encoded)
-        .ok_or(AuditError::SegmentState("manifest MAC is malformed"))?;
+    let expected =
+        decode_hash(encoded).ok_or(AuditError::SegmentState("manifest MAC is malformed"))?;
     let mut mac = hmac::Hmac::<Sha256>::new_from_slice(key)
         .map_err(|_| AuditError::CheckpointState("manifest key is invalid"))?;
     mac.update(&bytes);

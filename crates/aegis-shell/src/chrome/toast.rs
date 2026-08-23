@@ -194,11 +194,7 @@ impl Chrome for Toast {
         !self.presentable().is_empty()
     }
 
-    fn damage_region(
-        &self,
-        _windows: &[Window],
-        display: (f32, f32),
-    ) -> Option<aegis_model::Rect> {
+    fn damage_region(&self, _windows: &[Window], display: (f32, f32)) -> Option<aegis_model::Rect> {
         let count = self.presentable().len();
         (count > 0).then(|| {
             // The stacked strip in the top-right corner: every slot a toast

@@ -391,7 +391,20 @@ impl Handler for TestHandler {
         self.settings_connections.lock().unwrap().push(conn_id);
         self.settings_actions.lock().unwrap().push(action.clone());
         match action {
-            SettingsAction::SetTouchpad { config } => snapshot.touchpad.config = config,
+            SettingsAction::SetInput { config } => {
+                snapshot.input = aegis_model::input::InputStatus {
+                    configurable: true,
+                    touchpad: aegis_model::input::TouchpadStatus {
+                        config: config.touchpad,
+                        ..Default::default()
+                    },
+                    mouse: aegis_model::input::MouseStatus {
+                        config: config.mouse,
+                        ..Default::default()
+                    },
+                    keyboard: config.keyboard,
+                }
+            }
             SettingsAction::SetDisplay { .. } => {}
             SettingsAction::SetDesktopPreferences { preferences } => {
                 snapshot.preferences = preferences;

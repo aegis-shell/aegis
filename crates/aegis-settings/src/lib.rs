@@ -16,38 +16,14 @@ use module::{
     ApplyPolicy, ModuleAvailability, ModuleCategory, ModuleId, ModuleMetadata, ModuleRegistry,
 };
 use modules::{
-    AppearanceModule, DisplayModule, DockModule, PowerModule, TouchpadModule, UnavailableModule,
+    AppearanceModule, DisplayModule, DockModule, InputModule, PowerModule, UnavailableModule,
 };
 
 /// Construct the built-in module set in stable navigation order.
 pub fn builtin_settings_modules() -> ModuleRegistry {
     let mut modules = ModuleRegistry::default();
     modules.register(DisplayModule::new());
-    modules.register(UnavailableModule::new(
-        ModuleMetadata {
-            id: ModuleId::new("mouse"),
-            title: Message::Mouse,
-            icon: Icon::MousePointer,
-            category: ModuleCategory::Hardware,
-            keywords: &["mouse", "pointer", "acceleration", "buttons", "wheel"],
-            apply_policy: ApplyPolicy::Instant,
-            availability: ModuleAvailability::BackendUnavailable,
-        },
-        Message::MouseDescription,
-    ));
-    modules.register(TouchpadModule::new());
-    modules.register(UnavailableModule::new(
-        ModuleMetadata {
-            id: ModuleId::new("keyboard"),
-            title: Message::Keyboard,
-            icon: Icon::Type,
-            category: ModuleCategory::Hardware,
-            keywords: &["keyboard", "layout", "repeat", "compose", "shortcuts"],
-            apply_policy: ApplyPolicy::Explicit,
-            availability: ModuleAvailability::BackendUnavailable,
-        },
-        Message::KeyboardDescription,
-    ));
+    modules.register(InputModule::new());
     modules.register(AppearanceModule::new());
     modules.register(DockModule::new());
     modules.register(PowerModule::new());
@@ -92,14 +68,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "display",
-                "mouse",
-                "touchpad",
-                "keyboard",
+                "input",
                 "appearance",
                 "dock",
                 "power",
                 "users",
-                "window-rules",
+                "window-rules"
             ]
         );
         assert_eq!(
@@ -108,7 +82,7 @@ mod tests {
                 .filter(|module| module.availability == ModuleAvailability::Available)
                 .map(|module| module.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["display", "touchpad", "appearance", "dock", "power"]
+            vec!["display", "input", "appearance", "dock", "power"]
         );
     }
 }

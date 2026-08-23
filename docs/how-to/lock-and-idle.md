@@ -30,6 +30,29 @@ Open the command panel with `Super+S`, then select **Power Management**.
 Turning automatic actions off preserves their configured times. Manual
 locking and lock-before-sleep remain available.
 
+## Choose a Session Power Mode
+
+The idle stages apply as a set, but two concerns are often wanted
+separately: whether the screen may blank, and whether the session may lock.
+The command panel's Quick Controls (`Super+S`) expose both as switches —
+**Keep Screen Awake** and **Automatic Lock** — which compose into the
+session power mode (ADR-0140):
+
+| Keep awake | Auto lock | Mode | Behavior after idle |
+|------------|-----------|------|---------------------|
+| off | on | `balanced` | Dim, lock, blank, suspend (the default) |
+| on | on | `secure` | Dim and lock, but the display never blanks |
+| either | off | `awake` | Dim only; nothing locks, blanks, or suspends |
+
+The (off, off) combination is not offered: blanking or suspending an
+unlocked session is forbidden, so turning **Automatic Lock** off keeps the
+display awake regardless, and the switch reads that back. The mode is
+session-scoped — it resets to `balanced` on the next session — and manual
+locking (`Super+L`) plus lock-before-sleep apply in every mode. Switching
+modes takes effect immediately, without restarting the idle coordinator.
+
+The CLI equivalent is `aegis system power-mode <mode>`.
+
 ## Configure the Policy as TOML
 
 Edit `$XDG_CONFIG_HOME/aegis/config.toml`:

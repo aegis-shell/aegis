@@ -149,10 +149,7 @@ fn reader_loop(path: PathBuf, w: u32, h: u32, slot: Arc<Mutex<Slot>>, shutdown: 
                     // this runs 24 times a second, and the previous
                     // `buf.clone()` made an extra full-frame copy per frame
                     // on this thread.
-                    s.pixels = Some(std::mem::replace(
-                        &mut buf,
-                        vec![0u8; frame_size],
-                    ));
+                    s.pixels = Some(std::mem::replace(&mut buf, vec![0u8; frame_size]));
                     s.seq = s.seq.wrapping_add(1);
                 }
                 Ok(false) => break, // EOF — outer loop respawns.

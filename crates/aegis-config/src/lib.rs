@@ -635,14 +635,9 @@ pub struct UiConfig {
     pub window_shadow: aegis_model::window::WindowShadowStyle,
 }
 
-/// The `[input]` section.
-#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InputConfig {
-    /// Touchpad policy, written as `[input.touchpad]`.
-    #[serde(default)]
-    pub touchpad: TouchpadConfig,
-}
+/// The `[input]` section: keyboard, mouse, and touchpad policy, shared with
+/// the settings UI and backends as [`aegis_model::input::InputConfig`].
+pub type InputConfig = aegis_model::input::InputConfig;
 
 /// The wallpaper rendering strategy selected by [`WallpaperConfig`]. Keeping
 /// the four user-facing modes explicit prevents source-specific options from
@@ -1156,6 +1151,44 @@ impl Config {
                 "must be between -1.0 and 1.0",
             ));
         }
+        if !cfg.input.touchpad.scroll_speed.is_finite()
+            || !aegis_model::input::SCROLL_SPEED_RANGE.contains(&cfg.input.touchpad.scroll_speed)
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("input.touchpad.scroll_speed".into()),
+                "must be between 0.1 and 10.0",
+            ));
+        }
+        if !cfg.input.mouse.pointer_speed.is_finite()
+            || !(-1.0..=1.0).contains(&cfg.input.mouse.pointer_speed)
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("input.mouse.pointer_speed".into()),
+                "must be between -1.0 and 1.0",
+            ));
+        }
+        if !cfg.input.mouse.scroll_speed.is_finite()
+            || !aegis_model::input::SCROLL_SPEED_RANGE.contains(&cfg.input.mouse.scroll_speed)
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("input.mouse.scroll_speed".into()),
+                "must be between 0.1 and 10.0",
+            ));
+        }
+        if cfg.input.keyboard.repeat_rate > aegis_model::input::MAX_REPEAT_RATE {
+            diagnostics.push(Diagnostic::new(
+                Some("input.keyboard.repeat_rate".into()),
+                "must be at most 150",
+            ));
+        }
+        if cfg.input.keyboard.repeat_delay_ms == 0
+            || cfg.input.keyboard.repeat_delay_ms > aegis_model::input::MAX_REPEAT_DELAY_MS
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("input.keyboard.repeat_delay_ms".into()),
+                "must be between 1 and 2000",
+            ));
+        }
         validate_interaction_domain_sandbox_limits(
             "interaction_domain_sandbox",
             cfg.interaction_domain_sandbox.memory_max_mib,
@@ -1646,8 +1679,12 @@ pub enum ConfigEdit {
     SetDockMinimizeAnimation {
         style: aegis_model::dock::MinimizeAnimationStyle,
     },
-    /// Replace the complete `[input.touchpad]` profile.
-    SetTouchpad { config: TouchpadConfig },
+    /// Replace the complete `[input]` profile: touchpad, mouse, and keyboard.
+    SetInput {
+        touchpad: TouchpadConfig,
+        mouse: aegis_model::input::MouseConfig,
+        keyboard: aegis_model::input::KeyboardConfig,
+    },
     /// Replace the user-editable fields for one `[[output]]` entry.
     SetOutput {
         settings: aegis_model::settings::DisplaySettings,
@@ -1699,7 +1736,11 @@ impl ConfigStore {
             ConfigEdit::SetDockMinimizeAnimation { style } => {
                 apply_dock_minimize_animation(&mut document, style)
             }
-            ConfigEdit::SetTouchpad { config } => apply_touchpad(&mut document, &config),
+            ConfigEdit::SetInput {
+                touchpad,
+                mouse,
+                keyboard,
+            } => apply_input(&mut document, &touchpad, mouse, keyboard),
             ConfigEdit::SetOutput { settings } => apply_output(&mut document, settings),
             ConfigEdit::SetDesktopPreferences { preferences } => {
                 apply_desktop_preferences(&mut document, &preferences)
@@ -1799,28 +1840,47 @@ fn apply_dock_minimize_animation(
     document["dock"]["minimize_animation"] = toml_edit::value(style.name());
 }
 
-fn apply_touchpad(document: &mut DocumentMut, config: &TouchpadConfig) {
+/// Replace the complete `[input]` profile (touchpad, mouse, keyboard) while
+/// preserving comments and unrelated keys.
+fn apply_input(
+    document: &mut DocumentMut,
+    touchpad: &TouchpadConfig,
+    mouse: aegis_model::input::MouseConfig,
+    keyboard: aegis_model::input::KeyboardConfig,
+) {
     if !document.get("input").is_some_and(toml_edit::Item::is_table) {
         document["input"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    if !document["input"]
-        .get("touchpad")
-        .is_some_and(toml_edit::Item::is_table)
-    {
-        document["input"]["touchpad"] = toml_edit::Item::Table(toml_edit::Table::new());
+    for table in ["touchpad", "mouse", "keyboard"] {
+        if !document["input"]
+            .get(table)
+            .is_some_and(toml_edit::Item::is_table)
+        {
+            document["input"][table] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
     }
 
-    let touchpad = &mut document["input"]["touchpad"];
-    touchpad["natural_scroll"] = toml_edit::value(config.natural_scroll);
-    touchpad["tap_to_click"] = toml_edit::value(config.tap_to_click);
-    touchpad["tap_and_drag"] = toml_edit::value(config.tap_and_drag);
-    touchpad["drag_lock"] = toml_edit::value(config.drag_lock);
-    touchpad["disable_while_typing"] = toml_edit::value(config.disable_while_typing);
-    touchpad["pointer_speed"] = toml_edit::value(f64::from(config.pointer_speed));
-    touchpad["scroll_method"] = toml_edit::value(match config.scroll_method {
+    let touchpad_table = &mut document["input"]["touchpad"];
+    touchpad_table["natural_scroll"] = toml_edit::value(touchpad.natural_scroll);
+    touchpad_table["tap_to_click"] = toml_edit::value(touchpad.tap_to_click);
+    touchpad_table["tap_and_drag"] = toml_edit::value(touchpad.tap_and_drag);
+    touchpad_table["drag_lock"] = toml_edit::value(touchpad.drag_lock);
+    touchpad_table["disable_while_typing"] = toml_edit::value(touchpad.disable_while_typing);
+    touchpad_table["pointer_speed"] = toml_edit::value(f64::from(touchpad.pointer_speed));
+    touchpad_table["scroll_speed"] = toml_edit::value(f64::from(touchpad.scroll_speed));
+    touchpad_table["scroll_method"] = toml_edit::value(match touchpad.scroll_method {
         TouchpadScrollMethod::TwoFinger => "two-finger",
         TouchpadScrollMethod::Edge => "edge",
     });
+
+    let mouse_table = &mut document["input"]["mouse"];
+    mouse_table["natural_scroll"] = toml_edit::value(mouse.natural_scroll);
+    mouse_table["pointer_speed"] = toml_edit::value(f64::from(mouse.pointer_speed));
+    mouse_table["scroll_speed"] = toml_edit::value(f64::from(mouse.scroll_speed));
+
+    let keyboard_table = &mut document["input"]["keyboard"];
+    keyboard_table["repeat_rate"] = toml_edit::value(i64::from(keyboard.repeat_rate));
+    keyboard_table["repeat_delay_ms"] = toml_edit::value(i64::from(keyboard.repeat_delay_ms));
 }
 
 fn apply_output(document: &mut DocumentMut, settings: aegis_model::settings::DisplaySettings) {

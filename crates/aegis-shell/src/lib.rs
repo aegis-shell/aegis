@@ -882,7 +882,11 @@ pub trait Chrome {
     /// Damage reported this way also has to be **re-reported** every animated
     /// frame while the element keeps moving, because each partial repaint
     /// consumes the previous frame's rectangle.
-    fn damage_region(&self, _windows: &[Window], _display: (f32, f32)) -> Option<aegis_model::Rect> {
+    fn damage_region(
+        &self,
+        _windows: &[Window],
+        _display: (f32, f32),
+    ) -> Option<aegis_model::Rect> {
         None
     }
 

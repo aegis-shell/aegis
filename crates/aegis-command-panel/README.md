@@ -36,7 +36,7 @@ Surfaces:
   held out of the panel for now; they return through the settings module
   tabs.
 - **Settings module tabs** — one tab per available `aegis-settings` module
-  (display, touchpad, appearance, power), rendered from the registry inside
+  (display, input, appearance, power), rendered from the registry inside
   the main panel; their `SettingsAction`s leave through
   `ChromeEvents::settings_actions` with the current snapshot revision.
 - **Notifications** — the notification history with click-to-dismiss,

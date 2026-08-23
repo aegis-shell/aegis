@@ -12,6 +12,13 @@ pub(super) struct FrameState {
     /// or synthetic input). Lets the damage assessment localize the repaint
     /// to the cursor footprint and the chrome band it hovers.
     pub(super) input_pointer_only: bool,
+    /// Pointer motion passed the hardware-cursor fast-path gate this
+    /// iteration (`cursor_plane_only` in the input pass): no other input,
+    /// no chrome capture, no drag, no client cursor surface, no parallax
+    /// sampling, session unlocked. The event loop may then land the cursor
+    /// on its KMS plane out-of-band, independent of the composite frame
+    /// schedule.
+    pub(super) cursor_fast_path: bool,
     pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
@@ -94,6 +101,13 @@ impl FrameState {
         self.cursor_hidden = newer.cursor_hidden;
         self.cursor_shape = newer.cursor_shape;
         self.had_input |= newer.had_input;
+        // The out-of-band cursor commit fires per input iteration, before
+        // this merge runs, so the accumulated frame's flag reflects only
+        // whether the *latest* iteration qualified — a later iteration that
+        // captured the pointer (button, chrome hover, drag) must not let an
+        // earlier fast-path decision ride along into the render state.
+        self.input_pointer_only &= newer.input_pointer_only;
+        self.cursor_fast_path &= newer.cursor_fast_path;
         self.pending_screenshots.extend(newer.pending_screenshots);
     }
 
@@ -1383,6 +1397,7 @@ impl CompositorRuntime {
             cursor_shape,
             had_input,
             input_pointer_only: pointer_motion_only && !non_cursor_input,
+            cursor_fast_path: cursor_plane_only,
             pending_screenshots,
         })
     }
@@ -1404,8 +1419,38 @@ mod tests {
             cursor_shape: 1,
             had_input,
             input_pointer_only: false,
+            cursor_fast_path: false,
             pending_screenshots: Vec::new(),
         }
+    }
+
+    /// The out-of-band cursor commit is decided per input iteration; a
+    /// merged accumulation must not carry a stale fast-path decision into
+    /// the render transaction once a later iteration captured the pointer.
+    #[test]
+    fn frame_state_merge_drops_the_fast_path_once_a_later_iteration_qualifies_out() {
+        let mut first = frame(aegis_shell::Input::new((100.0, 80.0), 0.0), true);
+        first.input_pointer_only = true;
+        first.cursor_fast_path = true;
+
+        // A later iteration with a button press no longer qualifies: the
+        // merged frame must reflect that, or the render path would treat a
+        // click batch as pointer-only motion.
+        let second = frame(aegis_shell::Input::new((100.0, 80.0), 0.0), true);
+        first.merge(second);
+        assert!(!first.input_pointer_only);
+        assert!(!first.cursor_fast_path);
+
+        // Two qualifying motion iterations keep the fast path: the latest
+        // position has still only moved the pointer.
+        let mut third = frame(aegis_shell::Input::new((100.0, 80.0), 0.0), true);
+        third.input_pointer_only = true;
+        third.cursor_fast_path = true;
+        first.input_pointer_only = true;
+        first.cursor_fast_path = true;
+        first.merge(third);
+        assert!(first.input_pointer_only);
+        assert!(first.cursor_fast_path);
     }
 
     #[test]

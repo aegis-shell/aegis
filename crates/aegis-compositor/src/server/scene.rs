@@ -597,9 +597,7 @@ impl Server {
     /// surface table cannot change (all of this runs inside one iteration
     /// after `server.dispatch()`). This accessor computes the shared
     /// visibility/occlusion snapshot once and derives both lists from it.
-    pub fn desktop_frame_sets(
-        &self,
-    ) -> DesktopFrameSets<'_> {
+    pub fn desktop_frame_sets(&self) -> DesktopFrameSets<'_> {
         let visible = self.render_visible();
         let occluded = self.occluded_window_ids_with(&visible);
         let mut shm = self.toplevel_frames_with(&visible, &occluded);

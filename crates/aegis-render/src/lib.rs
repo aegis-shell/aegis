@@ -817,9 +817,7 @@ impl Renderer {
         let profile = match flux::IccProfile::new(bytes) {
             Ok(profile) => profile,
             Err(error) => {
-                log::warn!(
-                    "[render] ICC profile parse failed ({error}); content renders as sRGB"
-                );
+                log::warn!("[render] ICC profile parse failed ({error}); content renders as sRGB");
                 self.icc_failed.insert(key);
                 if self.icc_failed.len() > MAX_ICC_FAILED {
                     self.icc_failed.clear();
@@ -1184,11 +1182,9 @@ impl Renderer {
                     }
                     aegis_model::window::WindowShadowStyle::Soft => {
                         if window_casts_resize_shadow(window)
-                            && let Some(entry) = options
-                                .soft_shadows
-                                .and_then(|layer| {
-                                    layer.entries.iter().find(|entry| entry.window == window_id)
-                                })
+                            && let Some(entry) = options.soft_shadows.and_then(|layer| {
+                                layer.entries.iter().find(|entry| entry.window == window_id)
+                            })
                         {
                             // SAFETY: the entry's raw pointer is the shadow
                             // filter's slot output for this frame; the
@@ -1426,7 +1422,8 @@ impl Renderer {
                 // 3. Anything else (first frame, resize, color-tag change,
                 //    rotated buffer): recreate through `flux_image_create`.
                 let upright = f.geometry.transform == Transform::Normal;
-                let in_place = dims_match && !tag_changed && upright && self.cache.contains_key(&f.id);
+                let in_place =
+                    dims_match && !tag_changed && upright && self.cache.contains_key(&f.id);
                 // Incremental refresh additionally requires the server to
                 // have supplied usable surface-local damage. Unlike the
                 // historical guard, a buffer_scale > 1 is NOT a barrier: the

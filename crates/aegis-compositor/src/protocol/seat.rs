@@ -282,6 +282,7 @@ unsafe extern "C" fn seat_get_keyboard(
             state as *mut c_void,
             Some(keyboard_resource_destroy),
         );
+        let repeat = (*state).keyboard_repeat;
         if let Some(runtime) = (*state).seat_runtime_mut(seat_id) {
             if let Some(kb) = &runtime.keyboard {
                 // Send the keymap event immediately so the client can decode
@@ -301,11 +302,16 @@ unsafe extern "C" fn seat_get_keyboard(
                         log::warn!("[server] keymap fd dup failed: {e}");
                     }
                 }
-                if ver >= 4 {
-                    // Default repeat: 25 cps after 250 ms delay, matching what
-                    // Weston and Mutter ship with a fresh install.
-                    ffi::wl_resource_post_event(k, ffi::WL_KEYBOARD_REPEAT_INFO, 25u32, 250u32);
-                }
+            }
+            if ver >= 4 {
+                // Repeat policy comes from `[input.keyboard]` (ADR-0010);
+                // clients repeat locally from these values.
+                ffi::wl_resource_post_event(
+                    k,
+                    ffi::WL_KEYBOARD_REPEAT_INFO,
+                    repeat.repeat_rate,
+                    repeat.repeat_delay_ms,
+                );
             }
             if !runtime.keyboard_focus.is_null()
                 && ffi::wl_resource_get_client(runtime.keyboard_focus) == client

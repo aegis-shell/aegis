@@ -331,20 +331,58 @@ impl DrmBackend {
     }
 
     pub(super) fn add_input_device(&mut self, mut device: Device) {
-        if !Self::is_touchpad(&device) {
-            return;
-        }
         let sysname = device.sysname().to_owned();
         let name = device.name().into_owned();
-        Self::apply_touchpad_profile(&mut device, self.touchpad_config);
-        log::info!("libinput: touchpad added: {name} ({sysname})");
-        self.touchpads.insert(sysname, device);
+        if Self::is_touchpad(&device) {
+            Self::apply_touchpad_profile(&mut device, self.touchpad_config);
+            log::info!("libinput: touchpad added: {name} ({sysname})");
+            self.touchpads.insert(sysname, device);
+        } else if Self::is_mouse(&device) {
+            Self::apply_mouse_profile(&mut device, self.mouse_config);
+            log::info!("libinput: mouse added: {name} ({sysname})");
+            self.mice.insert(sysname, device);
+        }
     }
 
     pub(super) fn remove_input_device(&mut self, device: &Device) {
         let sysname = device.sysname();
         if self.touchpads.remove(sysname).is_some() {
             log::info!("libinput: touchpad removed: {} ({sysname})", device.name());
+        } else if self.mice.remove(sysname).is_some() {
+            log::info!("libinput: mouse removed: {} ({sysname})", device.name());
+        }
+    }
+
+    /// A plain mouse: a pointer device that is not a touchpad or tablet tool.
+    /// Trackballs and pointing sticks classify here too; they expose the same
+    /// libinput acceleration and scroll settings.
+    pub(super) fn is_mouse(device: &Device) -> bool {
+        device.has_capability(DeviceCapability::Pointer)
+            && !device.has_capability(DeviceCapability::TabletTool)
+    }
+
+    /// Apply the mouse profile's libinput-backed settings: acceleration and
+    /// natural scrolling. The scroll multiplier has no libinput counterpart;
+    /// the compositor applies it when translating wheel motion.
+    pub(super) fn apply_mouse_profile(device: &mut Device, config: MouseConfig) {
+        let name = device.name().into_owned();
+        let apply = |setting: &str, result: DeviceConfigResult| {
+            if let Err(error) = result {
+                log::warn!("libinput: {name}: could not apply {setting}: {error:?}");
+            }
+        };
+
+        if device.config_scroll_has_natural_scroll() {
+            apply(
+                "natural scroll",
+                device.config_scroll_set_natural_scroll_enabled(config.natural_scroll),
+            );
+        }
+        if device.config_accel_is_available() {
+            apply(
+                "pointer speed",
+                device.config_accel_set_speed(f64::from(config.pointer_speed.clamp(-1.0, 1.0))),
+            );
         }
     }
 
@@ -439,6 +477,35 @@ impl DrmBackend {
             device_names,
             capabilities,
             config: self.touchpad_config,
+        }
+    }
+
+    pub(super) fn current_mouse_status(&self) -> MouseStatus {
+        let mut capabilities = MouseCapabilities::default();
+        let mut device_names = Vec::with_capacity(self.mice.len());
+        for device in self.mice.values() {
+            capabilities.natural_scroll |= device.config_scroll_has_natural_scroll();
+            capabilities.pointer_speed |= device.config_accel_is_available();
+            device_names.push(device.name().into_owned());
+        }
+        device_names.sort();
+        device_names.dedup();
+        MouseStatus {
+            configurable: true,
+            device_names,
+            capabilities,
+            config: self.mouse_config,
+        }
+    }
+
+    pub(super) fn current_input_status(&self) -> InputStatus {
+        InputStatus {
+            configurable: true,
+            touchpad: self.current_touchpad_status(),
+            mouse: self.current_mouse_status(),
+            // The DRM backend does not track keyboards as configurable
+            // devices; the runtime overlays the persisted keyboard profile.
+            keyboard: aegis_model::input::KeyboardConfig::default(),
         }
     }
 
@@ -642,8 +709,12 @@ impl DrmBackend {
             source: Some(PointerAxisSource::Wheel),
             ..PointerAxisFrame::default()
         };
-        frame.horizontal = wheel_axis(event, Axis::Horizontal);
-        frame.vertical = wheel_axis(event, Axis::Vertical);
+        // Wheel events belong to mice and touchpads alike; apply whichever
+        // scroll multiplier the reporting device class selects. Tablets and
+        // other pointer-capable devices fall back to the mouse profile.
+        let factor = self.scroll_factor_for(&event.device());
+        frame.horizontal = wheel_axis(event, Axis::Horizontal, factor);
+        frame.vertical = wheel_axis(event, Axis::Vertical, factor);
         if frame.has_data() {
             self.input_events.push(InputEvent::PointerAxis(frame));
         }
@@ -659,10 +730,23 @@ impl DrmBackend {
             ..PointerAxisFrame::default()
         };
         let inverted = event.device().config_scroll_natural_scroll_enabled();
-        frame.horizontal = sequence_axis(event, Axis::Horizontal, inverted);
-        frame.vertical = sequence_axis(event, Axis::Vertical, inverted);
+        let factor = self.scroll_factor_for(&event.device());
+        frame.horizontal = sequence_axis(event, Axis::Horizontal, inverted, factor);
+        frame.vertical = sequence_axis(event, Axis::Vertical, inverted, factor);
         if frame.has_data() {
             self.input_events.push(InputEvent::PointerAxis(frame));
+        }
+    }
+
+    /// Scroll multiplier for the device that produced an event: touchpads use
+    /// the touchpad profile's `scroll_speed`, every other pointer the mouse
+    /// profile's. Device handles are stored per sysname, so the lookup
+    /// matches the retained libinput `Device`.
+    fn scroll_factor_for(&self, device: &Device) -> f32 {
+        if self.touchpads.contains_key(device.sysname()) {
+            self.touchpad_config.scroll_speed
+        } else {
+            self.mouse_config.scroll_speed
         }
     }
 
@@ -680,8 +764,9 @@ impl DrmBackend {
             ..PointerAxisFrame::default()
         };
         let inverted = event.device().config_scroll_natural_scroll_enabled();
-        frame.horizontal = legacy_axis(event, Axis::Horizontal, source, inverted);
-        frame.vertical = legacy_axis(event, Axis::Vertical, source, inverted);
+        let factor = self.scroll_factor_for(&event.device());
+        frame.horizontal = legacy_axis(event, Axis::Horizontal, source, inverted, factor);
+        frame.vertical = legacy_axis(event, Axis::Vertical, source, inverted, factor);
         if frame.has_data() {
             self.input_events.push(InputEvent::PointerAxis(frame));
         }

@@ -91,9 +91,9 @@ backlight, no audio device) read as unavailable.
 
 ## Edit Persistent Settings
 
-Select a settings module tab — **Display**, **Touchpad**, **Appearance**,
+Select a settings module tab — **Display**, **Input**, **Appearance**,
 **Dock**, or **Power Management**. Display, appearance, and power edits stage
-locally and commit when you select their **Apply** button; touchpad and dock
+locally and commit when you select their **Apply** button; input and dock
 edits apply immediately. Committed changes persist to `config.toml`
 through the compositor's revisioned settings transaction; see the
 [Settings Reference](../reference/settings.md) for module routes, apply

@@ -53,7 +53,7 @@ pub(super) fn publish_settings_parts(
 ) {
     let snapshot = aegis_ipc::SettingsSnapshot {
         revision,
-        touchpad: status.touchpad.clone(),
+        input: status.input.clone(),
         display: status.display.clone(),
         preferences: effective_desktop_preferences(config),
         idle: config.map(|config| config.idle).unwrap_or_default(),
@@ -108,17 +108,27 @@ pub(super) fn commit_settings_parts(
     let display_action = matches!(&action, aegis_ipc::SettingsAction::SetDisplay { .. });
 
     let result = match action {
-        aegis_ipc::SettingsAction::SetTouchpad { config: touchpad } => {
+        aegis_ipc::SettingsAction::SetInput { config: input } => {
             // The TOML rewrite runs on the serialized config-write worker so
             // it cannot interleave with dock-pin writes; the receipt keeps
             // the IPC reply synchronous.
             config_writer
-                .apply_and_wait(aegis_config::ConfigEdit::SetTouchpad { config: touchpad })
-                .map_err(|error| format!("failed to persist touchpad settings: {error}"))?;
+                .apply_and_wait(aegis_config::ConfigEdit::SetInput {
+                    touchpad: input.touchpad,
+                    mouse: input.mouse,
+                    keyboard: input.keyboard,
+                })
+                .map_err(|error| format!("failed to persist input settings: {error}"))?;
             if let Some(current) = config.as_mut() {
-                current.input.touchpad = touchpad;
+                current.input = input;
             }
-            status.touchpad = host.set_touchpad_config(touchpad);
+            // Keyboard repeat is a server-side advertisement; push it to the
+            // compositor so bound clients re-learn the rate.
+            server.set_keyboard_repeat(input.keyboard);
+            status.input = host.set_input_config(input);
+            // Backends without a keyboard device model cannot know the
+            // persisted profile; the runtime is authoritative for it.
+            status.input.keyboard = input.keyboard;
             Ok(())
         }
         aegis_ipc::SettingsAction::SetDisplay { settings } => apply_display_settings(

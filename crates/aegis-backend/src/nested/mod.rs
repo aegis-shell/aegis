@@ -122,8 +122,8 @@ pub struct NestedHost {
     ash: Option<(ash::Entry, ash::Instance)>,
     vk_surface: u64,
     /// Persisted profile for direct-display sessions. The outer compositor
-    /// owns the physical device while this backend is nested.
-    touchpad_config: aegis_model::input::TouchpadConfig,
+    /// owns the physical devices while this backend is nested.
+    input_config: aegis_model::input::InputConfig,
     /// The compositor's Wayland server event-loop fd, registered via
     /// `Backend::set_wakeup_fd`. Polled for readability only — the main loop
     /// dispatches the server itself once the wait wakes.

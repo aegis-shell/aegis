@@ -235,6 +235,7 @@ impl State {
             output,
             layout_params: aegis_model::layout::LayoutParams::default(),
             reduced_motion: false,
+            keyboard_repeat: aegis_model::input::KeyboardConfig::default(),
             minimize_animation: aegis_model::dock::MinimizeAnimationStyle::default(),
             minimize_targets: std::collections::HashMap::new(),
             decoration_policy: aegis_model::window::DecorationPolicy::default(),

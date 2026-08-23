@@ -42,9 +42,9 @@ const MAX_ACTIVATION_TOKENS: usize = 256;
 /// evicts the oldest entries when a burst inside one iteration reaches the
 /// count ceiling.
 pub(crate) fn expire_activation_tokens(state: &mut State, now_ms: u64) {
-    state
-        .activation_tokens
-        .retain(|_, (_, committed_at)| now_ms.saturating_sub(*committed_at) < ACTIVATION_TOKEN_TTL_MS);
+    state.activation_tokens.retain(|_, (_, committed_at)| {
+        now_ms.saturating_sub(*committed_at) < ACTIVATION_TOKEN_TTL_MS
+    });
     // Still at/over the ceiling (a burst inside one iteration): evict the
     // oldest committed entries until there is room for one more.
     while state.activation_tokens.len() >= MAX_ACTIVATION_TOKENS {
@@ -214,7 +214,9 @@ unsafe extern "C" fn activation_token_commit(
                 // otherwise pin entries forever.
                 let now_ms = (*state).now_ms();
                 expire_activation_tokens(&mut *state, now_ms);
-                (*state).activation_tokens.insert(token.clone(), (seat, now_ms));
+                (*state)
+                    .activation_tokens
+                    .insert(token.clone(), (seat, now_ms));
             }
         }
         if let Ok(token) = CString::new(token) {

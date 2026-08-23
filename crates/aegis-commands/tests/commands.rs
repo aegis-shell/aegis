@@ -439,6 +439,11 @@ fn system_control_commands_send_typed_actions() {
     assert_eq!(receipt["ok"], true);
     aegis_commands::run(&path, &["system".into(), "step-volume".into(), "-2".into()]).unwrap();
     aegis_commands::run(&path, &["system".into(), "wifi".into(), "off".into()]).unwrap();
+    aegis_commands::run(
+        &path,
+        &["system".into(), "power-mode".into(), "awake".into()],
+    )
+    .unwrap();
     assert_eq!(
         handler.commands.lock().unwrap().as_slice(),
         &[
@@ -450,6 +455,11 @@ fn system_control_commands_send_typed_actions() {
             },
             Command::System {
                 action: aegis_ipc::SystemAction::SetWifi { enabled: false },
+            },
+            Command::System {
+                action: aegis_ipc::SystemAction::SetPowerMode {
+                    mode: aegis_model::power::PowerMode::Awake,
+                },
             },
         ]
     );

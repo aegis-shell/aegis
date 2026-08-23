@@ -179,12 +179,14 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Move the host into a binding declared after the device so Rust drops the
     // host-owned VkSurfaceKHR before Flux destroys its VkInstance.
     let mut host = host_bootstrap;
-    host.set_touchpad_config(
-        config
-            .as_ref()
-            .map(|c| c.input.touchpad)
-            .unwrap_or_default(),
-    );
+    let mut input_status =
+        host.set_input_config(config.as_ref().map(|c| c.input).unwrap_or_default());
+    // The backend has no keyboard device model; the runtime owns the
+    // persisted repeat profile.
+    input_status.keyboard = config
+        .as_ref()
+        .map(|c| c.input.keyboard)
+        .unwrap_or_default();
     log::info!(
         "flux: device created for {} backend; dma-buf {}",
         host.name(),
@@ -488,6 +490,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.set_output_policies(c.output_policies());
         server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
         server.set_minimize_animation(c.dock.minimize_animation);
+        server.set_keyboard_repeat(c.input.keyboard);
     }
     shell.set_reduced_motion(desktop_preferences.reduced_motion);
     server.set_reduced_motion(desktop_preferences.reduced_motion);
@@ -552,7 +555,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut system_status = aegis_shell::detect_system_status();
     system_status.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
     system_status.tiled = server.tiling();
-    system_status.touchpad = host.touchpad_status();
+    system_status.input = input_status;
     system_status.display = aegis_shell::DisplayStatus {
         configurable: host.name() == "drm",
         outputs: server.output_infos(),
@@ -894,7 +897,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let settings_snapshot = aegis_ipc::SettingsSnapshot {
         revision: settings_revision,
-        touchpad: system_status.touchpad.clone(),
+        input: system_status.input.clone(),
         display: system_status.display.clone(),
         preferences: desktop_preferences.clone(),
         idle: config
@@ -1141,7 +1144,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         previous_render_at,
         night_light: aegis_model::night_light::NightLight::default(),
         night_light_last_eval: std::time::Instant::now() - std::time::Duration::from_secs(2),
-        touchpad_status_last_probe: std::time::Instant::now() - std::time::Duration::from_secs(3),
+        input_status_last_probe: std::time::Instant::now() - std::time::Duration::from_secs(3),
     }
     .run_loop()
 }

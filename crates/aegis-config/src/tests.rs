@@ -565,8 +565,21 @@ fn config_store_composes_typed_edits_without_losing_fields() {
         pointer_speed: 0.25,
         ..TouchpadConfig::default()
     };
+    let mouse = aegis_model::input::MouseConfig {
+        pointer_speed: -0.3,
+        scroll_speed: 2.0,
+        ..aegis_model::input::MouseConfig::default()
+    };
+    let keyboard = aegis_model::input::KeyboardConfig {
+        repeat_rate: 40,
+        repeat_delay_ms: 180,
+    };
     store
-        .apply(ConfigEdit::SetTouchpad { config: touchpad })
+        .apply(ConfigEdit::SetInput {
+            touchpad,
+            mouse,
+            keyboard,
+        })
         .unwrap();
     store
         .apply(ConfigEdit::SetOutput {
@@ -588,6 +601,8 @@ fn config_store_composes_typed_edits_without_losing_fields() {
     assert_eq!(store.path(), path);
     assert_eq!(config.dock.pinned, vec!["foot.desktop"]);
     assert_eq!(config.input.touchpad, touchpad);
+    assert_eq!(config.input.mouse, mouse);
+    assert_eq!(config.input.keyboard, keyboard);
     assert_eq!(config.outputs.len(), 1);
     assert_eq!(config.outputs[0].connector, "DP-1");
     let _ = std::fs::remove_file(&path);
@@ -598,6 +613,14 @@ fn touchpad_config_parses_defaults_and_rejects_bad_speed() {
     let defaults = Config::parse("schema_version = 2\n").unwrap();
     assert_eq!(defaults.input.touchpad, TouchpadConfig::default());
     assert!(defaults.input.touchpad.natural_scroll);
+    assert_eq!(
+        defaults.input.mouse,
+        aegis_model::input::MouseConfig::default()
+    );
+    assert_eq!(
+        defaults.input.keyboard,
+        aegis_model::input::KeyboardConfig::default()
+    );
 
     let cfg = Config::parse(
         "schema_version = 2\n\
@@ -608,12 +631,14 @@ fn touchpad_config_parses_defaults_and_rejects_bad_speed() {
              drag_lock = true\n\
              disable_while_typing = false\n\
              pointer_speed = 0.35\n\
+             scroll_speed = 1.5\n\
              scroll_method = \"edge\"\n",
     )
     .unwrap();
     assert!(cfg.input.touchpad.natural_scroll);
     assert!(!cfg.input.touchpad.tap_to_click);
     assert_eq!(cfg.input.touchpad.pointer_speed, 0.35);
+    assert_eq!(cfg.input.touchpad.scroll_speed, 1.5);
     assert_eq!(cfg.input.touchpad.scroll_method, TouchpadScrollMethod::Edge);
 
     let err =
@@ -622,11 +647,55 @@ fn touchpad_config_parses_defaults_and_rejects_bad_speed() {
         err.iter()
             .any(|d| d.field.as_deref() == Some("input.touchpad.pointer_speed"))
     );
+    let err =
+        Config::parse("schema_version = 2\n[input.touchpad]\nscroll_speed = 0.0\n").unwrap_err();
+    assert!(
+        err.iter()
+            .any(|d| d.field.as_deref() == Some("input.touchpad.scroll_speed"))
+    );
 }
 
 #[test]
-fn config_store_sets_touchpad_profile_and_preserves_other_content() {
-    let path = temp_config_path("touchpad");
+fn mouse_and_keyboard_tables_parse_and_validate() {
+    let cfg = Config::parse(
+        "schema_version = 2\n\
+             [input.mouse]\n\
+             natural_scroll = true\n\
+             pointer_speed = -0.5\n\
+             scroll_speed = 3.0\n\
+             [input.keyboard]\n\
+             repeat_rate = 40\n\
+             repeat_delay_ms = 300\n",
+    )
+    .unwrap();
+    assert!(cfg.input.mouse.natural_scroll);
+    assert_eq!(cfg.input.mouse.pointer_speed, -0.5);
+    assert_eq!(cfg.input.mouse.scroll_speed, 3.0);
+    assert_eq!(cfg.input.keyboard.repeat_rate, 40);
+    assert_eq!(cfg.input.keyboard.repeat_delay_ms, 300);
+
+    for (field, document) in [
+        ("input.mouse.pointer_speed", "pointer_speed = 1.5\n"),
+        ("input.mouse.scroll_speed", "scroll_speed = 20.0\n"),
+        ("input.keyboard.repeat_rate", "repeat_rate = 500\n"),
+        ("input.keyboard.repeat_delay_ms", "repeat_delay_ms = 0\n"),
+    ] {
+        let table = match field {
+            "input.mouse.pointer_speed" | "input.mouse.scroll_speed" => "mouse",
+            _ => "keyboard",
+        };
+        let err =
+            Config::parse(&format!("schema_version = 2\n[input.{table}]\n{document}")).unwrap_err();
+        assert!(
+            err.iter().any(|d| d.field.as_deref() == Some(field)),
+            "{field}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn config_store_sets_input_profile_and_preserves_other_content() {
+    let path = temp_config_path("input");
     let original = "schema_version = 2\n\n# keep this\n[ui]\nreduced_motion = true\n";
     std::fs::write(&path, original).unwrap();
     let profile = TouchpadConfig {
@@ -636,15 +705,31 @@ fn config_store_sets_touchpad_profile_and_preserves_other_content() {
         drag_lock: true,
         disable_while_typing: false,
         pointer_speed: -0.4,
+        scroll_speed: 1.5,
         scroll_method: TouchpadScrollMethod::Edge,
     };
+    let mouse = aegis_model::input::MouseConfig {
+        natural_scroll: true,
+        pointer_speed: 0.5,
+        scroll_speed: 0.75,
+    };
+    let keyboard = aegis_model::input::KeyboardConfig {
+        repeat_rate: 30,
+        repeat_delay_ms: 400,
+    };
     ConfigStore::new(&path)
-        .apply(ConfigEdit::SetTouchpad { config: profile })
+        .apply(ConfigEdit::SetInput {
+            touchpad: profile,
+            mouse,
+            keyboard,
+        })
         .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("# keep this"), "comment survives: {text}");
     let cfg = load(&path).unwrap().expect("file remains loadable");
     assert_eq!(cfg.input.touchpad, profile);
+    assert_eq!(cfg.input.mouse, mouse);
+    assert_eq!(cfg.input.keyboard, keyboard);
     assert!(cfg.ui.reduced_motion);
     let _ = std::fs::remove_file(&path);
 }

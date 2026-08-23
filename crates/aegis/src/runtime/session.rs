@@ -166,6 +166,7 @@ fn export_activation_environment() {
 
 const CONTROL_MESSAGE_LOCK: &[u8] = b"LOCK";
 const CONTROL_MESSAGE_STOP: &[u8] = b"STOP";
+const CONTROL_MESSAGE_MODE_PREFIX: &[u8] = b"MODE ";
 const RESTART_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
 const OUTPUT_WAKE_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -241,6 +242,10 @@ pub(super) struct IdleProcess {
     stopping: bool,
     restart_at: std::time::Instant,
     output_wake: OutputWakeRecovery,
+    /// Current session power mode (ADR-0140). Cached so a respawned
+    /// coordinator re-arms the same mode the session selected, and so
+    /// `set_mode` can skip redundant datagrams.
+    mode: aegis_model::power::PowerMode,
 }
 
 impl IdleProcess {
@@ -258,6 +263,7 @@ impl IdleProcess {
             stopping: false,
             restart_at: now,
             output_wake: OutputWakeRecovery::new(now),
+            mode: aegis_model::power::PowerMode::default(),
         };
         if available {
             process.spawn();
@@ -291,6 +297,46 @@ impl IdleProcess {
             self.stopping = false;
             self.spawn();
         }
+    }
+
+    /// Switch the session power mode live (ADR-0140). The hot path is one
+    /// datagram to the running coordinator, which re-arms its stage
+    /// notifications without a process bounce; if the coordinator is
+    /// between exec and bind the mode is cached and applied on the next
+    /// spawn through `--mode`, and an unreachable coordinator is replaced.
+    pub(super) fn set_mode(&mut self, mode: aegis_model::power::PowerMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        if !self.available {
+            return;
+        }
+        self.maintain();
+        let message = [CONTROL_MESSAGE_MODE_PREFIX, mode.as_str().as_bytes()].concat();
+        if !self.stopping && send_control(&message) {
+            return;
+        }
+        log::debug!("session: idle coordinator not reachable for mode change; replacing it");
+        self.output_wake.require(
+            OutputWakeReason::CoordinatorRecovery,
+            std::time::Instant::now(),
+        );
+        self.stopping = true;
+        if !send_control(CONTROL_MESSAGE_STOP)
+            && let Some(child) = self.child.as_mut()
+        {
+            let _ = child.kill();
+        }
+        if self.child.is_none() {
+            self.stopping = false;
+            self.spawn();
+        }
+    }
+
+    /// The session's current power mode (ADR-0140).
+    pub(super) fn mode(&self) -> aegis_model::power::PowerMode {
+        self.mode
     }
 
     /// Reap/restart the coordinator. Output-wake recovery remains sticky until
@@ -424,6 +470,7 @@ impl IdleProcess {
                 }),
             ])
             .args(["--dim-percent", &settings.dim_percent.to_string()])
+            .args(["--mode", self.mode.as_str()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null());
         if self.nested {

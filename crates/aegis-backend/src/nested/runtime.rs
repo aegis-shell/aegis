@@ -188,7 +188,7 @@ impl NestedHost {
                 state,
                 ash: None,
                 vk_surface: 0,
-                touchpad_config: aegis_model::input::TouchpadConfig::default(),
+                input_config: aegis_model::input::InputConfig::default(),
                 wakeup_fd: None,
             })
         }
@@ -356,19 +356,28 @@ impl Backend for NestedHost {
         }]
     }
 
-    fn set_touchpad_config(
+    fn set_input_config(
         &mut self,
-        config: aegis_model::input::TouchpadConfig,
-    ) -> aegis_model::input::TouchpadStatus {
-        self.touchpad_config = config;
-        self.touchpad_status()
+        config: aegis_model::input::InputConfig,
+    ) -> aegis_model::input::InputStatus {
+        self.input_config = config;
+        self.input_status()
     }
 
-    fn touchpad_status(&self) -> aegis_model::input::TouchpadStatus {
-        aegis_model::input::TouchpadStatus {
+    fn input_status(&self) -> aegis_model::input::InputStatus {
+        aegis_model::input::InputStatus {
+            // The outer compositor owns the physical devices while this
+            // backend is nested.
             configurable: false,
-            config: self.touchpad_config,
-            ..aegis_model::input::TouchpadStatus::default()
+            touchpad: aegis_model::input::TouchpadStatus {
+                config: self.input_config.touchpad,
+                ..aegis_model::input::TouchpadStatus::default()
+            },
+            mouse: aegis_model::input::MouseStatus {
+                config: self.input_config.mouse,
+                ..aegis_model::input::MouseStatus::default()
+            },
+            keyboard: self.input_config.keyboard,
         }
     }
 

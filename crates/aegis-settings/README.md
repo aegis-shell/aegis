@@ -38,9 +38,9 @@ The command panel embeds the registry and renders the selected module inline.
 The host owns navigation and submits typed settings actions; modules never
 touch the socket themselves.
 
-The `display`, `touchpad`, `appearance`, and `power` modules are editable.
-Appearance submits the complete desktop preference profile as one
-explicit-apply transaction. `mouse`, `keyboard`, `users`, and `window-rules`
+The `display`, `input`, `appearance`, `dock`, and `power` modules are
+editable. Appearance submits the complete desktop preference profile as one
+explicit-apply transaction. `users` and `window-rules`
 keep stable routes but remain unavailable until their backends exist.
 
 ## Use

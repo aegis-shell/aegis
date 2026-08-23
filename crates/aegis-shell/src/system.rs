@@ -31,9 +31,10 @@ pub fn detect_system_status() -> SystemStatus {
         brightness: detect_brightness(),
         do_not_disturb: false,
         tiled: false,
-        touchpad: aegis_model::input::TouchpadStatus::default(),
+        input: aegis_model::input::InputStatus::default(),
         display: DisplayStatus::default(),
         idle_inhibited: false,
+        power_mode: aegis_model::power::PowerMode::default(),
         // Compositor-owned; the runtime patches its live value onto every
         // host sample before publishing (ADR-0128).
         capture_streams: 0,
@@ -73,9 +74,10 @@ pub fn detect_system_status_lightweight(
         brightness: detect_brightness(),
         do_not_disturb: false,
         tiled: false,
-        touchpad: aegis_model::input::TouchpadStatus::default(),
+        input: aegis_model::input::InputStatus::default(),
         display: DisplayStatus::default(),
         idle_inhibited: false,
+        power_mode: aegis_model::power::PowerMode::default(),
         // Compositor-owned; the runtime patches its live value onto every
         // host sample before publishing (ADR-0128).
         capture_streams: 0,
@@ -474,8 +476,12 @@ mod tests {
         assert_eq!(status.wifi_enabled, None);
         assert_eq!(status.bluetooth_enabled, None);
         assert_eq!(
-            status.touchpad.config,
+            status.input.touchpad.config,
             aegis_model::input::TouchpadConfig::default()
+        );
+        assert_eq!(
+            status.input.keyboard,
+            aegis_model::input::KeyboardConfig::default()
         );
     }
 

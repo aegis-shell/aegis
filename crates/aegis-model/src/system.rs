@@ -4,7 +4,8 @@
 //! the current compositor session. They are deliberately separate from
 //! [`crate::settings`], whose transactions persist configuration.
 
-use crate::input::TouchpadStatus;
+use crate::input::InputStatus;
+use crate::power::PowerMode;
 use crate::settings::DisplayStatus;
 
 /// Coarse connectivity state shown by desktop status surfaces.
@@ -92,13 +93,20 @@ pub struct SystemStatus {
     /// Layout mode for the current workspace.
     pub tiled: bool,
     /// Included so one host probe can feed both status and settings surfaces.
-    pub touchpad: TouchpadStatus,
+    pub input: InputStatus,
     /// Included so one host snapshot can feed both status and settings surfaces.
     pub display: DisplayStatus,
-    /// Session-owned "always on" idle inhibition (the command panel toggle).
-    /// Unlike the connection-scoped IPC inhibitors it survives client
-    /// disconnects; the runtime owns and reconciles it.
+    /// Session-owned "always on" idle inhibition — the derived legacy view
+    /// of the session power mode (ADR-0140): true exactly when the mode
+    /// disarms the automatic lock stage. Unlike the connection-scoped IPC
+    /// inhibitors it survives client disconnects; the runtime owns and
+    /// reconciles it.
     pub idle_inhibited: bool,
+    /// Session power mode (ADR-0140): which idle stages stay armed. Like
+    /// `idle_inhibited` this is compositor-owned runtime state; the host
+    /// status poller must not clear it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub power_mode: PowerMode,
     /// Live compositor-owned capture streams (`StreamOutputStart`,
     /// ADR-0052). Chrome shows a persistent, non-interactive recording
     /// indicator while this is non-zero (ADR-0128). Compositor-owned like
@@ -191,8 +199,18 @@ pub enum SystemAction {
     /// Hold or release the session-owned "always on" idle inhibitor (the
     /// command panel toggle). While held, idle notifications stay resumed:
     /// no automatic dimming, locking, or display power-off.
+    ///
+    /// Superseded by [`SystemAction::SetPowerMode`] (ADR-0140), which covers
+    /// this shape as `Awake`/`Balanced`. Kept on the wire for older clients;
+    /// the runtime maps it onto the mode.
     SetIdleInhibit {
         inhibit: bool,
+    },
+    /// Select the session power mode (ADR-0140): which idle stages stay
+    /// armed. Session-scoped runtime state, not persisted; manual locking
+    /// and lock-before-sleep are unaffected by every mode.
+    SetPowerMode {
+        mode: PowerMode,
     },
 }
 

@@ -36,7 +36,12 @@ pub use aegis_semantic::{
 
 /// The protocol major version this build speaks. A client offering a newer
 /// major version is refused at the [`Request::Hello`] handshake; an older
-/// client is answered at its own version. Version 30 adds compositor-managed
+/// client is answered at its own version. Version 31 renames the settings
+/// snapshot's `touchpad` field to `input` and replaces the `SetTouchpad`
+/// action with `SetInput`, carrying the complete keyboard, mouse, and
+/// touchpad profile (repeat rate/delay, mouse pointer and scroll speed,
+/// touchpad scroll speed) in one transaction. Version 30 adds
+/// compositor-managed
 /// fullscreen (`Command::SetFullscreen` and its `TransactOp` mirror): the
 /// same output-covering state a client's own
 /// `xdg_toplevel.set_fullscreen` request produces, driven from chrome, key
@@ -101,7 +106,7 @@ pub use aegis_semantic::{
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 /// Built-in owner-only scope used by native `aegis` commands for Interaction Domain
 /// recovery and administration. The Unix socket remains user-private; naming
 /// this scope opts the connection into the high-risk Interaction Domain operation allowlist

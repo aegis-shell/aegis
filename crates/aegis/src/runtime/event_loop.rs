@@ -264,11 +264,25 @@ impl CompositorRuntime {
                     continue;
                 }
             };
+            // Pointer-motion fast path (ADR-0101): land the cursor on its
+            // KMS plane immediately, out-of-band from the render schedule.
+            // The backend's cursor-only atomic commit does not wait for an
+            // in-flight primary-plane flip, so a moving pointer stays at
+            // input cadence even while the compositor is mid-frame or while
+            // KMS still owns the previous composite — the exact intervals
+            // where cursor lag was most visible (busy animations, streams,
+            // continuously updating clients). The render transaction below
+            // still runs when its gate opens; with no other damage it
+            // restates an already-current cursor and completes frame
+            // callbacks as before.
+            let cursor_fast_path = frame.cursor_fast_path;
+            if cursor_fast_path {
+                self.present_pointer_cursor(&frame);
+            }
             self.queue_frame_state(frame);
             if !self.presentation.can_redraw() {
                 continue;
             }
-
             self.presentation.begin_redraw();
             let mut frame = self
                 .pending_frame

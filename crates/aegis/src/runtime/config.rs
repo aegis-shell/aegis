@@ -386,6 +386,7 @@ pub(super) fn reload_config(
             server.set_decoration_policy(c.ui.window_decorations);
             server.set_output_policies(c.output_policies());
             server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
+            server.set_keyboard_repeat(c.input.keyboard);
         } else {
             server.set_layout_params(aegis_model::layout::LayoutParams::default());
             server.set_tiling_default(false);
@@ -397,6 +398,7 @@ pub(super) fn reload_config(
             server.set_decoration_policy(aegis_model::window::DecorationPolicy::default());
             server.set_output_policies(std::collections::HashMap::new());
             server.set_allow_quit_while_locked(false);
+            server.set_keyboard_repeat(aegis_model::input::KeyboardConfig::default());
         }
         cursor_cache.set_preferences(preferences.cursor_theme, preferences.cursor_size);
     };

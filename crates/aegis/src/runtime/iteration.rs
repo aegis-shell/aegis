@@ -8,12 +8,12 @@ use super::*;
 /// `runtime.rs` (see CHANGELOG 0.0.41: 5s regressed to visible IO churn).
 const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Cadence for probing `Host::touchpad_status`. The probe issues several
-/// libinput config queries per touchpad and builds a sorted `Vec<String>`;
+/// Cadence for probing `Host::input_status`. The probe issues several
+/// libinput config queries per device and builds a sorted `Vec<String>`;
 /// the result only changes on hotplug or a settings write (both of which
 /// refresh the cached status through their own paths), so per-frame probing
 /// was pure device interrogation on the render thread.
-const TOUCHPAD_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+const INPUT_STATUS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub(super) struct PendingScreenshot {
     pub(super) command: aegis_ipc::Command,
@@ -583,10 +583,17 @@ impl CompositorRuntime {
             detected.do_not_disturb = self.notif_queue.lock().unwrap().do_not_disturb();
             detected.tiled = self.server.tiling();
             detected.idle_inhibited = self.system_status.idle_inhibited;
+            // Compositor-owned like `idle_inhibited`: the session power mode
+            // (ADR-0140) must survive a host status sample.
+            detected.power_mode = self.idle_process.mode();
             // Compositor-owned like `idle_inhibited`: the live capture
             // stream count (ADR-0128) must survive a host status sample.
             detected.capture_streams = self.system_status.capture_streams;
-            detected.touchpad = self.host.touchpad_status();
+            let mut input_status = self.host.input_status();
+            // The backend has no keyboard device model; the runtime owns the
+            // persisted repeat profile.
+            input_status.keyboard = self.system_status.input.keyboard;
+            detected.input = input_status;
             detected.display = self.system_status.display.clone();
             if detected != self.system_status {
                 self.system_status = detected;
@@ -615,17 +622,20 @@ impl CompositorRuntime {
                 self.damage.chrome_dirty = true;
             }
         }
-        // Touchpad presence/config only moves on hotplug or a settings
+        // Input device presence/config only moves on hotplug or a settings
         // write, and the probe interrogates libinput per device — throttle
         // it instead of running it on every frame-loop wakeup. A device
         // hotplug re-probes within the interval because the probe is due
         // whenever the last one is older than the interval; the settings
         // path below also refreshes immediately after applying a config.
-        if self.touchpad_status_last_probe.elapsed() >= TOUCHPAD_PROBE_INTERVAL {
-            self.touchpad_status_last_probe = std::time::Instant::now();
-            let touchpad_status = self.host.touchpad_status();
-            if touchpad_status != self.system_status.touchpad {
-                self.system_status.touchpad = touchpad_status;
+        if self.input_status_last_probe.elapsed() >= INPUT_STATUS_PROBE_INTERVAL {
+            self.input_status_last_probe = std::time::Instant::now();
+            let mut input_status = self.host.input_status();
+            // The backend has no keyboard device model; the runtime owns the
+            // persisted repeat profile.
+            input_status.keyboard = self.system_status.input.keyboard;
+            if input_status != self.system_status.input {
+                self.system_status.input = input_status;
                 self.publish_settings();
             }
         }
@@ -710,12 +720,16 @@ impl CompositorRuntime {
                 .set_configured_color_policies(configured_color_policies(self.config.as_ref()));
             self.host
                 .set_configured_icc_profiles(configured_icc_profiles(self.config.as_ref()));
-            self.system_status.touchpad = self.host.set_touchpad_config(
-                self.config
-                    .as_ref()
-                    .map(|c| c.input.touchpad)
-                    .unwrap_or_default(),
-            );
+            let mut input_status = self
+                .host
+                .set_input_config(self.config.as_ref().map(|c| c.input).unwrap_or_default());
+            input_status.keyboard = self
+                .config
+                .as_ref()
+                .map(|c| c.input.keyboard)
+                .unwrap_or_default();
+            self.server.set_keyboard_repeat(input_status.keyboard);
+            self.system_status.input = input_status;
             publish_system_status_parts(
                 &self.system_status,
                 &mut self.shell,
@@ -1492,6 +1506,7 @@ impl CompositorRuntime {
                     &self.notif_queue,
                     &mut self.system_status,
                     &mut self.ipc_idle_inhibits,
+                    &mut self.idle_process,
                     action,
                 )
             };
@@ -1553,6 +1568,7 @@ impl CompositorRuntime {
                     &self.notif_queue,
                     &mut self.system_status,
                     &mut self.ipc_idle_inhibits,
+                    &mut self.idle_process,
                     action.clone(),
                 ) {
                     Ok(()) => {

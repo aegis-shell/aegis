@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 30, carried as length-framed JSON over the
+The aegis IPC is protocol version 31, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -332,7 +332,9 @@ chrome and external IPC clients:
 | `brightness` | optional percentage | Backlight level; absent without a controllable backlight. |
 | `do_not_disturb` | boolean | Current notification suppression state. |
 | `tiled` | boolean | Layout mode for the current workspace. |
-| `touchpad`, `display` | status objects | Host-probe data shared with settings surfaces; persistent editors should use `GetSettings` for revisioned state. |
+| `idle_inhibited` | boolean | Derived mirror of the session power mode: true exactly when the mode disarms the automatic lock stage (`awake`). Compositor-owned; survives host status samples. |
+| `power_mode` | `balanced`, `awake`, or `secure` | Session power mode (ADR-0140): which idle stages stay armed. Compositor-owned; additive with a `balanced` default. |
+| `input`, `display` | status objects | Host-probe data shared with settings surfaces; persistent editors should use `GetSettings` for revisioned state. |
 
 `System { action }` accepts one immediate action:
 
@@ -347,6 +349,8 @@ chrome and external IPC clients:
 | `SetDoNotDisturb` | `enabled` | Change notification suppression. |
 | `SetTiling` | `enabled` | Set the current workspace layout mode. |
 | `SetOutputPower` | `powered` | Power all physical outputs on or off. Power-off is accepted only after a secure lock frame is confirmed; wake is always safe. Used by `aegis-idle`. |
+| `SetIdleInhibit` | `inhibit` | Legacy single-bit shape (ADR-0140): maps onto the session power mode — `true` selects `awake`, `false` selects `balanced`. |
+| `SetPowerMode` | `mode` | Select the session power mode (`balanced`, `awake`, `secure`; ADR-0140): which idle stages stay armed. Session runtime state, not persisted; manual locking and lock-before-sleep are unaffected. |
 
 The command requires `control`, a live privileged lease, and permission for
 the `SystemControl` operation when the connection's scope restricts `ops`. The server
@@ -365,7 +369,7 @@ compositor configuration.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `revision` | unsigned integer | Monotonic settings revision. |
-| `touchpad` | `TouchpadStatus` | Effective profile, detected devices, capabilities, and configurability. |
+| `input` | `InputStatus` | Effective keyboard profile plus touchpad and mouse status: profile, detected devices, capabilities, and configurability. |
 | `display` | `DisplayStatus` | Connected outputs, advertised modes, configurability, and the last apply error. |
 | `preferences` | `DesktopPreferences` | Complete effective desktop profile after configuration defaults and explicit startup overrides. |
 | `idle` | `IdleSettings` | Complete validated inactivity, lock, output-power, and suspend policy. |
@@ -400,7 +404,7 @@ Nonzero stage times must be strictly increasing in the order shown.
 
 | Action | Payload | Effect |
 |--------|---------|--------|
-| `SetTouchpad` | complete `TouchpadConfig` | Validate, persist `[input.touchpad]`, and apply the profile to live libinput devices. |
+| `SetInput` | complete `InputConfig` (keyboard, mouse, touchpad) | Validate, persist `[input]`, apply the mouse and touchpad profiles to live libinput devices, and advertise the keyboard repeat rate to clients. |
 | `SetDisplay` | connector, mode, scale, position, and primary flag | Validate, atomically persist the output entry, and reconcile the live direct-DRM output. |
 | `SetDesktopPreferences` | complete `DesktopPreferences` | Validate, atomically persist the `[appearance]` and preference-related `[ui]` fields, apply chrome and cursor policy, and refresh application icons. |
 | `SetIdle` | complete `IdleSettings` | Validate and atomically persist `[idle]`, then replace the supervised idle policy client. |
@@ -417,10 +421,10 @@ the revision, publishes the replacement snapshot, broadcasts
 `SettingsChanged`, and records the action and before/after revisions in the
 mutation journal.
 
-Display, touchpad, desktop appearance, and idle power policy are settings
-domains in the current snapshot. Mouse, keyboard, accounts, and window-rule
-modules remain unavailable until their authoritative services expose typed
-state and actions.
+Display, input (keyboard repeat, mouse and touchpad motion and scrolling),
+desktop appearance, and idle power policy are settings domains in the current
+snapshot. Accounts and window-rule modules remain unavailable until their
+authoritative services expose typed state and actions.
 See the [Settings Reference](settings.md#modules) and
 [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
 

@@ -398,6 +398,8 @@ impl DrmBackend {
             configured_icc,
             touchpads: HashMap::new(),
             touchpad_config: TouchpadConfig::default(),
+            mice: HashMap::new(),
+            mouse_config: MouseConfig::default(),
             wakeup_fd: None,
         };
         // udev_assign_seat + dispatch queues the initial DeviceAdded events
@@ -953,38 +955,63 @@ impl DrmBackend {
     }
 
     /// Commit only KMS cursor-plane state while retaining the currently
-    /// scanned-out primary framebuffer. This is the pointer-motion fast path:
-    /// no Vulkan frame, dma-buf export, GEM import, or primary-plane flip.
+    /// scanned-out primary framebuffer. This is the pointer-motion fast
+    /// path: no Vulkan frame, dma-buf export, GEM import, or primary-plane
+    /// flip.
+    ///
+    /// A cursor commit is deliberately *not* synchronized with an in-flight
+    /// primary-plane flip: the cursor plane has no dependency on which
+    /// framebuffer the primary plane scans out, so waiting for the previous
+    /// batch's vblank would serialize pointer updates to the composite
+    /// frame rate precisely when the compositor is busiest (animations,
+    /// streams, continuously updating clients) — the exact condition under
+    /// which cursor lag is most visible. KMS applies cursor-only property
+    /// deltas asynchronously on drivers that support it (i915 among them)
+    /// and at the next vblank elsewhere; either way the pointer never waits
+    /// behind a primary flip.
+    ///
+    /// Why overlapping commits are safe without a completion signal:
+    /// - The request restates the *complete* cursor-plane state (FB,
+    ///   position, hotspot) rather than a delta, so re-submitting or
+    ///   superseding an earlier commit is idempotent; last submission wins.
+    /// - The DRM core executes commits from one file description strictly
+    ///   in submission order, so a commit issued while an earlier
+    ///   cursor-only commit is still pending queues behind it rather than
+    ///   racing it.
+    /// - No `PAGE_FLIP_EVENT` is requested. The commit owns no primary
+    ///   plane, so a flip event would either be ambiguous or would push
+    ///   this CRTC into `pending_flips` and re-introduce the serialization
+    ///   this path exists to avoid. Failure is reported synchronously by
+    ///   errno; a transient `EBUSY` surfaces as `DrmError::Busy` and the
+    ///   runtime's existing retry pacing applies.
+    /// - Call rate is bounded by the event loop itself: one commit per
+    ///   iteration, and iterations are woken by input readability.
     pub fn present_cursor(&mut self) -> Result<(), DrmError> {
         if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
         }
-        if !self.pending_flips.is_empty() {
-            return Err(DrmError::Busy);
-        }
         if self.pending_resize.is_some() {
             return Err(DrmError::Reconfigured);
         }
-        let framebuffer = self
+        // A cursor-only commit needs a live primary framebuffer only as a
+        // precondition that scanout exists at all; the request below never
+        // touches the primary plane, so the handle itself is not restated.
+        if self
             .current
             .as_ref()
             .map(|scanout| scanout.framebuffer)
-            .ok_or(DrmError::ScanoutUnsupported)?;
+            .is_none()
+        {
+            return Err(DrmError::ScanoutUnsupported);
+        }
         let mut request = atomic::AtomicModeReq::new();
         for output in &self.displays.outputs {
-            // Re-state the unchanged primary plane so PAGE_FLIP_EVENT has an
-            // unambiguous CRTC target on drivers that do not emit events for
-            // a cursor-only property delta.
-            request.add_property(
-                output.primary.handle,
-                output.primary.props.fb_id,
-                property::Value::Framebuffer(Some(framebuffer)),
-            );
-            request.add_property(
-                output.primary.handle,
-                output.primary.props.crtc_id,
-                property::Value::CRTC(Some(output.crtc)),
-            );
+            // Do NOT restate primary-plane FB/CRTC here. Restating them is
+            // what made this commit participate in primary-plane
+            // bookkeeping (and, on drivers that latch cursor updates at
+            // vblank only when the primary plane is touched, forced it to
+            // wait for the in-flight flip). The cursor plane is updated
+            // independently of the primary plane's framebuffer.
             add_cursor_plane_to_commit(
                 &mut request,
                 output,
@@ -992,10 +1019,10 @@ impl DrmBackend {
                 &self.cursor_buffers,
             );
         }
-        if let Err(error) = self.card().atomic_commit(
-            AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
-            request,
-        ) {
+        if let Err(error) = self
+            .card()
+            .atomic_commit(AtomicCommitFlags::NONBLOCK, request)
+        {
             let cursor_rejected = !commit_error_is_transient(&error)
                 && (self.cursor_state.is_some() || self.cursor_plane_active);
             if cursor_rejected {
@@ -1012,12 +1039,6 @@ impl DrmBackend {
             // A cursor-active commit landed: the plane is healthy again.
             self.hardware_cursor_failures = 0;
         }
-        self.pending_flips = self
-            .displays
-            .outputs
-            .iter()
-            .map(|output| output.crtc)
-            .collect();
         Ok(())
     }
 

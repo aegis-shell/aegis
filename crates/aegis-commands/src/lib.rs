@@ -664,6 +664,13 @@ fn dispatch_system(socket: &Path, command: SystemCmd, json: bool) -> Result<Stri
             },
             "Do Not Disturb change queued",
         ),
+        SystemCmd::PowerMode { mode } => {
+            let mode = aegis_model::power::PowerMode::from(mode);
+            (
+                aegis_ipc::SystemAction::SetPowerMode { mode },
+                "power mode change queued",
+            )
+        }
     };
     let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
     client.apply_system_action(action).map_err(io_err)?;

@@ -511,6 +511,45 @@ fn output_power_command_has_a_stable_tagged_shape() {
 }
 
 #[test]
+fn power_mode_command_round_trips_with_the_snake_case_tag() {
+    let cmd = Command::System {
+        action: SystemAction::SetPowerMode {
+            mode: aegis_model::power::PowerMode::Secure,
+        },
+    };
+    let json = serde_json::to_string(&cmd).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"System","action":{"type":"SetPowerMode","mode":"secure"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    assert_eq!(cmd.op_class(), ActorCapability::SystemControl);
+    assert!(cmd.required_cap().control);
+    assert!(cmd.validate().is_ok());
+}
+
+#[test]
+fn system_status_carries_the_session_power_mode_with_a_default() {
+    // Additive field (ADR-0140): a peer that predates it deserializes the
+    // same status without the key, so no protocol bump is required.
+    let status = SystemStatus {
+        power_mode: aegis_model::power::PowerMode::Awake,
+        ..SystemStatus::default()
+    };
+    let json = serde_json::to_string(&status).unwrap();
+    assert!(json.contains(r#""power_mode":"awake""#), "{json}");
+    let legacy_json = json.replace(r#","power_mode":"awake""#, "");
+    let parsed: SystemStatus = serde_json::from_str(&legacy_json).unwrap();
+    assert_eq!(parsed.power_mode, aegis_model::power::PowerMode::Balanced);
+    assert_eq!(
+        serde_json::from_str::<SystemStatus>(&json)
+            .unwrap()
+            .power_mode,
+        aegis_model::power::PowerMode::Awake
+    );
+}
+
+#[test]
 fn move_to_workspace_command_round_trips() {
     let cmd = Command::MoveToWorkspace {
         window: WindowId(42),
