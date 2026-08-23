@@ -1338,6 +1338,8 @@ pub(super) fn draw_client_scene(
     server: &aegis_compositor::Server,
     scale: f32,
     retain_preview_sources: bool,
+    soft_shadows: Option<&aegis_render::SoftShadowLayer<'_>>,
+    shadow_style: aegis_model::window::WindowShadowStyle,
 ) {
     canvas.save();
     if scale != 1.0 {
@@ -1416,6 +1418,8 @@ pub(super) fn draw_client_scene(
             &shm,
             &dmabuf,
             &windows,
+            soft_shadows,
+            shadow_style,
         );
     }
     // ADR-0029 close transitions: fading ghosts of just-closed windows paint
@@ -1940,3 +1944,171 @@ pub(super) fn draw_software_cursor(
 
 #[cfg(test)]
 mod tests;
+
+/// Compositor-side blurred drop shadows for floating windows (ADR-0139):
+/// the Optics `flux_shadow_filter` renders a rounded-rect mask through a
+/// Gaussian blur; this wrapper owns the filter, renders each window's mask
+/// into a per-slot capture target, and records the shadow passes at a pass
+/// boundary. `aegis-render` then composites the borrowed outputs beneath
+/// each window tree.
+///
+/// Ownership mirrors `LauncherBackdrop`: one filter for the surface's frame
+/// stream, per-slot mask images, no transient-pool leases, no device-wide
+/// waits. The mask is re-rendered every frame a shadow is visible (the
+/// windows move), so no cache invalidation tracking is needed beyond the
+/// compositor's own damage (any geometry change already forces a full
+/// repaint through the window signature).
+pub(super) struct WindowShadowRenderer {
+    filter: flux::ShadowFilter,
+    /// One mask render target per frame-in-flight slot (ADR-0074 slot
+    /// isolation; sizes vary per window so entries are rebuilt on extent
+    /// change by the filter's own slot logic — the mask target here only
+    /// needs a per-slot image because the canvas writes it inside this
+    /// frame's recording).
+    masks: Vec<Option<flux::Image>>,
+}
+
+/// A rendered shadow ready for compositing: the borrowed filter output for
+/// one window this frame, plus its physical-pixel placement.
+pub(super) struct RenderedShadow {
+    /// The window this shadow belongs to.
+    pub window: aegis_model::window::WindowId,
+    /// Raw `flux_image` borrowed from the shadow filter's current frame
+    /// slot. Lifetime: valid until the same slot is applied again, which
+    /// happens on the next frame rotation — strictly after this frame's
+    /// canvas passes and submit (ADR-0074 frame-slot lifetime). The
+    /// composition root applies the filter exactly once per frame, before
+    /// any output pass opens, so every composite of this pointer precedes
+    /// the next apply on this slot.
+    pub raw: *mut flux::sys::flux_image,
+    /// Physical-pixel placement (already includes the blur margin).
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl WindowShadowRenderer {
+    pub(super) fn new(device: &flux::Device) -> Result<Self, flux::Error> {
+        Ok(Self {
+            filter: flux::ShadowFilter::new(device)?,
+            masks: Vec::new(),
+        })
+    }
+
+    /// Render and record shadows for `windows` into this frame's slot.
+    /// Must be called at a pass boundary (no active canvas pass). The
+    /// returned placements carry raw image pointers borrowed from the
+    /// filter — composite them within this frame.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        frame: &flux::Frame<'_>,
+        windows: &[aegis_model::window::Window],
+        scale: f32,
+        style: aegis_model::window::WindowShadowStyle,
+    ) -> Vec<RenderedShadow> {
+        if style != aegis_model::window::WindowShadowStyle::Soft {
+            return Vec::new();
+        }
+        let slot = frame.index() as usize;
+        let mut out = Vec::new();
+        for window in windows
+            .iter()
+            .filter(|w| aegis_render::window_casts_shadow(w))
+        {
+            // Physical extent: the window rect inflated by the blur
+            // footprint so the Gaussian skirt fits inside the image.
+            let margin = (SHADOW_BLUR_SIGMA * 3.0 + SHADOW_OFFSET_Y.abs() + 2.0) * scale;
+            let px_w = (window.size.w as f32 * scale + margin * 2.0).ceil().max(1.0) as u32;
+            let px_h = (window.size.h as f32 * scale + margin * 2.0).ceil().max(1.0) as u32;
+            if self.masks.len() <= slot {
+                self.masks.resize_with(slot + 1, || None);
+            }
+            let rebuild = !matches!(&self.masks[slot],
+                Some(existing) if existing.size().0 == px_w && existing.size().1 == px_h);
+            if rebuild {
+                let Ok(image) =
+                    flux::Image::render_target(device, px_w, px_h, flux::Format::FLUX_FORMAT_RGBA8_UNORM)
+                else {
+                    continue;
+                };
+                self.masks[slot] = Some(image);
+            }
+            let Some(mask) = self.masks[slot].as_ref() else {
+                continue;
+            };
+
+            // Draw the mask: opaque rounded rect at the window's position
+            // within the padded extent.
+            let clear = flux::rgba(0, 0, 0, 0);
+            if canvas
+                .begin_target_pass(
+                    frame,
+                    mask,
+                    flux::CanvasPassOptions {
+                        clear: Some(clear),
+                        antialias: flux::CanvasAntialias::Auto,
+                        render_area: None,
+                        skip_stencil: true,
+                    },
+                )
+                .is_err()
+            {
+                continue;
+            }
+            let inv = 1.0 / scale;
+            canvas.save();
+            canvas.scale(scale, scale);
+            canvas.fill_rrect(
+                inv * margin,
+                inv * margin,
+                window.size.w as f32,
+                window.size.h as f32,
+                SHADOW_CORNER_RADIUS,
+                flux::rgba(255, 255, 255, 255),
+            );
+            canvas.restore();
+            if canvas.end_target_checked().is_err() {
+                continue;
+            }
+
+            let params = flux::ShadowParams {
+                blur: SHADOW_BLUR_SIGMA * scale,
+                offset_x: 0.0,
+                offset_y: SHADOW_OFFSET_Y * scale,
+                tint_red: 0.0,
+                tint_green: 0.0,
+                tint_blue: 0.0,
+                alpha: if window.state.activated {
+                    SHADOW_ALPHA_FOCUS
+                } else {
+                    SHADOW_ALPHA_IDLE
+                },
+            };
+            match self.filter.apply(frame, mask, params) {
+                Ok(shadow) => out.push(RenderedShadow {
+                    window: window.id,
+                    raw: shadow.as_raw(),
+                    x: window.position.x as f32 * scale - margin,
+                    y: window.position.y as f32 * scale - margin,
+                    w: px_w as f32,
+                    h: px_h as f32,
+                }),
+                Err(error) => {
+                    log::debug!("window shadow: filter apply failed ({error}); skipping");
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Shadow design constants (policy values, ADR-0139: data, not mechanism).
+pub(super) const SHADOW_BLUR_SIGMA: f32 = 10.0;
+pub(super) const SHADOW_OFFSET_Y: f32 = 12.0;
+pub(super) const SHADOW_CORNER_RADIUS: f32 = 12.0;
+pub(super) const SHADOW_ALPHA_FOCUS: f32 = 0.45;
+pub(super) const SHADOW_ALPHA_IDLE: f32 = 0.30;

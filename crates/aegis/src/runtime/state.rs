@@ -105,6 +105,10 @@ pub(super) struct CompositorRuntime {
     pub(super) host: Host,
     pub(super) device: flux::Device,
     pub(super) launcher_backdrop: LauncherBackdrop,
+    /// Compositor-side blurred window shadows (ADR-0139): owns the Optics
+    /// shadow filter and per-slot mask targets; renders at the frame's pass
+    /// boundary, composites inside the output pass.
+    pub(super) window_shadows: WindowShadowRenderer,
     /// Region-level glass backdrop adaptation (smoothing + policy) and the
     /// per-frame-slot record of which region ids were submitted to prism, so
     /// the frame-lagged statistics align with the bodies that produced them.

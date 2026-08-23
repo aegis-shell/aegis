@@ -596,6 +596,41 @@ struct OrderedSurfaceOptions<'a> {
     window_shadows: Option<&'a [aegis_model::window::Window]>,
     window_filter: Option<&'a HashSet<aegis_model::window::WindowId>>,
     mapped_style: Option<MappedSurfaceStyle>,
+    /// Per-window blurred shadow images, pre-rendered by the composition
+    /// root through the Optics shadow operator (ADR-0139). Keyed by window
+    /// id; each entry carries the physical-pixel rect the image covers so
+    /// this layer can place it under the window tree without owning any
+    /// effect state.
+    soft_shadows: Option<&'a SoftShadowLayer<'a>>,
+    /// Policy selecting which shadow style to draw (ADR-0139 data).
+    shadow_style: aegis_model::window::WindowShadowStyle,
+}
+
+/// Pre-rendered per-window shadow images plus their placement rects,
+/// produced at a pass boundary by the composition root and consumed here.
+pub struct SoftShadowLayer<'a> {
+    /// (window id, image, physical-space placement) triples in draw order.
+    pub entries: &'a [SoftShadowEntry<'a>],
+}
+
+/// One pre-rendered blurred shadow and where it lands, in physical output
+/// pixels. The image is a borrowed Optics effect output (premultiplied);
+/// drawing it straight composites correctly.
+pub struct SoftShadowEntry<'a> {
+    pub window: aegis_model::window::WindowId,
+    /// Raw `flux_image` borrowed from the composition root's shadow filter
+    /// for this frame slot (ADR-0074 frame-slot lifetime). The renderer only
+    /// reads it inside this frame's canvas passes.
+    pub raw: *mut flux::sys::flux_image,
+    /// Marker tying the borrow to the layer's lifetime without taking a
+    /// reference the filter owns (the filter is re-applied only on the next
+    /// frame rotation, after this frame submits).
+    pub _borrow: std::marker::PhantomData<&'a flux::Image>,
+    /// Placement in physical pixels, already accounting for the blur margin.
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 fn mapped_surface_modulation(style: MappedSurfaceStyle) -> (u8, u8) {
@@ -666,6 +701,13 @@ fn surface_passes_window_filter(
     filter: Option<&HashSet<aegis_model::window::WindowId>>,
 ) -> bool {
     filter.is_none_or(|filter| window.is_some_and(|window| filter.contains(&window)))
+}
+
+/// Whether this window gets a compositor-owned shadow: floating, mapped,
+/// interactive, not maximized/fullscreen, with a non-empty extent. Shared
+/// by the inline stroke path and the Optics blurred-shadow path (ADR-0139).
+pub fn window_casts_shadow(window: &aegis_model::window::Window) -> bool {
+    window_casts_resize_shadow(window)
 }
 
 fn window_casts_resize_shadow(window: &aegis_model::window::Window) -> bool {
@@ -956,10 +998,13 @@ impl Renderer {
         );
     }
 
-    /// Ordered mixed-backing drawing with one compositor-owned resize shadow
+    /// Ordered mixed-backing drawing with one compositor-owned shadow
     /// inserted beneath each floating window tree. The first ordered surface
     /// for a window may be a below-parent subsurface, so inserting here (not
     /// in a separate global pass) preserves both subtree and window z-order.
+    /// The style selects between the inline stroke shadow, the pre-rendered
+    /// Optics blurred shadow (`soft_shadows`), and none (ADR-0139).
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_surfaces_ordered_with_window_shadows(
         &mut self,
         device: &flux::Device,
@@ -968,6 +1013,8 @@ impl Renderer {
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
         windows: &[aegis_model::window::Window],
+        soft_shadows: Option<&SoftShadowLayer<'_>>,
+        shadow_style: aegis_model::window::WindowShadowStyle,
     ) {
         self.draw_surfaces_ordered_impl(
             device,
@@ -977,6 +1024,8 @@ impl Renderer {
             dmabuf,
             OrderedSurfaceOptions {
                 window_shadows: Some(windows),
+                soft_shadows,
+                shadow_style,
                 ..Default::default()
             },
         );
@@ -1125,9 +1174,45 @@ impl Renderer {
                 && let Some(window) = shadow_windows
                     .as_ref()
                     .and_then(|windows| windows.get(&window_id))
-                && window_casts_resize_shadow(window)
             {
-                draw_window_resize_shadow(canvas, window);
+                match options.shadow_style {
+                    aegis_model::window::WindowShadowStyle::None => {}
+                    aegis_model::window::WindowShadowStyle::Resize => {
+                        if window_casts_resize_shadow(window) {
+                            draw_window_resize_shadow(canvas, window);
+                        }
+                    }
+                    aegis_model::window::WindowShadowStyle::Soft => {
+                        if window_casts_resize_shadow(window)
+                            && let Some(entry) = options
+                                .soft_shadows
+                                .and_then(|layer| {
+                                    layer.entries.iter().find(|entry| entry.window == window_id)
+                                })
+                        {
+                            // SAFETY: the entry's raw pointer is the shadow
+                            // filter's slot output for this frame; the
+                            // composition root guarantees it stays valid
+                            // through this frame's passes (ADR-0074
+                            // frame-slot lifetime). One draw call, read-only,
+                            // inside this canvas pass.
+                            let destination = flux::sys::flux_rect {
+                                x: entry.x,
+                                y: entry.y,
+                                w: entry.w,
+                                h: entry.h,
+                            };
+                            unsafe {
+                                flux::sys::flux_canvas_draw_image(
+                                    canvas.as_raw(),
+                                    entry.raw,
+                                    destination,
+                                    std::ptr::null(),
+                                )
+                            };
+                        }
+                    }
+                }
             }
             match source {
                 OrderedSurfaceSource::Shm(index) => self.draw_toplevels_impl(

@@ -214,6 +214,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let canvas = flux::Canvas::new(&surface)?;
     let launcher_backdrop = LauncherBackdrop::new(&device)?;
+    let window_shadows = WindowShadowRenderer::new(&device)?;
     // Frozen-frame snapshot behind the screenshot selector: allocated lazily
     // on the first trigger, reused across later sessions.
     let screenshot_freeze = ScreenshotFreeze::new();
@@ -1035,6 +1036,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         surface,
         canvas,
         launcher_backdrop,
+        window_shadows,
         glass_adaptation: GlassAdaptation::new(),
         submitted_glass_ids: Vec::new(),
         screenshot_freeze,

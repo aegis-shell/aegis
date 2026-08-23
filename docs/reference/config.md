@@ -209,6 +209,7 @@ Applied live on reload.
 | `cursor_theme` | string | `"default"` | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. The theme must ship `cursors/<name>.svg` files; a conventional Xcursor binary theme resolves but contributes nothing, logs a warning, and every shape falls back to the bundled art. `$XCURSOR_THEME` wins when set. When the selected theme is not installed, the bundled Aegis art is the final fallback. |
 | `cursor_size` | integer | `24` | Cursor size in logical pixels, 8–128. `$XCURSOR_SIZE` wins when set. |
 | `window_decorations` | string | `"borderless"` | Decoration ownership for Wayland toplevels. `"borderless"` makes Aegis own window controls without drawing per-window title bars; `"client-side"` asks applications to draw their own frames. |
+| `window_shadow` | string | `"resize"` | Compositor drop-shadow style for floating windows (ADR-0139). `"resize"` draws the historic 4-px stroke shadow; `"soft"` renders a blurred shadow through the Optics shadow operator (rounded-rect mask, Gaussian blur, downward offset; focus raises its opacity); `"none"` disables shadows. Tiled, maximized, fullscreen, and minimized windows never cast one. |
 
 ```toml
 [ui]

@@ -22,6 +22,8 @@ pub(super) fn draw_direct_desktop_scene(
     overview_progress: f32,
     window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
     scheme: aegis_model::settings::ColorScheme,
+    soft_shadows: Option<&aegis_render::SoftShadowLayer<'_>>,
+    shadow_style: aegis_model::window::WindowShadowStyle,
 ) -> Result<(), flux::Error> {
     let RenderGeometry {
         logical_size,
@@ -67,6 +69,8 @@ pub(super) fn draw_direct_desktop_scene(
             server,
             scale,
             window_switcher.is_some(),
+            soft_shadows,
+            shadow_style,
         );
         if let Some(presentation) = window_switcher {
             draw_window_switcher_scrim(canvas, logical_size, scale, presentation, scheme);

@@ -628,6 +628,11 @@ pub struct UiConfig {
     /// `client-side` asks applications to draw their own frames.
     #[serde(default)]
     pub window_decorations: aegis_model::window::DecorationPolicy,
+    /// Compositor drop-shadow style for floating windows (ADR-0139):
+    /// `none`, `resize` (the historic 4-px stroke), or `soft` (a blurred
+    /// shadow through the Optics shadow operator).
+    #[serde(default)]
+    pub window_shadow: aegis_model::window::WindowShadowStyle,
 }
 
 /// The `[input]` section.

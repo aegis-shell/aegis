@@ -55,6 +55,15 @@ project cuts a tagged release.
 
 ### Added
 
+- Floating windows can now cast a **soft blurred shadow** through the new
+  Optics `flux_shadow_filter` operator (ADR-0139 / optics ADR-0074):
+  `[ui] window_shadow = "soft"` renders a rounded-rect mask per floating
+  window, blurs it on the GPU at the frame's pass boundary, and composites
+  the premultiplied shadow beneath each window tree. Focus modulates the
+  shadow's opacity. `"resize"` (default) keeps the historic 4-px stroke
+  shadow; `"none"` disables shadows entirely. Tiled, maximized, fullscreen,
+  and minimized windows never cast one. Live reload applies immediately.
+
 - The new startup-only `[audit]` configuration table sets
   `max_store_mib` (default 2048), `min_free_mib` (default 512),
   `checkpoint_interval_mib` (default 8), `segment_max_mib` (default 64),

@@ -23,6 +23,26 @@ pub enum DecorationPolicy {
     ClientSide,
 }
 
+/// Compositor drop-shadow style for floating windows (ADR-0139): the
+/// *policy* is data here; the drawing mechanism lives in the Optics stack
+/// (`flux::shadow_filter` renders a blurred mask; `aegis-render` composites
+/// the result). Effect-free by design — pure data, no renderer types.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WindowShadowStyle {
+    /// No shadow.
+    None,
+    /// The historic four-logical-pixel stroke shadow drawn inline by the
+    /// renderer (no GPU effect work).
+    #[default]
+    Resize,
+    /// A blurred drop shadow through the Optics `flux_shadow_filter`
+    /// operator: rounded-rect mask, Gaussian blur, directional offset,
+    /// focus-modulated opacity.
+    Soft,
+}
+
 /// State bits advertised to the client via `xdg_toplevel.configure`'s states
 /// array. Mapped one-to-one to the protocol's state enum values; the
 /// compositor OR's the active bits into the array on each configure.

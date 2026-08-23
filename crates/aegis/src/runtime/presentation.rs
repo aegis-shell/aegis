@@ -527,6 +527,51 @@ impl CompositorRuntime {
                 // selector on top. The launcher-blur path stays off for the
                 // whole session.
                 let freeze_capturing = self.screenshot_freeze.needs_capture();
+                // Compositor blurred shadows (ADR-0139): render masks and
+                // record the shadow passes at this pass boundary, before any
+                // output pass opens. The borrowed filter outputs are placed
+                // by `aegis-render` inside the client-scene pass below.
+                let shadow_style = self
+                    .config
+                    .as_ref()
+                    .map(|c| c.ui.window_shadow)
+                    .unwrap_or_default();
+                let rendered_shadows = if shadow_style
+                    == aegis_model::window::WindowShadowStyle::Soft
+                {
+                    let windows = self.server.render_windows();
+                    self.window_shadows.prepare(
+                        &self.device,
+                        &self.canvas,
+                        &frame,
+                        &windows,
+                        scale,
+                        shadow_style,
+                    )
+                } else {
+                    Vec::new()
+                };
+                // Borrow the raw effect outputs as draw-only entries for the
+                // renderer. The images stay valid for this frame: the filter
+                // slot is not applied again until the next rotation, after
+                // this frame submits (ADR-0074 lifetime).
+                let soft_shadow_entries: Vec<aegis_render::SoftShadowEntry<'_>> =
+                    rendered_shadows
+                        .iter()
+                        .map(|shadow| aegis_render::SoftShadowEntry {
+                            window: shadow.window,
+                            raw: shadow.raw,
+                            _borrow: std::marker::PhantomData,
+                            x: shadow.x,
+                            y: shadow.y,
+                            w: shadow.w,
+                            h: shadow.h,
+                        })
+                        .collect();
+                let soft_shadow_layer = (!soft_shadow_entries.is_empty())
+                    .then(|| aegis_render::SoftShadowLayer {
+                        entries: soft_shadow_entries.as_slice(),
+                    });
                 // Restrict the backdrop capture to the union of the declared
                 // blur regions (plus the blur footprint): the offscreen pass
                 // re-renders the scene every frame, so covering only what the
@@ -796,6 +841,8 @@ impl CompositorRuntime {
                                     &self.server,
                                     capture_scale,
                                     window_switcher.is_some(),
+                                    None,
+                                    aegis_model::window::WindowShadowStyle::Resize,
                                 );
                                 if let Some(presentation) = window_switcher.as_ref() {
                                     draw_window_switcher_scrim(
@@ -972,6 +1019,8 @@ impl CompositorRuntime {
                                 overview_progress,
                                 window_switcher.as_ref(),
                                 color_scheme,
+                                soft_shadow_layer.as_ref(),
+                                shadow_style,
                             )?;
                         }
                         if refreshed {
@@ -1019,6 +1068,8 @@ impl CompositorRuntime {
                                 overview_progress,
                                 window_switcher.as_ref(),
                                 color_scheme,
+                                soft_shadow_layer.as_ref(),
+                                shadow_style,
                             )?;
                         }
                         self.launcher_backdrop.draw_cached(
@@ -1131,6 +1182,8 @@ impl CompositorRuntime {
                                                 &self.server,
                                                 scale,
                                                 false,
+                                                None,
+                                                aegis_model::window::WindowShadowStyle::Resize,
                                             );
                                         }
                                     }
@@ -1157,6 +1210,8 @@ impl CompositorRuntime {
                                     overview_progress,
                                     window_switcher.as_ref(),
                                     color_scheme,
+                                    soft_shadow_layer.as_ref(),
+                                    shadow_style,
                                 )?;
                             }
                         } else {
@@ -1181,6 +1236,8 @@ impl CompositorRuntime {
                                 overview_progress,
                                 window_switcher.as_ref(),
                                 color_scheme,
+                                soft_shadow_layer.as_ref(),
+                                shadow_style,
                             )?;
                         }
                     }
