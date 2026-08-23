@@ -1,0 +1,93 @@
+{
+  "schema": "docs-governance/manifest",
+  "schema_version": 1,
+  "name": "docs-governance",
+  "description": "Portable documentation governance: three routing gates, knowledge layers, writing style, and review workflow. Copied verbatim into repositories at docs/dev/documentation/.",
+  "license": "MIT",
+  "homepage": "https://github.com/ming/docs-governance",
+  "protocol_version": "2.0.0",
+  "protocol_history": [
+    {
+      "version": "2.0.0",
+      "date": "2026-08-23",
+      "status": "current",
+      "summary": "Three routing gates (time, audience, cognitive mode) with root-files exception; repository contracts split from adoption; knowledge-layers page; postmortem workflow in update/review checklists; manifest for drift detection."
+    },
+    {
+      "version": "1.0.0",
+      "date": "2026-06-13",
+      "status": "superseded",
+      "summary": "Flat Diataxis decision list, adoption held repository contracts, common-docs pattern library, AGENTS.md maintainer rule."
+    }
+  ],
+  "update_policy": "Semantic versioning on protocol_version. MAJOR: a repository following the old protocol would be non-compliant without migration work. MINOR: new optional pages or sections; old content stays valid. PATCH: clarifications and typo-level changes that do not alter any rule.",
+  "files": {
+    "AGENTS.md": {
+      "role": "guard",
+      "editable": false,
+      "sha256": "2a0eb6a9125825e5c5232d35fa41bdbee8c1a192b9843624fe08f666b4b063e9"
+    },
+    "adoption.md": {
+      "role": "guide",
+      "editable": false,
+      "sha256": "9aa5f748845e1f241221c63f05f3157934fee2f18baadf34165b189398b3c428"
+    },
+    "adr-workflow.md": {
+      "role": "guide",
+      "editable": false,
+      "sha256": "bacb1eccc19d56fa4dd78a5888f34fb9276d561f943f104a94b5349423b75e8b"
+    },
+    "common-docs.md": {
+      "role": "library",
+      "editable": false,
+      "sha256": "a9e2f1a2222b68234eff4a2dbc06987dd2c1fed28f716ec9666090d5157e2b85"
+    },
+    "contracts.md": {
+      "role": "template",
+      "editable": true,
+      "sha256": ""
+    },
+    "index.md": {
+      "role": "guide",
+      "editable": false,
+      "sha256": "057b44984e1e4736762fc5dabab850bd6daa258101dac32371cd7e31ad050f29"
+    },
+    "knowledge-layers.md": {
+      "role": "guide",
+      "editable": false,
+      "sha256": "9e09dd5b82bf81943001ac2912ffcb806e5e388ced61fa2718775462aa551976"
+    },
+    "review-checklist.md": {
+      "role": "checklist",
+      "editable": false,
+      "sha256": "a45a760d8c0adcc9307afcee9334b45ff74ba11158656fd3d62a4e428e3734db"
+    },
+    "routing.md": {
+      "role": "guide",
+      "editable": false,
+      "sha256": "23b0bfd2f44603186a656714ad8aae59ae920424c3c38827587ebedfcec50344"
+    },
+    "style-guide.md": {
+      "role": "guide",
+      "editable": false,
+      "sha256": "fbf13c3624ba822b4492836bade3d45d03eaa3556cf4feb9cdedd11c46f49e6b"
+    },
+    "update-checklist.md": {
+      "role": "checklist",
+      "editable": false,
+      "sha256": "92f3e1f7272b486d3162d0c2125873d7d2bff18a3d810b6be31ceea27b843b46"
+    }
+  },
+  "roles": {
+    "guide": "Governance prose; must match the standard byte for byte.",
+    "checklist": "Review and update procedures; must match the standard byte for byte.",
+    "guard": "Maintainer and AI policy; must match the standard byte for byte.",
+    "library": "Reusable document patterns; must match the standard byte for byte.",
+    "template": "Shipped as a template, customized per repository. Editable files are excluded from integrity checks; sync refreshes them only when the standard's template itself changed, so local customization survives upgrades."
+  },
+  "distribution": {
+    "install": "Copy standard/ contents into <repo>/docs/dev/documentation/. Run tools/verify.sh against the repository.",
+    "upgrade": "Run tools/sync.sh <repo>. Editable files keep their local version unless the standard template changed; a note is printed for manual merge.",
+    "verify": "tools/verify.sh compares every non-editable sha256 against this manifest; exits nonzero with a per-file report on drift."
+  }
+}
