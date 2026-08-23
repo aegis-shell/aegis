@@ -47,7 +47,10 @@ assert_internal_dependencies aegis-ipc aegis-model aegis-security aegis-semantic
 assert_internal_dependencies aegis-ipc-client aegis-model aegis-ipc
 
 # Native management commands remain independently buildable and testable.
-assert_internal_dependencies aegis-commands aegis-model aegis-config aegis-ipc
+# aegis-security is allowed for the local durable-audit operations (ADR-0137):
+# `aegis audit status|verify|ack-export` open the sealed audit store directly,
+# never through a running compositor.
+assert_internal_dependencies aegis-commands aegis-model aegis-config aegis-ipc aegis-security
 
 # Core compositor mechanisms do not depend on one another through the binary
 # or through presentation-layer crates.
