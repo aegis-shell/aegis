@@ -143,8 +143,9 @@ fn a_fullscreen_window_closes_the_panel() {
 #[test]
 fn cluster_bounds_stay_inside_small_displays() {
     for display in [(320.0, 480.0), (800.0, 600.0), (1920.0, 1080.0)] {
-        let (profile, main, notifications, network, side) = CommandPanel::cluster_bounds(display);
-        for rect in [profile, main, notifications, network, side] {
+        let (profile, main, notifications, network, work_mode, power) =
+            CommandPanel::cluster_bounds(display);
+        for rect in [profile, main, notifications, network, work_mode, power] {
             assert!(rect.x >= 0.0 && rect.y >= 0.0);
             assert!(rect.x + rect.w <= display.0 + 0.01);
             assert!(rect.y + rect.h <= display.1 + 0.01);
@@ -156,7 +157,7 @@ fn cluster_bounds_stay_inside_small_displays() {
 
 #[test]
 fn full_size_displays_get_the_design_geometry() {
-    let (profile, main, notifications, network, side) =
+    let (profile, main, notifications, network, work_mode, power) =
         CommandPanel::cluster_bounds((1920.0, 1080.0));
     // Profile is compact in top-left
     assert_eq!(profile.w, 300.0);
@@ -177,6 +178,18 @@ fn full_size_displays_get_the_design_geometry() {
     assert_eq!(network.x, 1920.0 - 48.0 - 300.0);
     assert_eq!(network.y, notifications.y + notifications.h + PANEL_GAP);
 
+    // Work Mode Quick Switcher panel sits below network monitor.
+    assert_eq!(work_mode.w, 300.0);
+    assert_eq!(work_mode.h, 110.0);
+    assert_eq!(work_mode.x, 1920.0 - 48.0 - 300.0);
+    assert_eq!(work_mode.y, network.y + network.h + PANEL_GAP);
+
+    // Power & Session panel sits below work mode panel.
+    assert_eq!(power.w, 300.0);
+    assert_eq!(power.h, 116.0);
+    assert_eq!(power.x, 1920.0 - 48.0 - 300.0);
+    assert_eq!(power.y, work_mode.y + work_mode.h + PANEL_GAP);
+
     // Main Split Control Panel is centered on screen and clear of the
     // network column.
     assert_eq!(main.w, 720.0);
@@ -184,10 +197,6 @@ fn full_size_displays_get_the_design_geometry() {
     assert_eq!(main.x, (1920.0 - 720.0) * 0.5);
     assert_eq!(main.y, (1080.0 - 460.0) * 0.5);
     assert!(main.x + main.w <= network.x - PANEL_GAP);
-
-    // Side Column (Machine Monitor + Tray) is disabled
-    assert_eq!(side.w, 0.0);
-    assert_eq!(side.h, 0.0);
 }
 
 #[test]
@@ -305,16 +314,20 @@ fn command_panel_emits_liquid_glass_regions_when_open() {
             .is_empty()
     );
 
-    // Opened panel returns physical liquid glass bodies (profile, notifications, network, capsule tabs, view)
+    // Opened panel returns physical liquid glass bodies (notifications, network, work mode, power, capsule tabs, view)
     panel.toggle_command_panel(&mut out);
     panel.reveal = 1.0;
     let regions = panel.liquid_glass_regions(display, &[], &workspaces);
-    assert!(regions.len() >= 4);
+    assert!(regions.len() >= 6);
     assert_eq!(regions[0].opacity, 1.0); // Notifications
     assert_eq!(regions[1].opacity, 1.0); // Network monitor (right-middle)
     assert_eq!(regions[1].corner_radius, panel.design.radii.glass_panel);
+    assert_eq!(regions[2].opacity, 1.0); // Work Mode quick switcher (right-bottom)
+    assert_eq!(regions[2].corner_radius, panel.design.radii.glass_panel);
+    assert_eq!(regions[3].opacity, 1.0); // Power & Session actions (right-bottom)
+    assert_eq!(regions[3].corner_radius, panel.design.radii.glass_panel);
     // Each capsule has 100% semicircle ends (corner_radius == height * 0.5)
-    assert_eq!(regions[2].corner_radius, 22.0); // First capsule tab
+    assert_eq!(regions[4].corner_radius, 22.0); // First capsule tab
     let last = regions.last().unwrap();
     assert_eq!(last.opacity, 1.0); // Right Content View
 }
@@ -358,4 +371,25 @@ fn projected_modes_never_blank_an_unlocked_session() {
             }
         }
     }
+}
+
+#[test]
+fn work_mode_and_power_session_panels_render_within_cluster() {
+    let display = (1920.0, 1080.0);
+    let (_profile, _main, notifications, network, work_mode, power) =
+        CommandPanel::cluster_bounds(display);
+
+    assert!(work_mode.w > 0.0);
+    assert!(work_mode.h > 0.0);
+    assert!(power.w > 0.0);
+    assert!(power.h > 0.0);
+
+    // Verify right column vertical stacking order: Notifications -> Network -> Work Mode -> Power
+    assert!(notifications.y < network.y);
+    assert!(network.y < work_mode.y);
+    assert!(work_mode.y < power.y);
+    assert_eq!(network.x, work_mode.x);
+    assert_eq!(work_mode.x, power.x);
+    assert_eq!(network.w, work_mode.w);
+    assert_eq!(work_mode.w, power.w);
 }

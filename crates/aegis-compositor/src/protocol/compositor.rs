@@ -187,15 +187,20 @@ fn insert_damage_rect(region: &mut Vec<aegis_model::Rect>, rect: aegis_model::Re
 /// Merge one commit's damage into the not-yet-presented surface damage.
 /// Rectangles remain exact and disjoint under the bounded region budget so a
 /// small video update cannot invalidate unrelated backdrop/chrome pixels.
+///
+/// `unknown_full` is absorbing within a frame — once any commit in the
+/// render interval is unlocalizable the frame must be treated as fully
+/// damaged — but it no longer discards *precise* damage from later commits
+/// in the same interval: those rects are recorded anyway, so the
+/// acknowledging present clears both states together and a subsequent
+/// frame returns to incremental updates instead of inheriting a stale
+/// "everything is damaged" latch.
 pub(crate) fn accumulate_committed_damage(
     rec: &mut SurfaceRec,
     pending: Vec<aegis_model::Rect>,
     unknown_full: bool,
 ) {
-    if rec.committed_damage_full {
-        return;
-    }
-    if unknown_full {
+    if unknown_full && !rec.committed_damage_full {
         rec.committed_damage.clear();
         rec.committed_damage_full = true;
         return;
@@ -932,17 +937,35 @@ pub(crate) unsafe extern "C" fn surface_commit(
         } else {
             None
         };
-        let buffer_damage_unmappable = !pending_buffer_damage.is_empty()
-            && (buffer_dims.is_none()
-                || (*rec).viewport_src.is_some()
-                || (*rec).viewport_dst.is_some());
+        // `wl_surface.damage_buffer` is mappable through the viewport too:
+        // the 8-way transform remap runs first (buffer → post-transform
+        // buffer space), then the viewport src-crop + dst-stretch (or the
+        // buffer-scale division when no destination is set) lands the rect
+        // in surface-local logical coordinates with outward rounding.
+        // Historically any viewport ⇒ "unmappable" ⇒ full damage, which made
+        // every fractional-scale client (Chrome, GTK4, Electron on HiDPI)
+        // pay a whole-buffer CPU copy plus a whole-texture GPU upload per
+        // commit — the dominant memmove storm on the compositor main loop.
+        let buffer_damage_unmappable =
+            !pending_buffer_damage.is_empty() && buffer_dims.is_none();
         if !buffer_damage_unmappable {
             let (bw, bh) = buffer_dims.unwrap_or(((*rec).width, (*rec).height));
             let transform = (*rec).buffer_transform;
-            let scale = (*rec).buffer_scale;
+            let geometry = aegis_model::SurfaceGeometry {
+                transform,
+                buffer_scale: (*rec).buffer_scale,
+                viewport_src: (*rec).viewport_src,
+                viewport_dst: (*rec).viewport_dst,
+                ..Default::default()
+            };
             pending_damage.extend(pending_buffer_damage.into_iter().map(|damage| {
-                let mapped = transform.map_buffer_rect_to_surface(damage, (bw, bh));
-                buffer_damage_to_surface(mapped, scale)
+                if geometry.viewport_src.is_some() || geometry.viewport_dst.is_some() {
+                    let mapped = transform.map_buffer_rect_to_surface(damage, (bw, bh));
+                    geometry.buffer_rect_to_logical(mapped, bw, bh)
+                } else {
+                    let mapped = transform.map_buffer_rect_to_surface(damage, (bw, bh));
+                    buffer_damage_to_surface(mapped, (*rec).buffer_scale)
+                }
             }));
         }
         let unknown_full = buffer_damage_unmappable
@@ -1098,12 +1121,19 @@ pub(crate) unsafe extern "C" fn surface_commit(
                                     );
                                 }
                                 // XRGB8888 has undefined alpha; force opaque on
-                                // the refreshed rows.
+                                // the refreshed rows. Chunked so the compiler
+                                // emits vector stores (4 bytes per lane) —
+                                // the scalar byte loop burned ~4 ms per
+                                // full-frame commit at 2400x1600 on the
+                                // compositor's main loop, second only to the
+                                // row copies themselves.
                                 if aegis_model::dmabuf::is_wl_shm_format_xrgb(format) {
                                     for row in 0..ch {
                                         let base = (y + row) * tight + x * 4;
-                                        for px in 0..cw {
-                                            pixels[base + px * 4 + 3] = 0xff;
+                                        let row_pixels =
+                                            &mut pixels[base..base + cw * 4];
+                                        for quad in row_pixels.chunks_exact_mut(4) {
+                                            quad[3] = 0xff;
                                         }
                                     }
                                 }
@@ -1118,11 +1148,11 @@ pub(crate) unsafe extern "C" fn surface_commit(
                                 );
                             }
                             // XRGB8888 has undefined alpha; force opaque.
+                            // Chunked for vector stores (see the incremental
+                            // twin above for the rationale).
                             if aegis_model::dmabuf::is_wl_shm_format_xrgb(format) {
-                                let mut i = 3;
-                                while i < needed {
-                                    pixels[i] = 0xff;
-                                    i += 4;
+                                for quad in pixels.chunks_exact_mut(4) {
+                                    quad[3] = 0xff;
                                 }
                             }
                         }

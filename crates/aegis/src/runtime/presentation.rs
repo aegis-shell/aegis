@@ -122,6 +122,7 @@ impl CompositorRuntime {
             had_input,
             input_pointer_only,
             cursor_fast_path: _,
+            cursor_plane_piggyback: _,
             mut pending_screenshots,
         } = state;
         // Scene colors track the desktop appearance: the shell's design

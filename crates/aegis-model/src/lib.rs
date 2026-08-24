@@ -310,6 +310,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn buffer_rect_to_logical_maps_fractional_scale_viewport() {
+        // Chrome on a 2× HiDPI output: buffer 2400×1600 behind a
+        // wp_viewport destination of 1200×800 logical px, buffer_scale 1.
+        // A 16×16 cursor-adjacent damage rect in buffer px must land in
+        // logical px (outward-rounded), not force full damage.
+        let geometry = SurfaceGeometry {
+            viewport_dst: Some(Size { w: 1200, h: 800 }),
+            ..Default::default()
+        };
+        let mapped = geometry.buffer_rect_to_logical(Rect::new(100, 60, 16, 16), 2400, 1600);
+        // 100/2400*1200 = 50 exactly; 60/1600*800 = 30 exactly; the 16px
+        // span rounds outward to 8+1 logical px per axis.
+        assert_eq!(mapped.origin.x, 50);
+        assert_eq!(mapped.origin.y, 30);
+        assert!(mapped.size.w >= 8 && mapped.size.w <= 9);
+        assert!(mapped.size.h >= 8 && mapped.size.h <= 9);
+    }
+
+    #[test]
+    fn buffer_rect_to_logical_viewport_crop_offsets() {
+        // viewport src crops the buffer: damage inside the crop maps with
+        // the crop offset removed and stretched to the destination.
+        let geometry = SurfaceGeometry {
+            viewport_src: Some(Rect::new(100, 50, 400, 400)),
+            viewport_dst: Some(Size { w: 200, h: 200 }),
+            ..Default::default()
+        };
+        let mapped = geometry.buffer_rect_to_logical(Rect::new(100, 50, 400, 400), 800, 600);
+        assert_eq!(mapped.origin.x, 0);
+        assert_eq!(mapped.origin.y, 0);
+        assert_eq!(mapped.size.w, 200);
+        assert_eq!(mapped.size.h, 200);
+    }
+
+    #[test]
+    fn buffer_rect_to_logical_round_trips_logical_to_buffer_scale() {
+        // No viewport: the mapping degenerates to the buffer-scale division
+        // (`buffer_damage_to_surface` semantics) with outward rounding.
+        let geometry = SurfaceGeometry {
+            buffer_scale: 2,
+            ..Default::default()
+        };
+        let mapped = geometry.buffer_rect_to_logical(Rect::new(3, 5, 8, 10), 200, 200);
+        // Outward-rounded division by the buffer scale, matching
+        // `buffer_damage_to_surface`: x: floor(3/2)=1..ceil(11/2)=6 → w=5;
+        // y: floor(5/2)=2..ceil(15/2)=8 → h=6.
+        assert_eq!(mapped, Rect::new(1, 2, 5, 6));
+    }
+
+    #[test]
+    fn buffer_rect_to_logical_outward_rounds_partial_spans() {
+        let geometry = SurfaceGeometry {
+            viewport_dst: Some(Size { w: 1199, h: 799 }),
+            ..Default::default()
+        };
+        // 1 buffer px at 2400→1199 does not land on an integer logical px;
+        // outward rounding must cover the partial span on both axes.
+        let mapped = geometry.buffer_rect_to_logical(Rect::new(0, 0, 1, 1), 2400, 1600);
+        assert_eq!(mapped.origin, Point { x: 0, y: 0 });
+        assert!(mapped.size.w >= 1 && mapped.size.h >= 1);
+    }
+
+    #[test]
     fn rect_contains_inclusive_origin_exclusive_far_corner() {
         let r = Rect::new(10, 20, 100, 50);
         assert!(r.contains(Point { x: 10, y: 20 })); // top-left inclusive
@@ -536,6 +599,109 @@ impl SurfaceGeometry {
             );
         }
         (scale, scale)
+    }
+
+    /// Map a damage rectangle from **buffer pixel coordinates** to
+    /// **surface-local logical coordinates**, honouring the viewport and the
+    /// buffer scale. The exact inverse sampling relationship is affine but
+    /// rect endpoints transform non-linearly under it, so this returns the
+    /// tight bounding box of the four mapped corners with **outward** rounding
+    /// — over-covering damage is always safe (damage tracking tolerates
+    /// refreshing extra pixels, never stale ones).
+    ///
+    /// Pipeline: buffer px → (viewport `src` crop + `dst` stretch, or the
+    /// `buffer_scale` division when no viewport destination is set) →
+    /// surface-local logical px.
+    ///
+    /// This closes the "viewport ⇒ unmappable ⇒ full damage" fallback that
+    /// made every `wl_surface.damage_buffer` from a fractional-scale client
+    /// (Chrome and every GTK4/Electron app on HiDPI) force a whole-buffer
+    /// CPU copy plus a whole-texture GPU upload on every commit. The mapped
+    /// rect may over-cover when `viewport_src` crops the buffer (the crop's
+    /// area outside the surface cannot be addressed in logical coordinates
+    /// at all), which is the documented safe direction.
+    pub fn buffer_rect_to_logical(
+        &self,
+        rect: Rect,
+        buffer_width: i32,
+        buffer_height: i32,
+    ) -> Rect {
+        // Post-transform buffer space the viewport samples from.
+        let full_src = Rect::new(
+            0,
+            0,
+            if self.transform.swap_axes() {
+                buffer_height
+            } else {
+                buffer_width
+            },
+            if self.transform.swap_axes() {
+                buffer_width
+            } else {
+                buffer_height
+            },
+        );
+        let src = self.viewport_src.unwrap_or(full_src);
+        let dst = self.viewport_dst;
+
+        let map_point = |(px, py): (f32, f32)| -> (f32, f32) {
+            // Buffer px → source fraction.
+            let fx = (px - src.origin.x as f32) / src.size.w.max(1) as f32;
+            let fy = (py - src.origin.y as f32) / src.size.h.max(1) as f32;
+            match dst {
+                Some(dst) => (fx * dst.w as f32, fy * dst.h as f32),
+                // No destination: an explicit `viewport_src` already lives
+                // in surface-local logical coordinates (wp_viewport: src is
+                // in surface coordinate space), so the fraction round-trips
+                // through the source extent and only the crop applies. With
+                // no viewport at all the logical surface is the buffer
+                // divided by `buffer_scale`, so the fraction scales through
+                // that logical extent instead.
+                None => {
+                    let divisor = if self.viewport_src.is_some() {
+                        1.0
+                    } else {
+                        self.buffer_scale.max(1) as f32
+                    };
+                    (
+                        fx * src.size.w.max(1) as f32 / divisor,
+                        fy * src.size.h.max(1) as f32 / divisor,
+                    )
+                }
+            }
+        };
+
+        let corners = [
+            (rect.origin.x as f32, rect.origin.y as f32),
+            (
+                (rect.origin.x + rect.size.w) as f32,
+                rect.origin.y as f32,
+            ),
+            (
+                rect.origin.x as f32,
+                (rect.origin.y + rect.size.h) as f32,
+            ),
+            (
+                (rect.origin.x + rect.size.w) as f32,
+                (rect.origin.y + rect.size.h) as f32,
+            ),
+        ];
+        let mut lo = (f32::MAX, f32::MAX);
+        let mut hi = (f32::MIN, f32::MIN);
+        for corner in corners {
+            let mapped = map_point(corner);
+            lo.0 = lo.0.min(mapped.0);
+            lo.1 = lo.1.min(mapped.1);
+            hi.0 = hi.0.max(mapped.0);
+            hi.1 = hi.1.max(mapped.1);
+        }
+        let clamp_f = |v: f32| v.clamp(i32::MIN as f32, i32::MAX as f32);
+        Rect::new(
+            clamp_f(lo.0).floor() as i32,
+            clamp_f(lo.1).floor() as i32,
+            (clamp_f(hi.0).ceil() - clamp_f(lo.0).floor()) as i32,
+            (clamp_f(hi.1).ceil() - clamp_f(lo.1).floor()) as i32,
+        )
     }
 }
 

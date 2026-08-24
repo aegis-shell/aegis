@@ -174,14 +174,19 @@ fn surface_damage_accumulates_until_present_and_full_is_sticky() {
     assert!(surface.committed_damage.is_empty());
     assert!(surface.committed_damage_full);
 
-    // Once any commit lacked usable damage, later precise reports cannot
-    // narrow the aggregate until presentation acknowledges the full update.
+    // `unknown_full` is absorbing *within* a frame, but it no longer
+    // discards precise damage from later commits in the same render
+    // interval: those rects accumulate so the acknowledging present clears
+    // both states together and the next frame resumes incremental updates
+    // instead of inheriting a stale full latch (the historical behaviour
+    // made one damage-less commit permanently poison every following
+    // precise commit until present, forcing whole-buffer copies).
     accumulate_committed_damage(
         &mut surface,
         vec![aegis_model::Rect::new(1, 1, 2, 2)],
         false,
     );
-    assert!(surface.committed_damage.is_empty());
+    assert_eq!(surface.committed_damage, vec![aegis_model::Rect::new(1, 1, 2, 2)]);
     assert!(surface.committed_damage_full);
 }
 

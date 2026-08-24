@@ -48,6 +48,18 @@ pub fn ease_in_cubic(value: f32) -> f32 {
     t * t * t
 }
 
+/// Hermite smoothstep ($f(t) = t^2(3 - 2t)$): zero velocity at both ends.
+///
+/// This is the shape a dock-family morph applies to a reveal spring's
+/// output — the spring decides *when* the value travels, smoothstep gives
+/// the visible geometry a soft start and a soft landing so the surface
+/// never arrives at either end of the morph with a hard stop.
+#[inline]
+pub fn smoothstep(value: f32) -> f32 {
+    let t = value.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Calculate a staggered reveal progress: returns 0.0 until `reveal` exceeds `delay`,
 /// then linearly interpolates to 1.0 as `reveal` reaches 1.0.
 #[inline]
@@ -204,6 +216,19 @@ mod tests {
         assert!((ease_in_cubic(0.5) - 0.125).abs() < 1e-6);
         assert_eq!(ease_in_cubic(-1.0), 0.0);
         assert_eq!(ease_in_cubic(2.0), 1.0);
+    }
+
+    #[test]
+    fn test_smoothstep() {
+        assert_eq!(smoothstep(0.0), 0.0);
+        assert_eq!(smoothstep(1.0), 1.0);
+        assert!((smoothstep(0.5) - 0.5).abs() < 1e-6);
+        // Symmetric about the midpoint.
+        assert!((smoothstep(0.2) + smoothstep(0.8) - 1.0).abs() < 1e-6);
+        // Clamping and monotonicity.
+        assert_eq!(smoothstep(-0.5), 0.0);
+        assert_eq!(smoothstep(1.5), 1.0);
+        assert!(smoothstep(0.3) < smoothstep(0.4));
     }
 
     #[test]

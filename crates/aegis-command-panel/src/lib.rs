@@ -88,8 +88,15 @@ const NOTIF_W: f32 = 260.0;
 const NOTIF_H: f32 = 200.0;
 const NETWORK_W: f32 = 300.0;
 const NETWORK_H: f32 = 300.0;
+#[allow(dead_code)]
+const WORK_MODE_W: f32 = 300.0;
+const WORK_MODE_H: f32 = 110.0;
+#[allow(dead_code)]
+const POWER_PANEL_W: f32 = 300.0;
+const POWER_PANEL_H: f32 = 116.0;
 /// The tray panel's fixed height at the side column's bottom: a small
 /// section header plus two tray-grid rows.
+#[allow(dead_code)]
 const TRAY_PANEL_H: f32 = 172.0;
 /// The main panel's flat tab bar.
 #[allow(dead_code)]
@@ -583,8 +590,9 @@ impl CommandPanel {
     /// - Top-Left (左上): User Profile Chip
     /// - Top-Right (右上): Notifications Stream
     /// - Right-Middle (右中): Network Monitor
+    /// - Right-Bottom (右下): Work Mode Quick Switcher + Power & Session Actions
     /// - Center (中): Split Main Control Panel (Left Nav Rail + Right Tab View)
-    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect, Rect, Rect) {
+    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
         let margin_x = (display.0 * 0.025).clamp(16.0, 48.0);
         let margin_y = (display.1 * 0.035).clamp(16.0, 40.0);
         let gap = PANEL_GAP;
@@ -603,10 +611,7 @@ impl CommandPanel {
         let notif_w = NOTIF_W.min((display.0 * 0.38).max(140.0));
         let notif_h = NOTIF_H.min((display.1 * 0.38).max(64.0));
 
-        // 3. Right-Middle Anchor (右中): Network Monitor, below the
-        // notification stream. It is the wider of the two right-column
-        // surfaces, so it fixes the column's left edge; the notification
-        // stream aligns to it. On narrow displays it yields first.
+        // 3. Right Column: Notifications -> Network -> Work Mode -> Power & Session
         let network_w = NETWORK_W.min((display.0 * 0.3).max(0.0));
         let network_x = (display.0 - margin_x - network_w).max(profile.x + profile.w + gap);
 
@@ -618,13 +623,52 @@ impl CommandPanel {
             h: notif_h.min((display.1 - margin_y * 2.0).max(1.0)),
         };
 
-        let network_top = notifications.y + notifications.h + gap;
-        let network_h = NETWORK_H.min((display.1 - network_top - margin_y).max(0.0));
+        let right_col_top = notifications.y + notifications.h + gap;
+        let right_col_avail_h = (display.1 - right_col_top - margin_y).max(0.0);
+
+        let network_ideal_h = NETWORK_H;
+        let work_mode_ideal_h = WORK_MODE_H;
+        let power_ideal_h = POWER_PANEL_H;
+        let total_ideal = network_ideal_h + work_mode_ideal_h + power_ideal_h + gap * 2.0;
+
+        let (network_h, work_mode_h, power_h) = if right_col_avail_h >= total_ideal {
+            (network_ideal_h, work_mode_ideal_h, power_ideal_h)
+        } else {
+            let space = (right_col_avail_h - gap * 2.0).max(0.0);
+            let sum_ideal = network_ideal_h + work_mode_ideal_h + power_ideal_h;
+            let scale = if sum_ideal > 0.0 {
+                space / sum_ideal
+            } else {
+                0.0
+            };
+            (
+                network_ideal_h * scale,
+                work_mode_ideal_h * scale,
+                power_ideal_h * scale,
+            )
+        };
+
         let network = Rect {
             x: network_x,
-            y: network_top,
+            y: right_col_top,
             w: network_w.min((display.0 - network_x - margin_x).max(1.0)),
             h: network_h,
+        };
+
+        let work_mode_top = network.y + network.h + gap;
+        let work_mode = Rect {
+            x: network_x,
+            y: work_mode_top,
+            w: network_w.min((display.0 - network_x - margin_x).max(1.0)),
+            h: work_mode_h,
+        };
+
+        let power_top = work_mode.y + work_mode.h + gap;
+        let power = Rect {
+            x: network_x,
+            y: power_top,
+            w: network_w.min((display.0 - network_x - margin_x).max(1.0)),
+            h: power_h,
         };
 
         // 4. Center Anchor (中): Split Main Control Panel (Nav Rail + Content View)
@@ -646,15 +690,7 @@ impl CommandPanel {
             h: (display.1 - main_y - margin_y).min(main_h).max(1.0),
         };
 
-        // 5. Side Column (System Telemetry): Temporarily disabled / zero bounds
-        let side = Rect {
-            x: display.0,
-            y: display.1,
-            w: 0.0,
-            h: 0.0,
-        };
-
-        (profile, main, notifications, network, side)
+        (profile, main, notifications, network, work_mode, power)
     }
 
     /// Clone the notification queue, memoized on the queue's revision: an
@@ -817,21 +853,14 @@ impl Chrome for CommandPanel {
             self.avatar_warned = true;
         }
         let reveal = self.reveal.clamp(0.0, 1.0);
-        let (profile_rect, main_rect, notifications_rect, network_rect, side_rect) =
-            Self::cluster_bounds(display);
-        let tray_h = TRAY_PANEL_H.min((side_rect.h - PANEL_GAP - 60.0).max(56.0));
-        let machine_rect = Rect {
-            x: side_rect.x,
-            y: side_rect.y,
-            w: side_rect.w,
-            h: (side_rect.h - tray_h - PANEL_GAP).max(1.0),
-        };
-        let tray_rect = Rect {
-            x: side_rect.x,
-            y: side_rect.y + side_rect.h - tray_h,
-            w: side_rect.w,
-            h: tray_h,
-        };
+        let (
+            profile_rect,
+            main_rect,
+            notifications_rect,
+            network_rect,
+            work_mode_rect,
+            power_rect,
+        ) = Self::cluster_bounds(display);
 
         // Click-away: a press landing on none of the cluster's surfaces nor
         // an open tray popover dismisses the panel.
@@ -844,7 +873,8 @@ impl Chrome for CommandPanel {
             && !contains(notifications_rect, cursor.0, cursor.1)
             && !contains(main_rect, cursor.0, cursor.1)
             && !contains(network_rect, cursor.0, cursor.1)
-            && !contains(side_rect, cursor.0, cursor.1)
+            && !contains(work_mode_rect, cursor.0, cursor.1)
+            && !contains(power_rect, cursor.0, cursor.1)
             && !on_popover
         {
             self.close();
@@ -906,8 +936,8 @@ impl Chrome for CommandPanel {
         self.render_main_panel(f, main_rect, content_progress, i18n, out);
         f.set_opacity(side_progress.max(content_progress));
         self.render_network_panel(f, network_rect, side_progress, i18n);
-        // System telemetry / side monitor temporarily disabled per user direction.
-        let _ = (machine_rect, tray_rect);
+        self.render_work_mode_panel(f, work_mode_rect, side_progress, i18n, out);
+        self.render_power_session_panel(f, power_rect, side_progress, i18n, out);
 
         // The dbusmenu popover floats above the panels; it belongs to the
         // tray, so it fades with the side column.
@@ -1103,7 +1133,14 @@ impl Chrome for CommandPanel {
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
         let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
 
-        let (_, main_rect, notifications_rect, network_rect, _) = Self::cluster_bounds(display);
+        let (
+            _,
+            main_rect,
+            notifications_rect,
+            network_rect,
+            work_mode_rect,
+            power_rect,
+        ) = Self::cluster_bounds(display);
         let nav_w = 190.0_f32.min(main_rect.w * 0.28).max(150.0);
         let gap = 16.0;
         let view_w = (main_rect.w - nav_w - gap).max(1.0);
@@ -1146,7 +1183,7 @@ impl Chrome for CommandPanel {
         }
 
         // 2.5 Right-Middle Network Monitor (GlassRole::FloatingPanel)
-        if side_progress > 0.01 && network_rect.w > 1.0 {
+        if side_progress > 0.01 && network_rect.w > 1.0 && network_rect.h > 1.0 {
             let region = LiquidGlassRegion::from_role(
                 &self.design,
                 GlassRole::FloatingPanel,
@@ -1155,6 +1192,32 @@ impl Chrome for CommandPanel {
                 side_progress,
             )
             .with_capture_bounds(BackdropRegion::from(network_rect));
+            regions.push(region);
+        }
+
+        // 2.6 Right-Bottom Work Mode Panel (GlassRole::FloatingPanel)
+        if side_progress > 0.01 && work_mode_rect.w > 1.0 && work_mode_rect.h > 1.0 {
+            let region = LiquidGlassRegion::from_role(
+                &self.design,
+                GlassRole::FloatingPanel,
+                BackdropRegion::from(work_mode_rect),
+                self.design.radii.glass_panel,
+                side_progress,
+            )
+            .with_capture_bounds(BackdropRegion::from(work_mode_rect));
+            regions.push(region);
+        }
+
+        // 2.7 Right-Bottom Power & Session Panel (GlassRole::FloatingPanel)
+        if side_progress > 0.01 && power_rect.w > 1.0 && power_rect.h > 1.0 {
+            let region = LiquidGlassRegion::from_role(
+                &self.design,
+                GlassRole::FloatingPanel,
+                BackdropRegion::from(power_rect),
+                self.design.radii.glass_panel,
+                side_progress,
+            )
+            .with_capture_bounds(BackdropRegion::from(power_rect));
             regions.push(region);
         }
 

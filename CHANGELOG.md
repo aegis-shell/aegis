@@ -45,6 +45,45 @@ project cuts a tagged release.
   `aegis-ui::motion` vocabulary (ADR-0139) and the Dock now uses it from
   there.
 
+### Added
+
+- The command panel's right column grows two quick-control surfaces
+  beneath the network monitor: a **Work Mode** switcher (one-click
+  segmented toggle over the session power modes — Balanced, Stay Awake,
+  Dashboard Lock — with the live behavioral hint under the active pill)
+  and a **Power & Session** panel (Lock Now, Suspend, Restart, Power
+  Off). The panel column scales the four stacked surfaces
+  proportionally when the display is too short for the ideal heights,
+  the same discipline the cluster already applied to width. Suspend /
+  Reboot / Power Off ride the existing `SystemAction` IPC
+  (`aegis system suspend|reboot|poweroff` from `aegis-commands`), so the
+  prompter never grows a privileged path to the host lifecycle.
+- Pointer motion over modal chrome (an open command panel) now moves the
+  hardware cursor at input cadence through an out-of-band cursor-plane
+  commit instead of inheriting the composite frame's pacing. The panel
+  still forces the composite frame — hover state must repaint — but the
+  KMS cursor plane is independent of the primary flip, and tying the
+  sprite to the repaint rate was visible stutter exactly where the
+  pointer is watched most closely.
+
+### Fixed
+
+- `wl_surface.damage_buffer` is now mappable through `wp_viewport`: the
+  8-way transform remap runs first, then the viewport's src-crop +
+  dst-stretch (or the plain buffer-scale division) lands the rect in
+  surface-local logical coordinates with outward rounding. Historically
+  any viewport meant "unmappable" ⇒ full damage, so every
+  fractional-scale client (Chrome, GTK4, Electron on HiDPI) paid a
+  whole-buffer CPU copy plus a whole-texture GPU upload per commit —
+  the dominant memmove storm on the compositor main loop.
+- An unlocalizable commit no longer poisons the rest of its render
+  interval: `unknown_full` stays absorbing within the frame, but
+  precise rects from later commits in the same interval accumulate
+  alongside it, so the acknowledging present clears both states together
+  and the next frame resumes incremental updates instead of inheriting a
+  stale full-damage latch (one damage-less commit used to force
+  whole-buffer copies for every commit after it until present).
+
 ## [0.0.47] - 2026-08-23
 
 ### Changed

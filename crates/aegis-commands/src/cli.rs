@@ -265,6 +265,12 @@ pub enum SystemCmd {
     DoNotDisturb { state: OnOff },
     /// Select the session power mode: balanced, awake, or secure.
     PowerMode { mode: PowerModeArg },
+    /// Suspend the host system.
+    Suspend,
+    /// Reboot the host system.
+    Reboot,
+    /// Power off / shut down the host system.
+    PowerOff,
 }
 
 /// The session power mode (ADR-0140), spelled as on the wire.

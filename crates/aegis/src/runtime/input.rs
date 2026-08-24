@@ -19,6 +19,15 @@ pub(super) struct FrameState {
     /// on its KMS plane out-of-band, independent of the composite frame
     /// schedule.
     pub(super) cursor_fast_path: bool,
+    /// Pointer motion qualifies for an out-of-band cursor-plane update
+    /// even though the composite frame still has to run — the pointer is
+    /// over chrome that captures it (a modal panel), so the fast path
+    /// cannot suppress the frame (hover state must repaint), but the KMS
+    /// cursor plane is independent of the primary-plane flip and the
+    /// sprite must not inherit the composite frame's pacing. Without this
+    /// a modal overlay ties pointer motion to the full-output repaint
+    /// rate, which is exactly where cursor stutter is most visible.
+    pub(super) cursor_plane_piggyback: bool,
     pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
@@ -108,6 +117,10 @@ impl FrameState {
         // earlier fast-path decision ride along into the render state.
         self.input_pointer_only &= newer.input_pointer_only;
         self.cursor_fast_path &= newer.cursor_fast_path;
+        // Same latching discipline as cursor_fast_path: the out-of-band
+        // commit fires per iteration before this merge, so only the latest
+        // iteration's qualification may carry into the render state.
+        self.cursor_plane_piggyback &= newer.cursor_plane_piggyback;
         self.pending_screenshots.extend(newer.pending_screenshots);
     }
 
@@ -1258,17 +1271,12 @@ impl CompositorRuntime {
         // atomic commit instead of turning every mouse report into a full
         // Vulkan frame. Chrome hover, drags, client cursor surfaces, locks,
         // and every non-motion input remain conservative full-damage signals.
-        let cursor_plane_only = had_input
+        let cursor_motion_plain = had_input
             && !non_cursor_input
             && pointer_motion_only
             && pointer_before != self.input_acc.cursor
             && self.host.supports_hardware_cursor()
             && !session_locked
-            && !self.shell.captures_pointer_at(
-                self.input_acc.cursor.0,
-                self.input_acc.cursor.1,
-                self.input_acc.display_size,
-            )
             && self.server.interactive().is_none()
             && !self.server.drag_active()
             && !self.server.client_cursor_surface_active()
@@ -1276,6 +1284,20 @@ impl CompositorRuntime {
                 .wallpaper
                 .as_ref()
                 .is_some_and(aegis_wallpaper::Wallpaper::parallax_pointer_active);
+        let chrome_captures = self.shell.captures_pointer_at(
+            self.input_acc.cursor.0,
+            self.input_acc.cursor.1,
+            self.input_acc.display_size,
+        );
+        let cursor_plane_only = cursor_motion_plain && !chrome_captures;
+        // Modal chrome (a command panel) owns pointer routing but not the
+        // cursor plane: the composite frame still repaints for hover state,
+        // yet the sprite itself moves at input cadence via an out-of-band
+        // commit — the same independence from the flip schedule the plain
+        // fast path already guarantees over client content. The render path
+        // restates the cursor in its own commit and its identical-state
+        // baseline skip keeps the two paths consistent.
+        let cursor_plane_piggyback = cursor_motion_plain && chrome_captures;
         if cursor_plane_only {
             had_input = false;
         }
@@ -1398,6 +1420,7 @@ impl CompositorRuntime {
             had_input,
             input_pointer_only: pointer_motion_only && !non_cursor_input,
             cursor_fast_path: cursor_plane_only,
+            cursor_plane_piggyback,
             pending_screenshots,
         })
     }
@@ -1420,6 +1443,7 @@ mod tests {
             had_input,
             input_pointer_only: false,
             cursor_fast_path: false,
+            cursor_plane_piggyback: false,
             pending_screenshots: Vec::new(),
         }
     }
@@ -1451,6 +1475,7 @@ mod tests {
         first.merge(third);
         assert!(first.input_pointer_only);
         assert!(first.cursor_fast_path);
+        assert!(!first.cursor_plane_piggyback);
     }
 
     #[test]

@@ -1740,6 +1740,445 @@ impl CommandPanel {
             None => {}
         }
     }
+
+    /// The bottom-right work mode quick switcher: a floating liquid-glass panel
+    /// hosting 3 segmented pills for session power mode selection (Balanced, Awake, Secure),
+    /// with an informative live status subtitle.
+    pub(super) fn render_work_mode_panel(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        progress: f32,
+        i18n: &Localizer,
+        out: &mut ChromeEvents,
+    ) {
+        if rect.w < 120.0 || rect.h < 40.0 {
+            return;
+        }
+        let hud = Hud::classic();
+        let type_scale = self.design.typography;
+        let slide = (1.0 - ease_out_cubic(progress)) * 24.0;
+        let rect = Rect {
+            x: rect.x + slide,
+            ..rect
+        };
+
+        // Floating glass backing
+        f.place(
+            "aegis-hud-work-mode-glass",
+            &chrome_place(
+                rect,
+                LayoutOpts {
+                    bg: Color::rgba(24, 26, 36, 38),
+                    border: Color::rgba(255, 255, 255, 16),
+                    border_width: 0.75,
+                    radius: self.design.radii.glass_panel,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
+            |f| {
+                f.column_ex(&sized(rect.w, rect.h), |_| {});
+            },
+        );
+
+        let pad_h = 14.0;
+        let pad_v = 10.0;
+        let current_mode = self.status.power_mode;
+
+        let original = f.theme();
+        let base_theme = themes::hud(&hud);
+        let muted_theme = themes::hud_muted(base_theme, &hud);
+
+        // Header: "WORK MODE" / "工作模式"
+        f.set_theme(base_theme);
+        let header_h = 22.0;
+        f.place(
+            "aegis-hud-work-mode-header",
+            &chrome_place(
+                Rect {
+                    x: rect.x + pad_h,
+                    y: rect.y + pad_v,
+                    w: (rect.w - pad_h * 2.0).max(1.0),
+                    h: header_h,
+                },
+                transparent(),
+            ),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: (rect.w - pad_h * 2.0).max(1.0),
+                        height: header_h,
+                        gap: 8.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.icon(Icon::Zap, 15.0);
+                        display_label(f, i18n.text(Message::WorkMode), type_scale.footnote);
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                        f.set_theme(muted_theme);
+                        let mode_name = match current_mode {
+                            aegis_model::power::PowerMode::Balanced => {
+                                i18n.text(Message::PowerModeBalanced)
+                            }
+                            aegis_model::power::PowerMode::Awake => {
+                                i18n.text(Message::PowerModeAwake)
+                            }
+                            aegis_model::power::PowerMode::Secure => {
+                                i18n.text(Message::PowerModeSecure)
+                            }
+                        };
+                        display_label(f, mode_name, type_scale.footnote);
+                        f.set_theme(base_theme);
+                    },
+                );
+            },
+        );
+
+        // 3 Segmented Pills: Balanced, Awake, Secure
+        let pills_top = rect.y + pad_v + header_h + 6.0;
+        let pill_h = 32.0_f32.min((rect.h - pad_v * 2.0 - header_h - 10.0).max(20.0));
+        let modes = [
+            (
+                aegis_model::power::PowerMode::Balanced,
+                i18n.text(Message::PowerModeBalanced),
+                Icon::Sliders,
+            ),
+            (
+                aegis_model::power::PowerMode::Awake,
+                i18n.text(Message::PowerModeAwake),
+                Icon::Play,
+            ),
+            (
+                aegis_model::power::PowerMode::Secure,
+                i18n.text(Message::PowerModeSecure),
+                Icon::Shield,
+            ),
+        ];
+
+        let content_w = (rect.w - pad_h * 2.0).max(1.0);
+        let pill_gap = 6.0;
+        let pill_w = ((content_w - pill_gap * 2.0) / 3.0).max(20.0);
+
+        for (index, (mode, label, icon)) in modes.into_iter().enumerate() {
+            let active = current_mode == mode;
+            let pill_rect = Rect {
+                x: rect.x + pad_h + index as f32 * (pill_w + pill_gap),
+                y: pills_top,
+                w: pill_w,
+                h: pill_h,
+            };
+
+            let bg = if active {
+                Color::rgba(0, 255, 255, 40)
+            } else {
+                Color::rgba(255, 255, 255, 12)
+            };
+            let border = if active {
+                hud.accent
+            } else {
+                Color::rgba(255, 255, 255, 20)
+            };
+            let border_width = if active { 1.2 } else { 0.75 };
+            let fg = if active {
+                Color::rgba(255, 255, 255, 255)
+            } else {
+                Color::rgba(180, 190, 210, 200)
+            };
+            let icon_color = if active {
+                hud.accent
+            } else {
+                Color::rgba(150, 160, 185, 180)
+            };
+
+            let pill_theme = themes::hud(&hud).with_fg(fg);
+            f.set_theme(pill_theme);
+
+            f.place(
+                &format!("aegis-hud-work-pill-place-{index}"),
+                &chrome_place(pill_rect, transparent()),
+                |f| {
+                    let (response, _) = f.pressable_row(
+                        &format!("aegis-hud-work-pill-{index}"),
+                        label,
+                        &LayoutOpts {
+                            width: pill_w,
+                            height: pill_h,
+                            bg,
+                            border,
+                            border_width,
+                            radius: pill_h * 0.5,
+                            cross: Align::Center,
+                            gap: 4.0,
+                            pad: 6.0,
+                            ..Default::default()
+                        },
+                        |f, _| {
+                            f.set_theme(pill_theme.with_fg(icon_color));
+                            f.icon(icon, 13.0);
+                            f.set_theme(pill_theme);
+                            let short_label = truncate(label, (pill_w / 8.5).max(3.0) as usize);
+                            display_label(f, &short_label, type_scale.caption);
+                        },
+                    );
+
+                    if response.clicked && !active {
+                        out.system_actions
+                            .push(SystemAction::SetPowerMode { mode });
+                    }
+                },
+            );
+        }
+
+        // Subtitle / hint describing current mode behavior (when vertical space permits)
+        if rect.h >= 90.0 {
+            let hint_y = pills_top + pill_h + 6.0;
+            let hint_h = 16.0;
+            let hint_text = match current_mode {
+                aegis_model::power::PowerMode::Balanced => {
+                    "Dim → Lock → Blank → Suspend"
+                }
+                aegis_model::power::PowerMode::Awake => "Screen stays lit & unlocked",
+                aegis_model::power::PowerMode::Secure => {
+                    "Lock on idle, screen stays lit"
+                }
+            };
+
+            f.set_theme(muted_theme);
+            f.place(
+                "aegis-hud-work-mode-hint",
+                &chrome_place(
+                    Rect {
+                        x: rect.x + pad_h,
+                        y: hint_y,
+                        w: content_w,
+                        h: hint_h,
+                    },
+                    transparent(),
+                ),
+                |f| {
+                    f.row_ex(
+                        &LayoutOpts {
+                            width: content_w,
+                            height: hint_h,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f| {
+                            display_label(f, hint_text, type_scale.caption);
+                        },
+                    );
+                },
+            );
+        }
+        f.set_theme(original);
+    }
+
+    /// The bottom-right power & session actions panel:
+    /// quick actions for Lock Screen, Suspend, Restart, and Power Off (Shutdown).
+    pub(super) fn render_power_session_panel(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        progress: f32,
+        i18n: &Localizer,
+        out: &mut ChromeEvents,
+    ) {
+        if rect.w < 120.0 || rect.h < 40.0 {
+            return;
+        }
+        let hud = Hud::classic();
+        let type_scale = self.design.typography;
+        let slide = (1.0 - ease_out_cubic(progress)) * 24.0;
+        let rect = Rect {
+            x: rect.x + slide,
+            ..rect
+        };
+
+        // Floating glass backing
+        f.place(
+            "aegis-hud-power-session-glass",
+            &chrome_place(
+                rect,
+                LayoutOpts {
+                    bg: Color::rgba(24, 26, 36, 38),
+                    border: Color::rgba(255, 255, 255, 16),
+                    border_width: 0.75,
+                    radius: self.design.radii.glass_panel,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
+            |f| {
+                f.column_ex(&sized(rect.w, rect.h), |_| {});
+            },
+        );
+
+        let pad_h = 14.0;
+        let pad_v = 10.0;
+        let original = f.theme();
+        let base_theme = themes::hud(&hud);
+
+        // Header: "POWER & SESSION" / "电源与会话"
+        f.set_theme(base_theme);
+        let header_h = 22.0;
+        f.place(
+            "aegis-hud-power-session-header",
+            &chrome_place(
+                Rect {
+                    x: rect.x + pad_h,
+                    y: rect.y + pad_v,
+                    w: (rect.w - pad_h * 2.0).max(1.0),
+                    h: header_h,
+                },
+                transparent(),
+            ),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: (rect.w - pad_h * 2.0).max(1.0),
+                        height: header_h,
+                        gap: 8.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.icon(Icon::Radio, 15.0);
+                        display_label(f, i18n.text(Message::PowerAndSession), type_scale.footnote);
+                    },
+                );
+            },
+        );
+
+        // Action Buttons: 2x2 grid
+        // [ 🔒 Lock Now ]    [ 💤 Suspend ]
+        // [ 🔄 Restart ]     [ ⏻ Power Off ]
+        let actions_top = rect.y + pad_v + header_h + 6.0;
+        let available_h = (rect.h - pad_v * 2.0 - header_h - 10.0).max(20.0);
+        let btn_h = 32.0_f32.min(((available_h - 6.0) * 0.5).max(18.0));
+        let btn_gap = 8.0;
+        let content_w = (rect.w - pad_h * 2.0).max(1.0);
+        let btn_w = ((content_w - btn_gap) * 0.5).max(30.0);
+
+        enum PowerActionKind {
+            Lock,
+            Suspend,
+            Restart,
+            PowerOff,
+        }
+
+        let buttons = [
+            (
+                PowerActionKind::Lock,
+                i18n.text(Message::LockNow),
+                Icon::Shield,
+                false,
+            ),
+            (
+                PowerActionKind::Suspend,
+                i18n.text(Message::Suspend),
+                Icon::Pause,
+                false,
+            ),
+            (
+                PowerActionKind::Restart,
+                i18n.text(Message::Restart),
+                Icon::RefreshCw,
+                false,
+            ),
+            (
+                PowerActionKind::PowerOff,
+                i18n.text(Message::PowerOff),
+                Icon::Slash,
+                true,
+            ),
+        ];
+
+        for (index, (kind, label, icon, is_destructive)) in buttons.into_iter().enumerate() {
+            let row = index / 2;
+            let col = index % 2;
+            let btn_rect = Rect {
+                x: rect.x + pad_h + col as f32 * (btn_w + btn_gap),
+                y: actions_top + row as f32 * (btn_h + 6.0),
+                w: btn_w,
+                h: btn_h,
+            };
+
+            let bg = if is_destructive {
+                Color::rgba(255, 60, 60, 20)
+            } else {
+                Color::rgba(255, 255, 255, 12)
+            };
+            let border = if is_destructive {
+                Color::rgba(255, 80, 80, 50)
+            } else {
+                Color::rgba(255, 255, 255, 20)
+            };
+            let fg = if is_destructive {
+                Color::rgba(255, 170, 170, 240)
+            } else {
+                Color::rgba(200, 210, 230, 220)
+            };
+            let icon_color = if is_destructive {
+                Color::rgba(255, 100, 100, 255)
+            } else {
+                hud.accent
+            };
+
+            let btn_theme = themes::hud(&hud).with_fg(fg);
+            f.set_theme(btn_theme);
+
+            f.place(
+                &format!("aegis-hud-power-btn-place-{index}"),
+                &chrome_place(btn_rect, transparent()),
+                |f| {
+                    let (response, _) = f.pressable_row(
+                        &format!("aegis-hud-power-btn-{index}"),
+                        label,
+                        &LayoutOpts {
+                            width: btn_w,
+                            height: btn_h,
+                            bg,
+                            border,
+                            border_width: 0.75,
+                            radius: 8.0,
+                            cross: Align::Center,
+                            gap: 6.0,
+                            pad: 6.0,
+                            ..Default::default()
+                        },
+                        |f, _| {
+                            f.set_theme(btn_theme.with_fg(icon_color));
+                            f.icon(icon, 13.0);
+                            f.set_theme(btn_theme);
+                            let short_label = truncate(label, (btn_w / 8.0).max(3.0) as usize);
+                            display_label(f, &short_label, type_scale.caption);
+                        },
+                    );
+
+                    if response.clicked {
+                        match kind {
+                            PowerActionKind::Lock => {
+                                out.lock = true;
+                            }
+                            PowerActionKind::Suspend => {
+                                out.system_actions.push(SystemAction::Suspend);
+                            }
+                            PowerActionKind::Restart => {
+                                out.system_actions.push(SystemAction::Reboot);
+                            }
+                            PowerActionKind::PowerOff => {
+                                out.system_actions.push(SystemAction::PowerOff);
+                            }
+                        }
+                    }
+                },
+            );
+        }
+        f.set_theme(original);
+    }
 }
 
 /// Project the two Quick Controls toggles onto the session power mode

@@ -275,8 +275,16 @@ impl CompositorRuntime {
             // still runs when its gate opens; with no other damage it
             // restates an already-current cursor and completes frame
             // callbacks as before.
-            let cursor_fast_path = frame.cursor_fast_path;
-            if cursor_fast_path {
+            //
+            // `cursor_plane_piggyback` extends the same out-of-band commit
+            // to motion captured by modal chrome (a command panel): the
+            // hover state still forces the composite frame, but the cursor
+            // plane is independent of the primary flip and the sprite must
+            // not inherit the full-output repaint rate — on a 3072x1920@120
+            // display that inheritance read as visible cursor stutter
+            // inside the panel. The render path's identical-state baseline
+            // skip keeps the two commits consistent.
+            if frame.cursor_fast_path || frame.cursor_plane_piggyback {
                 self.present_pointer_cursor(&frame);
             }
             self.queue_frame_state(frame);

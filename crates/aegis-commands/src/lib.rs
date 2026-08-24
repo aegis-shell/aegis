@@ -671,6 +671,9 @@ fn dispatch_system(socket: &Path, command: SystemCmd, json: bool) -> Result<Stri
                 "power mode change queued",
             )
         }
+        SystemCmd::Suspend => (aegis_ipc::SystemAction::Suspend, "system suspending"),
+        SystemCmd::Reboot => (aegis_ipc::SystemAction::Reboot, "system rebooting"),
+        SystemCmd::PowerOff => (aegis_ipc::SystemAction::PowerOff, "system powering off"),
     };
     let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
     client.apply_system_action(action).map_err(io_err)?;

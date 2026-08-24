@@ -47,6 +47,11 @@ Surfaces:
   (`wlan0 · Homelab-5G`), two framed line charts plotting upload and
   download throughput from `ChromeUpdate::ResourceStats`, and the current
   rates as text under each chart.
+- **Work Mode switcher (right-bottom)** — quick 1-click segmented toggle
+  between session power modes (`Balanced`, `Stay Awake`, `Dashboard Lock`),
+  with active mode highlighting and live behavioral status hints.
+- **Power & Session panel (right-bottom)** — immediate system lifecycle and
+  session actions: Lock Now, Suspend, Restart, and Power Off (Shutdown).
 - **Tray** — the shared `aegis-tray` StatusNotifierItem snapshot with full
   interaction: left-click `Activate`, right-click host-rendered dbusmenu
   popover (or `SecondaryActivate`).
@@ -69,6 +74,9 @@ surface with its own reveal animation:
   toast strip presents only a three-second window of them (ADR-0083).
 - **Network monitor (right-middle)** — the network surface below the
   notification stream, sharing the column's right edge.
+- **Work Mode & Power Session panels (right-bottom)** — two floating liquid-glass
+  panels stacked beneath the network monitor, providing instant glanceability
+  and quick control over session idle policies and power lifecycle actions.
 
 ## Boundaries
 

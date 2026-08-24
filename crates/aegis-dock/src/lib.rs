@@ -532,10 +532,10 @@ impl Dock {
 
     /// Cubic easing with zero velocity at both ends. The reveal state remains
     /// the animation clock; this shapes the visible geometry so the Dock does
-    /// not arrive at either the panel or handle with a hard stop.
+    /// not arrive at either the panel or handle with a hard stop. The curve
+    /// itself is the shared motion vocabulary (ADR-0139).
     fn smoothstep(progress: f32) -> f32 {
-        let progress = progress.clamp(0.0, 1.0);
-        progress * progress * (3.0 - 2.0 * progress)
+        aegis_ui::motion::smoothstep(progress)
     }
 
     /// Geometric expansion of the single Dock surface: zero is the collapsed

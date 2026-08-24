@@ -103,6 +103,15 @@ pub(super) fn apply_system_action(
         SystemAction::SetPowerMode { mode } => {
             apply_power_mode(server, status, idle_inhibits, idle_process, mode);
         }
+        SystemAction::Suspend => {
+            spawn_host_command("systemctl", &["suspend"])?;
+        }
+        SystemAction::Reboot => {
+            spawn_host_command("systemctl", &["reboot"])?;
+        }
+        SystemAction::PowerOff => {
+            spawn_host_command("systemctl", &["poweroff"])?;
+        }
     }
     Ok(())
 }

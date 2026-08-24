@@ -3,11 +3,29 @@
 //! [`aegis_model::launcher::Launcher`] state machine.
 //!
 //! The component owns presentation state only: responsive grid geometry,
-//! paging, hover/click hit-testing, and the opening/closing spring. Search,
+//! paging, hover/click hit-testing, and the opening/closing reveal. Search,
 //! running-app matching, selection, and launch outcomes stay in `aegis-model`.
 //! The compositor host captures and multi-resolution-blurs the desktop when
 //! [`Chrome::backdrop_blur_sigma`] is non-zero, so the overlay remains legible
 //! without replacing the user's spatial context with an opaque panel.
+//!
+//! # Reveal
+//!
+//! The open/close animation is one spring in the Dock's motion family
+//! (ω₀² = 900, ζ = 0.85 — the same stiffness/damping pair as the Dock's
+//! magnification wave and tile-birth springs) shaped through two windows,
+//! mirroring the Dock's autohide morph in reverse:
+//!
+//! - **Surface** — the scrim and backdrop blur travel the whole reveal on a
+//!   zero-velocity [`smoothstep`], so the veil soft-lands at both ends.
+//! - **Content** — the search field, cells, and pagination stay absent for
+//!   the first stretch ([`CONTENT_ARRIVE_START`]), then grow in on the same
+//!   curve; on close they drain before the veil thins. Icons grow from a
+//!   seed area rather than cross-fading, and the whole content body lifts
+//!   off the Dock's reserved edge toward the output centre — the same
+//!   direction the Dock's magnified icons pop toward.
+//!
+//! One spring, one curve, two windows: no per-layer easing stacks.
 
 use std::ffi::c_void;
 
@@ -23,7 +41,7 @@ use aegis_model::app::Entry;
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::launcher::{Launch, Launcher as Brain};
 use aegis_model::window::Window;
-use aegis_ui::{contains, ease_out_cubic};
+use aegis_ui::{contains, smoothstep};
 
 use super::app_menu::AppMenu;
 
@@ -47,8 +65,27 @@ const TARGET_CELL_W: f32 = 145.0;
 const TARGET_CELL_H: f32 = 110.0;
 const MAX_COLUMNS: usize = 8;
 const MAX_ROWS: usize = 5;
-const OPEN_STIFFNESS: f32 = 360.0;
-const OPEN_DAMPING: f32 = 0.86;
+/// Reveal spring ω₀². Matched to the Dock's magnification springs
+/// (`aegis-dock` `SPRING_STIFFNESS`) so the launcher opens with the same
+/// period the Dock's own morphs use — one motion family across the shell.
+const OPEN_STIFFNESS: f32 = 900.0;
+/// Reveal spring damping ratio ζ, the same just-under-critical value as the
+/// Dock's wave and tile-birth springs: a settle with the slight macOS-style
+/// bounce-back, no jitter.
+const OPEN_DAMPING: f32 = 0.85;
+/// Content leads the surface in, and trails it out. Below this reveal the
+/// launcher's content is still absent while the scrim and blur arrive; on
+/// the way out content drains before the veil thins. This is the same
+/// two-window choreography the Dock's autohide morph uses
+/// (`AUTOHIDE_CONTENT_DRAIN_END`), so the launcher reads as a sibling of
+/// the bar rather than a separate layer.
+const CONTENT_ARRIVE_START: f32 = 0.28;
+/// Rise distance (logical px) of the launcher's content toward the output
+/// centre as it arrives. The Dock's icons grow toward the screen centre as
+/// they magnify; this borrows the same direction — content lifts off the
+/// anchoring edge (the reserved dock edge) instead of sliding down from the
+/// top of the screen.
+const CONTENT_RISE: f32 = 18.0;
 /// Scroll distance (logical pixels) one touchpad swipe must travel before it
 /// can turn the page. Wheel detents are multiplied into the same pixel scale,
 /// so one detent lands far past the threshold while a resting two-finger
@@ -305,12 +342,11 @@ impl Launcher {
         self.page = page;
     }
 
-    fn search_rect_for_display(display: (f32, f32), progress: f32) -> Rect {
+    fn search_rect_for_display(display: (f32, f32), rise_y: f32) -> Rect {
         let search_w = (display.0 * 0.40)
             .clamp(SEARCH_MIN_W, SEARCH_MAX_W)
             .min((display.0 - 40.0).max(1.0));
-        let slide_y = (1.0 - ease_out_cubic(progress)) * 18.0;
-        let search_y = if display.1 < 560.0 { 22.0 } else { SEARCH_TOP } + slide_y;
+        let search_y = if display.1 < 560.0 { 22.0 } else { SEARCH_TOP } + rise_y;
         Rect {
             x: (display.0 - search_w) * 0.5,
             y: search_y,
@@ -320,7 +356,8 @@ impl Launcher {
     }
 
     fn search_rect(&self, display: (f32, f32)) -> Rect {
-        Self::search_rect_for_display(display, self.visibility.value.clamp(0.0, 1.0))
+        let (_, rise_y) = content_rise(self.modal_reserved, self.visibility.value.clamp(0.0, 1.0));
+        Self::search_rect_for_display(display, rise_y)
     }
 }
 
@@ -373,10 +410,21 @@ impl Chrome for Launcher {
             return;
         }
 
-        // Fade the whole overlay with the visibility spring: the frame
-        // opacity stamps into every draw command's colours, so painted
-        // layers, text, and icons fade together.
-        frame.set_opacity(progress);
+        // The reveal is one spring driving two windows, the same
+        // choreography the Dock's autohide morph uses: the surface (scrim +
+        // backdrop blur) opens over the whole travel, while the content
+        // (search field, cells, pagination) stays absent for the first
+        // stretch and then grows in on the same curve. The spring owns
+        // *when* the value travels; smoothstep shapes both windows so
+        // neither the veil nor the content arrives with a hard stop.
+        let veil = surface_progress(progress);
+        let content = content_progress(progress);
+        let (rise_x, rise_y) = content_rise(self.modal_reserved, progress);
+
+        // Fade the veil with the shaped surface window: the frame opacity
+        // stamps into every draw command's colours, so painted layers,
+        // text, and icons fade together.
+        frame.set_opacity(veil);
         // The launcher's content sits on the scrim veil, which stays a dark
         // wash in both appearances; re-tone the frame foreground onto that
         // tonal side so labels, bare icons, and the search field stay legible
@@ -511,7 +559,6 @@ impl Chrome for Launcher {
             })
             .collect();
 
-        let slide_y = (1.0 - ease_out_cubic(progress)) * 18.0;
         let pressed = down && !self.prev_down && self.brain.is_open() && !self.app_menu.is_open();
         let right_pressed =
             raw.mouse_pressed.get(1).copied().unwrap_or(false) && self.brain.is_open();
@@ -534,7 +581,16 @@ impl Chrome for Launcher {
             |_| {},
         );
 
-        let search_rect = Self::search_rect_for_display((display.x, display.y), progress);
+        // Everything after the scrim is content: it fades with the product of
+        // both windows, so below the content threshold nothing of it exists
+        // on screen, and during the exit it drains ahead of the veil.
+        frame.set_opacity(veil * content);
+        // No hover, click, or focus target may exist in the content window's
+        // absence — the Dock keeps drained tiles out of its collapsing
+        // surface's hit-test the same way.
+        let content_live = content > 0.0;
+
+        let search_rect = Self::search_rect_for_display((display.x, display.y), rise_y);
         let search_w = search_rect.w;
         let search_y = search_rect.y;
         let search_text_width = (search_w - SEARCH_TEXT_X - 16.0).max(0.0);
@@ -553,7 +609,7 @@ impl Chrome for Launcher {
         let query_metrics = frame.measure_text(&shown_query, typography.headline);
         let font_metrics = frame.measure_text("Ag", typography.headline);
         let caret_rect = search_caret_rect(search_rect, query_metrics.width, font_metrics.height);
-        if pressed {
+        if pressed && content_live {
             self.search_focused = contains(search_rect, cursor.x, cursor.y);
         }
         // Frosted-glass search field: the shared glass-panel material carries
@@ -645,7 +701,7 @@ impl Chrome for Launcher {
         if cells.is_empty() {
             let empty = Rect {
                 x: 0.0,
-                y: layout.y + layout.height * 0.40 + slide_y,
+                y: layout.y + layout.height * 0.40 + rise_y,
                 w: display.x,
                 h: 32.0,
             };
@@ -665,9 +721,10 @@ impl Chrome for Launcher {
 
         let colors = self.design.colors;
         for (slot, cell) in cells.iter().enumerate() {
-            let mut rect = layout.cell(slot, slide_y);
-            rect.x += self.page_shift;
-            let hovered = self.brain.is_open() && contains(rect, cursor.x, cursor.y);
+            let mut rect = layout.cell(slot, rise_y);
+            rect.x += rise_x + self.page_shift;
+            let hovered =
+                content_live && self.brain.is_open() && contains(rect, cursor.x, cursor.y);
             if pressed && hovered {
                 clicked_cell = Some(cell.filtered_position);
             }
@@ -721,7 +778,7 @@ impl Chrome for Launcher {
                             ..Default::default()
                         },
                         |frame| {
-                            render_app_icon(frame, &self.design, cell.icon, icon_size, progress);
+                            render_app_icon(frame, &self.design, cell.icon, icon_size, content);
                             frame.label_compact_sized(&cell.label, typography.label);
                         },
                     );
@@ -730,7 +787,7 @@ impl Chrome for Launcher {
         }
 
         let modal_bottom = (display.y - self.modal_reserved.bottom.max(0) as f32).max(1.0);
-        let footer_y = (layout.y + layout.height + 13.0 + slide_y).min(modal_bottom - 28.0);
+        let footer_y = (layout.y + layout.height + 13.0 + rise_y).min(modal_bottom - 28.0);
         if page_total > 1 && page_total <= 12 {
             let group_w = page_total as f32 * 18.0;
             let group_x = (display.x - group_w) * 0.5;
@@ -741,7 +798,7 @@ impl Chrome for Launcher {
                     w: 18.0,
                     h: 20.0,
                 };
-                if pressed && contains(hit, cursor.x, cursor.y) {
+                if pressed && content_live && contains(hit, cursor.x, cursor.y) {
                     clicked_page = Some(page);
                 }
                 let diameter = if page == self.page { 8.0 } else { 6.0 };
@@ -782,10 +839,14 @@ impl Chrome for Launcher {
                 x: display.x * 0.5 + 54.0,
                 ..previous
             };
-            if pressed && contains(previous, cursor.x, cursor.y) && self.page > 0 {
+            if pressed && content_live && contains(previous, cursor.x, cursor.y) && self.page > 0 {
                 clicked_page = Some(self.page - 1);
             }
-            if pressed && contains(next, cursor.x, cursor.y) && self.page + 1 < page_total {
+            if pressed
+                && content_live
+                && contains(next, cursor.x, cursor.y)
+                && self.page + 1 < page_total
+            {
                 clicked_page = Some(self.page + 1);
             }
             frame.place(
@@ -831,6 +892,8 @@ impl Chrome for Launcher {
         // The shell shares one lens frame across every chrome component.
         // Restore full opacity and the ambient theme so the launcher's fade
         // and tonal override cannot affect a component rendered after it.
+        // (The context menu below paints at full opacity — it is chrome
+        // attached to the launcher, not launcher content in the reveal.)
         frame.set_opacity(1.0);
         frame.set_theme(original_theme);
 
@@ -1085,6 +1148,43 @@ fn icon_visibility_scale(progress: f32) -> f32 {
     progress.clamp(0.0, 1.0).sqrt()
 }
 
+/// The scrim/blur window of the reveal: smoothstep over the whole spring.
+/// The spring owns *when*; smoothstep gives the veil a soft start and a
+/// soft landing so the backdrop never pops in or out at either end.
+fn surface_progress(reveal: f32) -> f32 {
+    smoothstep(reveal)
+}
+
+/// The content window of the reveal: content stays absent below
+/// [`CONTENT_ARRIVE_START`], then grows in on the same smoothstep curve.
+/// Symmetric with the Dock's autohide drain — the bar's icons vanish before
+/// its surface finishes collapsing — read in reverse.
+fn content_progress(reveal: f32) -> f32 {
+    let normalized = (reveal - CONTENT_ARRIVE_START) / (1.0 - CONTENT_ARRIVE_START);
+    smoothstep(normalized)
+}
+
+/// The content's rise offset along the axis from the dock's reserved edge
+/// toward the output centre: full offset while absent, easing to zero as
+/// the content arrives. Derived from the same reserved edges the grid
+/// layout already honours, so a bottom dock lifts content up, and a
+/// side dock pushes it in from that side — never a hard-coded `y`.
+fn content_rise(reserved: Reserved, progress: f32) -> (f32, f32) {
+    let offset = CONTENT_RISE * (1.0 - content_progress(progress));
+    // The dock reserves the edge it anchors to; rise away from it, toward
+    // the output centre. An unreserved (autohide) dock reserves nothing —
+    // the launcher still rises from the bottom edge, where the dock
+    // overlay floats. Only a strictly wider side reservation counts as a
+    // side dock; ties (including the all-zero default) mean bottom.
+    if reserved.left > reserved.bottom && reserved.left >= reserved.right {
+        (offset, 0.0)
+    } else if reserved.right > reserved.bottom {
+        (-offset, 0.0)
+    } else {
+        (0.0, offset)
+    }
+}
+
 fn centered_layer() -> LayoutOpts {
     LayoutOpts {
         cross: Align::Center,
@@ -1131,20 +1231,25 @@ fn search_caret_rect(search: Rect, query_width: f32, caret_height: f32) -> Rect 
 /// Draw a real application texture or the same generic app glyph used by the
 /// dock. Both variants live in one fixed slot and use the same visibility
 /// curve, so missing-icon entries participate in launcher entry/exit motion
-/// exactly like resolved raster icons.
+/// exactly like resolved raster icons. The scale is the content window of the
+/// reveal — the same seed-to-full growth the Dock's tiles spring up through
+/// (`DOCK_TILE_BIRTH`), not a raw fade.
 fn render_app_icon(
     frame: &mut Frame,
     design: &Design,
     icon: Option<*mut c_void>,
     icon_size: f32,
-    progress: f32,
+    content: f32,
 ) {
     let slot = LayoutOpts {
         cross: Align::Center,
         ..sized(icon_size, icon_size)
     };
     frame.column_ex(&slot, |frame| {
-        let visible_size = icon_size * icon_visibility_scale(progress);
+        // Area, rather than diameter, tracks visibility linearly: the texture
+        // stays readable during entry while its footprint shrinks every frame
+        // during exit, and it never quite reads as a plain cross-fade.
+        let visible_size = icon_size * icon_visibility_scale(content);
         if visible_size <= 0.5 {
             return;
         }
@@ -1233,6 +1338,200 @@ mod tests {
         assert!(icon_visibility_scale(0.25) < icon_visibility_scale(0.75));
     }
 
+    // ---- reveal choreography (dock-family motion) -------------------------
+
+    /// The two windows of the reveal: the veil travels the whole spring,
+    /// content stays absent for the opening stretch and then grows in on
+    /// the same curve. Both must be zero-velocity at the ends (smoothstep)
+    /// and monotonic — no layer may pop or reverse mid-reveal.
+    #[test]
+    fn reveal_windows_lead_and_lag_like_the_dock_morph() {
+        assert_eq!(surface_progress(0.0), 0.0);
+        assert_eq!(surface_progress(1.0), 1.0);
+        // Content is completely absent through the opening stretch…
+        assert_eq!(content_progress(0.0), 0.0);
+        assert_eq!(content_progress(CONTENT_ARRIVE_START), 0.0);
+        // …then arrives with the same curve, ending in step with the veil.
+        assert_eq!(content_progress(1.0), 1.0);
+        assert!(content_progress(CONTENT_ARRIVE_START + 0.01) > 0.0);
+
+        let mut previous_veil = 0.0;
+        let mut previous_content = 0.0;
+        for step in 0..=20 {
+            let reveal = step as f32 / 20.0;
+            let veil = surface_progress(reveal);
+            let content = content_progress(reveal);
+            assert!(veil >= previous_veil, "veil must be monotonic");
+            assert!(content >= previous_content, "content must be monotonic");
+            // The veil always leads: content never outruns the surface it
+            // sits on (the Dock's drain, read in reverse).
+            assert!(
+                veil >= content - 1e-6,
+                "content must not lead the veil at {reveal}"
+            );
+            previous_veil = veil;
+            previous_content = content;
+        }
+    }
+
+    /// The content rises off the dock's reserved edge toward the output
+    /// centre — never a hard-coded screen axis. A bottom dock lifts content
+    /// up, a left dock pushes it right, a right dock pushes it left, and an
+    /// unreserved (autohide) dock still rises from the bottom.
+    #[test]
+    fn content_rises_away_from_the_docks_edge() {
+        let bottom = Reserved {
+            bottom: 86,
+            ..Reserved::default()
+        };
+        let left = Reserved {
+            left: 86,
+            ..Reserved::default()
+        };
+        let right = Reserved {
+            right: 86,
+            ..Reserved::default()
+        };
+
+        // Fully absent content sits at the full offset, toward the centre.
+        let (x, y) = content_rise(bottom, 0.0);
+        assert_eq!((x, y), (0.0, CONTENT_RISE), "bottom dock lifts content up");
+        let (x, _) = content_rise(left, 0.0);
+        assert_eq!(x, CONTENT_RISE, "left dock pushes content right");
+        let (x, _) = content_rise(right, 0.0);
+        assert_eq!(x, -CONTENT_RISE, "right dock pushes content left");
+        let (x, y) = content_rise(Reserved::default(), 0.0);
+        assert_eq!(
+            (x, y),
+            (0.0, CONTENT_RISE),
+            "an unreserved dock still rises from the bottom"
+        );
+
+        // Arrived content rests exactly in place — no residual offset that
+        // would nudge the resting layout off the grid.
+        for reserved in [bottom, left, right, Reserved::default()] {
+            assert_eq!(content_rise(reserved, 1.0), (0.0, 0.0));
+        }
+    }
+
+    /// The reveal spring is the Dock's spring: the same stiffness/damping
+    /// family as `aegis-dock`'s `SPRING_STIFFNESS`/`SPRING_DAMPING`, with the
+    /// slight under-damped settle and a period near 0.2 s.
+    #[test]
+    fn reveal_spring_shares_the_dock_family() {
+        assert_eq!(OPEN_STIFFNESS, 900.0);
+        assert_eq!(OPEN_DAMPING, 0.85);
+
+        let mut spring = SpringState::default();
+        let mut overshot = false;
+        for _ in 0..120 {
+            spring.advance(1.0, OPEN_STIFFNESS, OPEN_DAMPING, 1.0 / 60.0);
+            overshot |= spring.value > 1.0;
+        }
+        assert!(overshot, "the family settles through a slight overshoot");
+        assert!(
+            spring.settled_on(1.0, 0.002, 0.02),
+            "the reveal settles within 2 s"
+        );
+    }
+
+    /// While the content window is absent the launcher must not expose
+    /// content hit targets: the early reveal is veil only, exactly as the
+    /// drained dock keeps its icons out of the collapsed handle.
+    #[test]
+    fn early_reveal_has_no_content_targets() {
+        let absent = CONTENT_ARRIVE_START - 0.01;
+        assert_eq!(content_progress(absent), 0.0);
+        assert!(surface_progress(absent) > 0.0, "the veil leads the content");
+        let (_, rise) = content_rise(Reserved::default(), absent);
+        assert_eq!(rise, CONTENT_RISE, "absent content rests at the offset");
+    }
+
+    /// Driving the real render loop: a click during the opening stretch —
+    /// after the veil has begun but before the content window opens — must
+    /// not activate a cell underneath the cursor, and the same click once
+    /// the content has arrived must. This pins the render-path gating the
+    /// pure-curve tests above describe.
+    #[test]
+    fn render_gates_cell_clicks_on_the_content_window() {
+        let apps: Vec<Entry> = (0..8)
+            .map(|index| Entry {
+                id: format!("app{index}.desktop"),
+                name: format!("App {index}"),
+                ..Entry::default()
+            })
+            .collect();
+        let mut launcher = Launcher::new();
+        launcher.update(ChromeUpdate::AppCatalog(&AppCatalog {
+            apps,
+            ..AppCatalog::default()
+        }));
+        launcher.update(ChromeUpdate::ModalReserved(Reserved {
+            bottom: 86,
+            ..Reserved::default()
+        }));
+        launcher.toggle(&mut ChromeEvents::default());
+
+        // Advance into the opening stretch: veil on its way, content still
+        // absent. The dock-family spring crosses the content threshold on
+        // its second frame (ω₀ = 30 rad/s), so exactly one frame of render
+        // exists in the veil-only stretch — the same stretch every real
+        // open passes through.
+        launcher.advance_visibility(1.0, 1.0 / 60.0);
+        let reveal = launcher.visibility.value;
+        assert!(
+            reveal > 0.0 && reveal < CONTENT_ARRIVE_START,
+            "test premise: veil moving, content absent (reveal {reveal})"
+        );
+
+        let mut input = Input::new((1280.0, 720.0), 1.0 / 60.0);
+        // Park the cursor inside the first grid cell (slot 0, top-left), so
+        // the same gesture addresses a real cell in both halves.
+        let first = GridLayout::for_display(
+            1280.0,
+            720.0,
+            Reserved {
+                bottom: 86,
+                ..Reserved::default()
+            },
+        )
+        .cell(0, 0.0);
+        input.set_cursor(first.x + 10.0, first.y + 10.0);
+        // A press-and-release fully inside the absent window: no click may
+        // fire, exactly as the drained dock exposes no tile targets.
+        let early = press_and_release(&mut launcher, &mut input);
+        assert!(
+            early.spawn.is_none(),
+            "a click in the absent-content stretch must not launch anything"
+        );
+
+        // Let the reveal finish and click again: now the cell under the
+        // cursor is live and the same gesture launches its app.
+        for _ in 0..30 {
+            launcher.advance_visibility(1.0, 1.0 / 60.0);
+        }
+        assert!(content_progress(launcher.visibility.value) > 0.99);
+        let late = press_and_release(&mut launcher, &mut input);
+        assert!(
+            late.spawn.is_some(),
+            "the same click must launch once the content window is open"
+        );
+    }
+
+    /// One press frame followed by one release frame through the real
+    /// render path, with the pointer where the caller placed it.
+    fn press_and_release(launcher: &mut Launcher, input: &mut Input) -> ChromeEvents {
+        use lens::MouseButton;
+        input.set_mouse_down(MouseButton::Left, true);
+        let mut events = render_frame(launcher, input);
+        input.set_mouse_down(MouseButton::Left, false);
+        let release = render_frame(launcher, input);
+        if events.spawn.is_none() {
+            events.spawn = release.spawn;
+        }
+        events
+    }
+
     #[test]
     fn opening_launcher_keeps_search_caret_hidden() {
         let mut launcher = Launcher::new();
@@ -1302,9 +1601,10 @@ mod tests {
         (launcher, input)
     }
 
-    fn render_frame(launcher: &mut Launcher, input: &Input) {
+    fn render_frame(launcher: &mut Launcher, input: &Input) -> ChromeEvents {
         let mut ui = Ui::headless().expect("create headless Lens context");
         let i18n = Localizer::new("en-US");
+        let mut events = ChromeEvents::default();
         ui.frame(input, |frame| {
             launcher.render(
                 frame,
@@ -1312,9 +1612,10 @@ mod tests {
                 &[],
                 &crate::WorkspaceSnapshot { outputs: vec![] },
                 &i18n,
-                &mut ChromeEvents::default(),
+                &mut events,
             );
         });
+        events
     }
 
     #[test]

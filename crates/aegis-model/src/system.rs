@@ -212,6 +212,12 @@ pub enum SystemAction {
     SetPowerMode {
         mode: PowerMode,
     },
+    /// Suspend the host system.
+    Suspend,
+    /// Reboot the host system.
+    Reboot,
+    /// Power off / shut down the host system.
+    PowerOff,
 }
 
 impl SystemAction {
