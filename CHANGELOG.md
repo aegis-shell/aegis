@@ -7,6 +7,44 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- The lock stack now broadcasts the desktop's lock state over the
+  freedesktop-standard logind channel
+  ([ADR-0141](docs/adr/0141-locker-broadcasts-the-logind-session-lock-boundary.md)):
+  when the compositor confirms the secure lock frame, `aegis-idle` calls
+  `LockSession()` on its own logind session (so `LockedHint` is truthful
+  and subscribers of the `Session.Lock` signal — secret vaults, keyrings,
+  agents — see the same authoritative event), and on an authenticated
+  unlock it calls `UnlockSession()`. Best-effort and skipped entirely
+  under `--no-logind` or without a logind session; the lock UI never
+  waits on the system bus.
+- `aegis-lock` commits credentials after a successful authentication
+  (`pam_setcred(PAM_ESTABLISH_CRED)`, plus an optional `session` line in
+  the packaged `/etc/pam.d/aegis-lock`). Besides running the stack's
+  other committing hooks like any credential-proving locker, this is the
+  firing point at which `pam_aegis` plants the portal vault's unlock
+  token, letting a password-mode vault re-unlock silently after a screen
+  unlock instead of prompting.
+
+- Redesigned the application launcher's open/close animation (the Dock's
+  "Applications" tile) into the Dock's motion family. The reveal is now one
+  spring with the Dock's own stiffness/damping pair (ω₀² = 900, ζ = 0.85 —
+  the same constants as the Dock's magnification wave and tile-birth
+  springs) shaped through two smoothstep windows, mirroring the Dock's
+  autohide morph read in reverse: the scrim and backdrop blur travel the
+  whole reveal, while the search field, cells, and pagination stay absent
+  for the opening stretch and then grow in — and drain out ahead of the
+  veil on close. Content lifts off the Dock's reserved edge toward the
+  output centre (a side dock pushes it in from that side instead of the
+  old hard-coded downward slide), icons grow from a seed area rather than
+  cross-fading, and hit targets only exist once the content window opens.
+  This replaces the previous stack of three unrelated curves (raw spring
+  opacity, `ease_out_cubic` slide, `sqrt` icon scale) with one spring, one
+  curve, two windows. `smoothstep` moved from `aegis-dock` into the shared
+  `aegis-ui::motion` vocabulary (ADR-0139) and the Dock now uses it from
+  there.
+
 ## [0.0.47] - 2026-08-23
 
 ### Changed

@@ -6,6 +6,7 @@ use std::time::Duration;
 const DESTINATION: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
 const INTERFACE: &str = "org.freedesktop.login1.Manager";
+const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepEvent {
@@ -25,6 +26,91 @@ pub fn acquire_delay_inhibitor() -> Result<zbus::zvariant::OwnedFd, zbus::Error>
             "delay",
         ),
     )
+}
+
+/// Broadcast the freedesktop-standard session lock: call `LockSession()`
+/// on this process's own logind session so every subscriber of the
+/// `Session.Lock` signal — secret vaults, keyrings, agents — sees the
+/// same authoritative "the session is locked" event the idle policy just
+/// made true. `SetLockedHint(true)` follows on the same thread:
+/// logind's `LockSession()` only emits the signal, the hint property is
+/// the DE's to set (`loginctl` and tools read it).
+///
+/// Fire-and-forget on its own thread exactly like `suspend_async`: the
+/// secure frame must not wait on a system-bus round trip, and a missing
+/// bus or session (nested/remote) is logged, never fatal.
+pub fn lock_session_async() {
+    let _ = std::thread::Builder::new()
+        .name("aegis-idle-lock-session".into())
+        .spawn(|| {
+            if let Err(error) = session_call("LockSession") {
+                log::warn!("idle: logind LockSession broadcast failed: {error}");
+            }
+            if let Err(error) = session_hint(true) {
+                log::warn!("idle: logind SetLockedHint(true) failed: {error}");
+            }
+        });
+}
+
+/// Announce the session's return after an authenticated unlock:
+/// `UnlockSession()` on the own session, mirroring [`lock_session_async`],
+/// and the matching locked hint.
+pub fn unlock_session_async() {
+    let _ = std::thread::Builder::new()
+        .name("aegis-idle-unlock-session".into())
+        .spawn(|| {
+            if let Err(error) = session_call("UnlockSession") {
+                log::warn!("idle: logind UnlockSession broadcast failed: {error}");
+            }
+            if let Err(error) = session_hint(false) {
+                log::warn!("idle: logind SetLockedHint(false) failed: {error}");
+            }
+        });
+}
+
+/// Resolve the graphical session object path and call `member` on the
+/// `org.freedesktop.login1.Session` interface.
+///
+/// Prefers `$XDG_SESSION_ID` (imported into the user-manager environment
+/// by `aegis-session`): compositor children run as user services outside
+/// the session scope's cgroup, where `GetSessionByPID` resolves to the
+/// class=manager session — which logind exempts from locking. The PID
+/// fallback covers environments without the variable.
+fn session_call(member: &str) -> Result<(), zbus::Error> {
+    let (connection, session_path) = session_proxy_parts()?;
+    let session = zbus::blocking::Proxy::new(
+        &connection,
+        DESTINATION,
+        session_path.as_str(),
+        SESSION_INTERFACE,
+    )?;
+    session.call(member, &())
+}
+
+/// Set the session's `LockedHint` property (see [`lock_session_async`]).
+fn session_hint(locked: bool) -> Result<(), zbus::Error> {
+    let (connection, session_path) = session_proxy_parts()?;
+    let session = zbus::blocking::Proxy::new(
+        &connection,
+        DESTINATION,
+        session_path.as_str(),
+        SESSION_INTERFACE,
+    )?;
+    session.call("SetLockedHint", &(locked,))
+}
+
+/// The shared system-bus connection and this session's object path.
+type SessionParts =
+    Result<(zbus::blocking::Connection, zbus::zvariant::OwnedObjectPath), zbus::Error>;
+
+fn session_proxy_parts() -> SessionParts {
+    let connection = zbus::blocking::Connection::system()?;
+    let manager = zbus::blocking::Proxy::new(&connection, DESTINATION, PATH, INTERFACE)?;
+    let session_path = match std::env::var("XDG_SESSION_ID") {
+        Ok(id) if !id.is_empty() => manager.call("GetSession", &(&id,))?,
+        _ => manager.call("GetSessionByPID", &(std::process::id()))?,
+    };
+    Ok((connection, session_path))
 }
 
 pub fn spawn_signal_monitor(events: Sender<SleepEvent>) {

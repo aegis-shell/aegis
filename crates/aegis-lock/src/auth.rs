@@ -19,6 +19,9 @@ const PAM_ERROR_MSG: c_int = 3;
 const PAM_TEXT_INFO: c_int = 4;
 const PAM_BUF_ERR: c_int = 5;
 const PAM_CONV_ERR: c_int = 19;
+const PAM_CRED_ERR: c_int = 13;
+/// `PAM_ESTABLISH_CRED` from `<security/_pam_types.h>`.
+const PAM_ESTABLISH_CRED: c_int = 0x0002;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 
 static AUTH_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -71,6 +74,7 @@ unsafe extern "C" {
     fn pam_end(pamh: *mut PamHandle, pam_status: c_int) -> c_int;
     fn pam_authenticate(pamh: *mut PamHandle, flags: c_int) -> c_int;
     fn pam_acct_mgmt(pamh: *mut PamHandle, flags: c_int) -> c_int;
+    fn pam_setcred(pamh: *mut PamHandle, flags: c_int) -> c_int;
 }
 
 struct ConversationData {
@@ -166,6 +170,18 @@ fn authenticate(username: &str, secret: Secret) -> AuthResult {
     }
     if status == PAM_SUCCESS {
         status = unsafe { pam_acct_mgmt(handle, 0) };
+    }
+    // Commit the just-proven credentials so the stack's committing hooks
+    // run: pam_aegis plants the vault-unlock token in `pam_sm_setcred`
+    // (ADR-0010), which is what lets the secret vault re-unlock silently
+    // after this screen unlock. A failure here never blocks the unlock —
+    // the authentication already succeeded — it only skips the token, and
+    // the vault falls back to its own prompt.
+    if status == PAM_SUCCESS {
+        let cred = unsafe { pam_setcred(handle, PAM_ESTABLISH_CRED) };
+        if cred != PAM_SUCCESS && cred != PAM_CRED_ERR {
+            log::warn!("lock: credential commit after authentication failed: {cred}");
+        }
     }
     if !handle.is_null() {
         unsafe {

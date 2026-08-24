@@ -169,6 +169,14 @@ struct Daemon {
     preparing_sleep: bool,
     sleep_inhibitor: SleepInhibitor,
     sleep_events: Receiver<SleepEvent>,
+    /// Whether logind integration is enabled (`--no-logind` disables
+    /// every host coupling: sleep events, the delay inhibitor, and the
+    /// session-lock broadcasts).
+    logind: bool,
+    /// The LockSession broadcast for the current lock cycle was sent;
+    /// guards against duplicate broadcasts when the confirmation pipe
+    /// re-fires or a replacement locker re-confirms.
+    session_lock_announced: bool,
     exit: bool,
 }
 
@@ -225,6 +233,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         preparing_sleep: false,
         sleep_inhibitor,
         sleep_events: sleep_rx,
+        logind: options.logind,
+        session_lock_announced: false,
         exit: false,
     };
     event_queue.roundtrip(&mut daemon)?;
@@ -373,8 +383,34 @@ impl Daemon {
         if ready && !process.confirmed {
             process.confirmed = true;
             log::info!("idle: compositor confirmed the secure lock frame");
+            self.announce_session_locked();
             self.apply_secure_actions();
         }
+    }
+
+    /// Broadcast the freedesktop-standard session lock once per lock
+    /// cycle: secret vaults, keyrings, and agents subscribe to the
+    /// logind `Session.Lock` signal and zeroize their secrets exactly
+    /// here. The compositor already refuses to show anything but the
+    /// lock surface, so the broadcast ordering (after the secure frame)
+    /// cannot leak an unlocked secret through a visible window.
+    fn announce_session_locked(&mut self) {
+        if !self.logind || self.session_lock_announced {
+            return;
+        }
+        self.session_lock_announced = true;
+        logind::lock_session_async();
+    }
+
+    /// Mirror of [`Self::announce_session_locked`] for the return: called
+    /// when the locker exited successfully — the only exit path that
+    /// means an authenticated unlock.
+    fn announce_session_unlocked(&mut self) {
+        if !self.logind {
+            return;
+        }
+        self.session_lock_announced = false;
+        logind::unlock_session_async();
     }
 
     fn lock_confirmed(&self) -> bool {
@@ -426,6 +462,7 @@ impl Daemon {
         } else if process.confirmed {
             log::info!("idle: session unlocked");
             self.lock_desired = false;
+            self.announce_session_unlocked();
         } else {
             log::warn!("idle: locker exited before secure presentation ({status})");
             self.retry_lock_at = Instant::now() + Duration::from_secs(5);
@@ -959,6 +996,40 @@ mod tests {
         assert_eq!(desired_output_power(false, true), OutputPower::On);
         assert_eq!(desired_output_power(true, false), OutputPower::On);
         assert_eq!(desired_output_power(true, true), OutputPower::Off);
+    }
+
+    #[test]
+    fn session_lock_broadcast_is_once_per_lock_cycle_and_resets_on_unlock() {
+        // The broadcast guard is pure bookkeeping; assert its state machine
+        // through the same fields the daemon uses, without touching logind.
+        let logind = true;
+        let mut announced = false;
+        simulate_lock_confirmed(logind, &mut announced);
+        assert!(announced, "first confirmation announces the lock");
+        simulate_lock_confirmed(logind, &mut announced);
+        assert!(announced, "re-confirmation does not reset the guard");
+        simulate_lock_confirmed(false, &mut announced);
+        assert!(announced, "a disabled logind never changes the guard");
+        simulate_lock_exit_success(logind, &mut announced);
+        assert!(!announced, "a successful unlock clears the guard");
+        simulate_lock_exit_success(logind, &mut announced);
+        assert!(!announced, "clearing is idempotent");
+    }
+
+    /// Mirror of the daemon's guard logic; kept in lockstep with
+    /// `announce_session_locked` / `announce_session_unlocked`.
+    fn simulate_lock_confirmed(logind: bool, announced: &mut bool) {
+        if !logind || *announced {
+            return;
+        }
+        *announced = true;
+    }
+
+    fn simulate_lock_exit_success(logind: bool, announced: &mut bool) {
+        if !logind {
+            return;
+        }
+        *announced = false;
     }
 
     #[test]

@@ -148,3 +148,4 @@ background and how the decisions fit together, see
 | [0138](0138-the-input-settings-domain.md) | The Input settings domain (amends [0049](0049-standalone-modular-control-center.md), [0056](0056-system-settings-identity-and-boundary.md), [0010](0010-keyboard-pipeline-and-xkbcommon-ownership.md); IPC protocol 31) | Accepted |
 | [0139](0139-animation-effect-placement.md) | Animation effect placement — Optics mechanism, Aegis policy (amends [0029](0029-animation-and-effect-policy.md)) | Accepted |
 | [0140](0140-session-power-modes.md) | Session power modes over the staged idle pipeline (amends [0078](0078-out-of-process-idle-and-session-lock.md)) | Accepted |
+| [0141](0141-locker-broadcasts-the-logind-session-lock-boundary.md) | The locker broadcasts the logind session-lock boundary | Accepted |

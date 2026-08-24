@@ -230,6 +230,17 @@ impl DrmBackend {
         configured_color: HashMap<String, ColorPolicy>,
         configured_icc: HashMap<String, String>,
     ) -> Result<Self, DrmError> {
+        // libseat's logind backend calls `SetType("wayland")` on the session
+        // only when XDG_SESSION_TYPE says wayland (the wlroots precedent):
+        // greetd/agreety sessions are created with type "tty", and logind
+        // refuses `LockSession()`/`SetLockedHint()` — and reports
+        // `CanLock=false` — for non-graphical sessions. Setting the variable
+        // before the seat opens upgrades the session type, which is what
+        // makes the freedesktop session-lock boundary (ADR-0141) reachable
+        // at all on a greetd login. Safe here: this runs before any thread
+        // that could hold a borrowed environment string is spawned.
+        // SAFETY: no other threads exist at this point in startup.
+        unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
         let pending = Rc::new(Cell::new(None));
         let callback_pending = Rc::clone(&pending);
         let seat = libseat::Seat::open(move |_seat, event| {
