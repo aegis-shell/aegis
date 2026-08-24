@@ -7,7 +7,17 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.48] - 2026-08-24
+
 ### Changed
+
+- Promoted Optics dependencies from `v0.0.26` to `v0.0.27` across all
+  workspace crates: the glyph-atlas page-0 image leak fix on
+  `atlas_clear` (a 16 MiB dedicated `VkDeviceMemory` per clear on long
+  sessions with glyph churn), and two ghost-snapshot repairs in lens —
+  a ghost-only fade no longer stalls once the base tree is clean, and
+  snapshot command counts no longer corrupt the heap under OOM
+  truncation or free the static empty-string payload.
 
 - The lock stack now broadcasts the desktop's lock state over the
   freedesktop-standard logind channel
