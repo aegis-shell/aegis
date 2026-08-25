@@ -7,8 +7,13 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.49] - 2026-08-25
+
 ### Changed
 
+- Promoted Optics dependencies from `v0.0.27` to `v0.0.28` across all
+  workspace crates: the layered backdrop material compositor (`prism_backdrop_layer`,
+  ADR-0079) and the table scroll row hit-test repair in lens.
 - Liquid glass now composes **inside** the frosted backdrop instead of
   over it: the compositor's backdrop pass issues one layered material
   dispatch (new Optics `prism` backdrop-layer material) that writes the
@@ -29,8 +34,6 @@ project cuts a tagged release.
   the frost and the analytic glass, hiding the glass's refraction and
   splitting the layer stack into "effects below, paint above"
   ([ADR-0142](docs/adr/0142-layered-glass-backdrop-compositor.md)).
-  Requires an Optics revision carrying `prism_backdrop_layer_filter`
-  (post-v0.0.27; linked worktrees pick it up via the local patch).
 ## [0.0.48] - 2026-08-24
 
 ### Changed

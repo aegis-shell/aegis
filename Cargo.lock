@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aegis"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-backend",
  "aegis-command-panel",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-atspi"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-ipc",
  "aegis-ipc-client",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-backend"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "aegis-wayland-protocols",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-command-panel"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-commands"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-config",
  "aegis-ipc",
@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-compositor"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "aegis-semantic",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-config"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "dirs",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-design"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "lens",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-desktop-entries"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "dirs",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-dock"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-hud"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-idle"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-ipc",
  "aegis-logging",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "aegis-security",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc-client"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-ipc",
  "aegis-model",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-launcher"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-desktop-entries",
  "aegis-model",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-lock"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-config",
  "aegis-design",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-logging"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "tracing-log",
  "tracing-subscriber",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-mcp"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-desktop-entries",
  "aegis-ipc",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-model"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "serde",
  "serde_json",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-prism"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-render"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "flux",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-security"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "flate2",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-semantic"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-model",
  "serde",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-settings"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-shell"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-design",
  "aegis-desktop-entries",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-tray"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-desktop-entries",
  "image",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ui"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "aegis-design",
  "aegis-model",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-wallpaper"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "flux",
  "flux-scene-graph",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-wayland-protocols"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "cc",
 ]
@@ -1228,7 +1228,7 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 [[package]]
 name = "flux"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "flux-sys",
 ]
@@ -1236,7 +1236,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -1247,7 +1247,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1256,7 +1256,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1635,7 +1635,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lens"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "flux",
  "lens-sys",
@@ -1644,7 +1644,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1971,7 +1971,7 @@ dependencies = [
 [[package]]
 name = "prism"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "flux",
  "flux-sys",
@@ -1981,7 +1981,7 @@ dependencies = [
 [[package]]
 name = "prism-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.27#5eb5cdaf130dd84a5e681d2c299c1b1d478063bd"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.28#caa7dfbcbef61800ac9430f7bde83e32336729e5"
 dependencies = [
  "bindgen",
  "flux-sys",

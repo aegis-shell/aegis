@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.48"
+version = "0.0.49"
 edition = "2024"
 # Workspace crates contain MIT-licensed source, including the bundled cursor
 # art under assets/cursors/Aegis (original, generated in-tree).
@@ -18,17 +18,17 @@ repository = "https://github.com/ming2k/aegis"
 # development worktree can patch these sources through
 # .cargo/optics-local.toml without making a sibling checkout mandatory for CI
 # or downstream packagers.
-flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
-flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
-flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
-lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
+flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 # prism (material library; ADR-0063) carries the liquid-glass compositor.
 # Canonical resolution needs an optics tag containing prism-rs.
-prism = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
-prism-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.27" }
+prism = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+prism-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 
 # Observability: crates emit through the `log` facade; each binary installs a
 # `tracing`-based subscriber through the shared `aegis-logging` crate, which
