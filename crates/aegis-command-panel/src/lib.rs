@@ -46,7 +46,6 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
-use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_design::tokens::{Hud, TypeScale};
 use aegis_design::{AvatarRole, Design, GlassRole, materials, themes};
 use aegis_model::input::KeyChar;
@@ -853,14 +852,8 @@ impl Chrome for CommandPanel {
             self.avatar_warned = true;
         }
         let reveal = self.reveal.clamp(0.0, 1.0);
-        let (
-            profile_rect,
-            main_rect,
-            notifications_rect,
-            network_rect,
-            work_mode_rect,
-            power_rect,
-        ) = Self::cluster_bounds(display);
+        let (profile_rect, main_rect, notifications_rect, network_rect, work_mode_rect, power_rect) =
+            Self::cluster_bounds(display);
 
         // Click-away: a press landing on none of the cluster's surfaces nor
         // an open tray popover dismisses the panel.
@@ -888,39 +881,9 @@ impl Chrome for CommandPanel {
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
         let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
 
-        // The blurred translucent background: the compositor's backdrop
-        // pass blurs the whole output behind the panel (see
-        // `backdrop_regions`), and this painted veil supplies the adaptive
-        // light/dark wash on top of it. Dark mode deepens toward ink so
-        // bright content recedes; light mode lifts toward pearl so dark
-        // content recedes — the scrim follows the scheme, not the wallpaper.
-        // The veil's alpha rides the reveal so the blur surfaces first and
-        // the wash settles in behind the cluster.
-        let full = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: display.0,
-            h: display.1,
-        };
-        let scrim_base = if self.design.is_light() {
-            Color::rgba(238, 241, 248, 255)
-        } else {
-            Color::rgba(8, 11, 20, 255)
-        };
-        f.place(
-            "aegis-hud-background-scrim",
-            &chrome_place(
-                full,
-                LayoutOpts {
-                    gap: 0.0,
-                    pad: 0.0,
-                    bg: scrim_base.with_alpha((150.0 * reveal).round().min(255.0) as u8),
-                    border: Color::TRANSPARENT,
-                    ..surface_layout()
-                },
-            ),
-            |_| {},
-        );
+        // The blurred translucent background and its scheme-adaptive wash
+        // are declared in `backdrop_regions` (a wash INTO the frost,
+        // beneath the glass bodies) — nothing is painted here for them.
 
         // Display typography is per-call (`display_label`, bold sans at the
         // amplified HUD sizes), so no context-wide scope is needed here.
@@ -1108,11 +1071,32 @@ impl Chrome for CommandPanel {
         // scrim washes over. The launcher uses the same fullscreen-region
         // pattern.
         if self.active() {
+            // The blurred translucent background (ADR-0080 refresh): while
+            // the panel is revealing, the whole output is one backdrop
+            // capture, so the compositor's realtime blur frosts everything
+            // behind the HUD island. The scheme-adaptive wash (ink in dark
+            // mode, pearl in light) is declared HERE — blended into the
+            // frost, beneath every glass body — not painted by `render`:
+            // a chrome-painted veil would sit between the frost and the
+            // analytic glass, hiding the glass's refraction and splitting
+            // the stack into "effects below, paint above". The wash's
+            // strength rides the reveal exactly as the painted veil's
+            // alpha did, so the blur still surfaces first and the wash
+            // settles in behind the cluster.
+            let reveal = self.reveal.clamp(0.0, 1.0);
+            let base = if self.design.is_light() {
+                Color::rgba(238, 241, 248, 255)
+            } else {
+                Color::rgba(8, 11, 20, 255)
+            };
             vec![BackdropRegion {
                 x: 0.0,
                 y: 0.0,
                 w: display.0,
                 h: display.1,
+                wash: Some(aegis_shell::backdrop_wash(
+                    base.with_alpha((150.0 * reveal).round().min(255.0) as u8),
+                )),
             }]
         } else {
             Vec::new()
@@ -1133,14 +1117,8 @@ impl Chrome for CommandPanel {
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
         let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
 
-        let (
-            _,
-            main_rect,
-            notifications_rect,
-            network_rect,
-            work_mode_rect,
-            power_rect,
-        ) = Self::cluster_bounds(display);
+        let (_, main_rect, notifications_rect, network_rect, work_mode_rect, power_rect) =
+            Self::cluster_bounds(display);
         let nav_w = 190.0_f32.min(main_rect.w * 0.28).max(150.0);
         let gap = 16.0;
         let view_w = (main_rect.w - nav_w - gap).max(1.0);

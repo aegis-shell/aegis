@@ -1925,8 +1925,7 @@ impl CommandPanel {
                     );
 
                     if response.clicked && !active {
-                        out.system_actions
-                            .push(SystemAction::SetPowerMode { mode });
+                        out.system_actions.push(SystemAction::SetPowerMode { mode });
                     }
                 },
             );
@@ -1937,13 +1936,9 @@ impl CommandPanel {
             let hint_y = pills_top + pill_h + 6.0;
             let hint_h = 16.0;
             let hint_text = match current_mode {
-                aegis_model::power::PowerMode::Balanced => {
-                    "Dim → Lock → Blank → Suspend"
-                }
+                aegis_model::power::PowerMode::Balanced => "Dim → Lock → Blank → Suspend",
                 aegis_model::power::PowerMode::Awake => "Screen stays lit & unlocked",
-                aegis_model::power::PowerMode::Secure => {
-                    "Lock on idle, screen stays lit"
-                }
+                aegis_model::power::PowerMode::Secure => "Lock on idle, screen stays lit",
             };
 
             f.set_theme(muted_theme);

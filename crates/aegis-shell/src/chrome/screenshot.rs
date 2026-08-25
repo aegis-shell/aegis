@@ -605,6 +605,7 @@ fn to_backdrop(rect: LensRect) -> BackdropRegion {
         y: rect.y,
         w: rect.w,
         h: rect.h,
+        wash: None,
     }
 }
 

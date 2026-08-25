@@ -16,7 +16,7 @@ use lens::{Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
-    LiquidGlassFocus, LiquidGlassRegion, Localizer, Reserved, ellipsize,
+    LiquidGlassFocus, LiquidGlassRegion, Localizer, Reserved, ellipsize, modal_scrim_backdrop,
 };
 use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
@@ -25,7 +25,7 @@ use aegis_ui::{
     ActionButtonStyle, DEFAULT_BACKDROP_BLUR_SIGMA, DEFAULT_BUTTON_HEIGHT,
     DEFAULT_DOUBLE_CLICK_TIMEOUT, DEFAULT_MODAL_PAD, DEFAULT_PICKER_ROW_HEIGHT,
     DEFAULT_TITLE_HEIGHT, DEFAULT_WHEEL_SCROLL_ROWS, contains, place_modal_panel,
-    place_modal_scrim, render_action_button, stretch,
+    render_action_button, stretch,
 };
 
 const PANEL_W: f32 = 440.0;
@@ -298,8 +298,6 @@ impl Chrome for AppPicker {
         let layout =
             PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
         self.visible_rows = layout.visible_rows;
-
-        place_modal_scrim(frame, "aegis-app-picker-scrim", display, &design);
 
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
@@ -591,10 +589,16 @@ impl Chrome for AppPicker {
         }
         let layout =
             PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
-        // One region exactly matching the glass body below: the runtime drops
-        // it from the rectangular frost set, so the analytic pass alone owns
+        // The modal's full-display dim is a wash INTO the frost (beneath the
+        // panel's glass body) — it used to be painted above the glass, which
+        // hid the lens's refraction and split the layer stack. The second
+        // region exactly matches the glass body below: the runtime drops it
+        // from the rectangular frost set, so the analytic pass alone owns
         // the rounded panel.
-        vec![BackdropRegion::from(layout.panel)]
+        vec![
+            modal_scrim_backdrop(display, &self.design),
+            BackdropRegion::from(layout.panel),
+        ]
     }
 
     fn liquid_glass_regions(
@@ -765,9 +769,14 @@ mod tests {
         picker.start_app_pick(params(&["firefox.desktop"], None));
         let backdrop = picker.backdrop_regions(display, &[], &workspaces);
         let glass = picker.liquid_glass_regions(display, &[], &workspaces);
-        assert_eq!(backdrop.len(), 1);
+        // Fullscreen veil wash + the panel region the glass body equals.
+        assert_eq!(backdrop.len(), 2);
+        assert!(
+            backdrop[0].wash.is_some(),
+            "the dim is a wash into the frost"
+        );
         assert_eq!(glass.len(), 1);
-        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].bounds, backdrop[1]);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 1.0);
         assert!(picker.exclusive_presentation_active());
@@ -794,6 +803,7 @@ mod tests {
                 y: layout.list.y,
                 w: layout.list.w,
                 h: ROW_H,
+                wash: None,
             }
         );
         assert_eq!(focus.corner_radius, Design::dark().radii.menu_item);

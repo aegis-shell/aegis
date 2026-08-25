@@ -731,6 +731,13 @@ impl CompositorRuntime {
                     capture_extent.0.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
                     capture_extent.1.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
                 );
+                // Fallback-only frost clips (used when the layered dispatch
+                // fails and the composite degrades to plain frosted rects):
+                // a region that exactly equals a glass body's bounds is
+                // dropped there, because in that degraded view the body is
+                // replaced BY its frost rect rather than layered over it.
+                // The layered dispatch itself consumes the unfiltered set
+                // (see `frost_layer_regions` below).
                 let frost_backdrop_regions: Vec<_> = backdrop_regions
                     .iter()
                     .copied()
@@ -975,8 +982,18 @@ impl CompositorRuntime {
                                     width: capture_size.0,
                                     height: capture_size.1,
                                 });
-                        let frost_capture_regions = backdrop_regions_in_capture(
-                            &frost_backdrop_regions,
+                        // The layered compositor consumes rounded frost
+                        // declarations (not rectangular clips), and it needs
+                        // the UNFILTERED set: a glass body refracts the frost
+                        // beneath it, so a body whose frost region equals its
+                        // bounds (the dock, the HUD chips, the prism pane)
+                        // must still have that frost written into the layer
+                        // image — otherwise its lens samples cleared
+                        // transparent pixels. The body's own material then
+                        // composites over its frost exactly as the layer
+                        // relation defines.
+                        let frost_layer_regions = backdrop_frost_in_capture(
+                            &backdrop_regions,
                             capture_origin,
                             capture_extent,
                             capture_size,
@@ -1003,7 +1020,7 @@ impl CompositorRuntime {
                                 &frame,
                                 blur_sigma * capture_scale,
                                 &effect_work_regions,
-                                &frost_capture_regions,
+                                &frost_layer_regions,
                                 &all_backdrop_capture_regions,
                                 &glass_groups,
                                 prism::LiquidGlassParams {
@@ -1020,7 +1037,7 @@ impl CompositorRuntime {
                                     &frame,
                                     blur_sigma * capture_scale,
                                     &effect_work_regions,
-                                    &frost_capture_regions,
+                                    &frost_layer_regions,
                                     &all_backdrop_capture_regions,
                                     &glass_groups,
                                     prism::LiquidGlassParams {

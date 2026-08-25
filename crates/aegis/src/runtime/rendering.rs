@@ -351,6 +351,43 @@ pub(super) fn backdrop_regions_in_capture(
         .collect()
 }
 
+/// Map logical frost declarations into capture-image pixels for the layered
+/// backdrop compositor. Frost rects keep their (rounded) shape in the layer
+/// image rather than becoming rectangular canvas clips — the glass bodies
+/// above them sample exactly these pixels.
+pub(super) fn backdrop_frost_in_capture(
+    regions: &[aegis_shell::BackdropRegion],
+    capture_origin: (u32, u32),
+    capture_extent: (u32, u32),
+    capture_size: (u32, u32),
+    output_scale: f32,
+) -> Vec<prism::BackdropFrost> {
+    let ratio_x = capture_size.0 as f32 / capture_extent.0.max(1) as f32;
+    let ratio_y = capture_size.1 as f32 / capture_extent.1.max(1) as f32;
+    regions
+        .iter()
+        .filter_map(|region| {
+            let x = (region.x.max(0.0) * output_scale - capture_origin.0 as f32) * ratio_x;
+            let y = (region.y.max(0.0) * output_scale - capture_origin.1 as f32) * ratio_y;
+            let w = region.w.max(0.0) * output_scale * ratio_x;
+            let h = region.h.max(0.0) * output_scale * ratio_y;
+            if w <= 0.0 || h <= 0.0 || x >= capture_size.0 as f32 || y >= capture_size.1 as f32 {
+                return None;
+            }
+            Some(prism::BackdropFrost {
+                x,
+                y,
+                width: w,
+                height: h,
+                corner_radius: 0.0,
+                opacity: 1.0,
+                tint_color: [255, 255, 255],
+                tint_strength: 0.0,
+            })
+        })
+        .collect()
+}
+
 /// A region submits a prism group only when it has area and is visible; the
 /// same predicate gates the submitted-id bookkeeping that aligns the
 /// frame-lagged backdrop statistics with their bodies.
@@ -570,7 +607,11 @@ impl BackdropCacheKey {
 /// device-wide stalls while a 3D wallpaper continues animating.
 pub(super) struct LauncherBackdrop {
     blur: flux::BlurFilter,
-    glass: prism::LiquidGlassFilter,
+    /// The layered compositor: frost rects + glass bodies nested in one
+    /// dispatch (see [`Self::recompute_effects`]). A standalone
+    /// `LiquidGlassFilter` cannot express the frost→glass layer relation —
+    /// its lens would sample the sharp capture and pierce the frost.
+    glass: prism::BackdropLayerFilter,
     captures: Vec<Option<BackdropCapture>>,
     /// Source damage missed by each effect-cache slot while another slot was
     /// presented. This mirrors swapchain damage history but is deliberately
@@ -676,7 +717,7 @@ impl LauncherBackdrop {
     pub(super) fn new(device: &flux::Device) -> Result<Self, flux::Error> {
         Ok(Self {
             blur: flux::BlurFilter::new(device)?,
-            glass: prism::LiquidGlassFilter::new(device)?,
+            glass: prism::BackdropLayerFilter::new(device)?,
             captures: Vec::new(),
             source_slot_damage: Vec::new(),
             config: None,
@@ -871,7 +912,7 @@ impl LauncherBackdrop {
         frame: &flux::Frame<'_>,
         sigma: f32,
         blur_regions: &[flux::BlurRegion],
-        frost_regions: &[flux::BlurRegion],
+        frost_regions: &[prism::BackdropFrost],
         all_backdrop_regions: &[flux::BlurRegion],
         glass_groups: &[prism::LiquidGlassGroup],
         glass_params: prism::LiquidGlassParams,
@@ -920,7 +961,7 @@ impl LauncherBackdrop {
         frame: &flux::Frame<'_>,
         sigma: f32,
         blur_regions: &[flux::BlurRegion],
-        frost_regions: &[flux::BlurRegion],
+        frost_regions: &[prism::BackdropFrost],
         all_backdrop_regions: &[flux::BlurRegion],
         glass_groups: &[prism::LiquidGlassGroup],
         glass_params: prism::LiquidGlassParams,
@@ -941,29 +982,29 @@ impl LauncherBackdrop {
             let blurred = self
                 .blur
                 .apply_regions(frame, &capture.image, sigma, blur_regions)?;
-            let liquid = if glass_groups.is_empty() {
-                None
-            } else {
-                match self
-                    .glass
-                    .apply(frame, &capture.image, &blurred, glass_groups, glass_params)
-                {
-                    Ok(image) => Some(image),
-                    Err(error) => {
-                        log::warn!(
-                            "launcher: liquid-glass dispatch failed ({error}); using frost fallback"
-                        );
-                        None
-                    }
+            // One layered dispatch composes the whole stack: the frost rects
+            // write the blurred backdrop first, then every glass body's lens
+            // samples *that* frosted image — the frost is what the glass
+            // refracts, so the materials nest instead of stacking as two
+            // independent views of the desktop. On failure the same filter
+            // degrades to a pure frost dispatch (glass dropped), preserving
+            // the historical fallback contract instead of leaving holes.
+            let layer = self.glass.apply(
+                frame,
+                &capture.image,
+                &blurred,
+                frost_regions,
+                glass_groups,
+                glass_params,
+            );
+            let layer = match layer {
+                Ok(image) => Some(image),
+                Err(error) => {
+                    log::warn!(
+                        "launcher: layered backdrop dispatch failed ({error}); using frost fallback"
+                    );
+                    None
                 }
-            };
-            let drawn_frost_regions = if liquid.is_some() {
-                frost_regions
-            } else {
-                // Liquid dispatch failure intentionally degrades each analytic
-                // body to the same cached frost material instead of leaving a
-                // transparent hole.
-                all_backdrop_regions
             };
 
             // Clear and rewrite only the disconnected padded input regions.
@@ -985,24 +1026,9 @@ impl LauncherBackdrop {
                         skip_stencil: true,
                     },
                 )?;
-                for frost in drawn_frost_regions {
-                    canvas.save();
-                    canvas.clip_rect(
-                        frost.x as f32,
-                        frost.y as f32,
-                        frost.width as f32,
-                        frost.height as f32,
-                    );
-                    blurred.draw(
-                        canvas,
-                        0.0,
-                        0.0,
-                        capture.size.0 as f32,
-                        capture.size.1 as f32,
-                    );
-                    canvas.restore();
-                }
-                if let Some(image) = liquid.as_ref() {
+                if let Some(image) = layer.as_ref() {
+                    // The layered dispatch already carries the frost inside
+                    // its persistent output; draw the composite in one blit.
                     image.draw(
                         canvas,
                         0.0,
@@ -1010,6 +1036,28 @@ impl LauncherBackdrop {
                         capture.size.0 as f32,
                         capture.size.1 as f32,
                     );
+                } else {
+                    // Fallback path: plain clipped frost rects, no glass.
+                    // Every visible effect body is frosted (rectangular frost
+                    // regions plus each glass body's live bounds) so no
+                    // analytic body is left as a transparent hole.
+                    for frost in all_backdrop_regions {
+                        canvas.save();
+                        canvas.clip_rect(
+                            frost.x as f32,
+                            frost.y as f32,
+                            frost.width as f32,
+                            frost.height as f32,
+                        );
+                        blurred.draw(
+                            canvas,
+                            0.0,
+                            0.0,
+                            capture.size.0 as f32,
+                            capture.size.1 as f32,
+                        );
+                        canvas.restore();
+                    }
                 }
                 canvas.end_target_checked()?;
             }

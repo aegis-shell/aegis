@@ -15,15 +15,14 @@ use lens::{Align, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
-    LiquidGlassRegion, Localizer, Reserved, ellipsize,
+    LiquidGlassRegion, Localizer, Reserved, ellipsize, modal_scrim_backdrop,
 };
 use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::Window;
 use aegis_ui::{
     ActionButtonStyle, DEFAULT_BACKDROP_BLUR_SIGMA, DEFAULT_BUTTON_HEIGHT, DEFAULT_MODAL_PAD,
-    DEFAULT_TITLE_HEIGHT, contains, place_modal_panel, place_modal_scrim, render_action_button,
-    stretch,
+    DEFAULT_TITLE_HEIGHT, contains, place_modal_panel, render_action_button, stretch,
 };
 use zeroize::Zeroize;
 
@@ -201,8 +200,6 @@ impl Chrome for SecretPrompt {
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
         let design = self.design;
         let layout = PromptLayout::for_display(display, self.modal_reserved, self.reason.is_some());
-
-        place_modal_scrim(frame, "aegis-secret-prompt-scrim", display, &design);
 
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
@@ -442,10 +439,16 @@ impl Chrome for SecretPrompt {
             return Vec::new();
         }
         let layout = PromptLayout::for_display(display, self.modal_reserved, self.reason.is_some());
-        // One region exactly matching the glass body below: the runtime drops
-        // it from the rectangular frost set, so the analytic pass alone owns
+        // The modal's full-display dim is a wash INTO the frost (beneath the
+        // panel's glass body) — it used to be painted above the glass, which
+        // hid the lens's refraction and split the layer stack. The second
+        // region exactly matches the glass body below: the runtime drops it
+        // from the rectangular frost set, so the analytic pass alone owns
         // the rounded panel.
-        vec![BackdropRegion::from(layout.panel)]
+        vec![
+            modal_scrim_backdrop(display, &self.design),
+            BackdropRegion::from(layout.panel),
+        ]
     }
 
     fn liquid_glass_regions(
@@ -576,9 +579,14 @@ mod tests {
         prompt.start_secret_prompt(params());
         let backdrop = prompt.backdrop_regions(display, &[], &workspaces);
         let glass = prompt.liquid_glass_regions(display, &[], &workspaces);
-        assert_eq!(backdrop.len(), 1);
+        // Fullscreen veil wash + the panel region the glass body equals.
+        assert_eq!(backdrop.len(), 2);
+        assert!(
+            backdrop[0].wash.is_some(),
+            "the dim is a wash into the frost"
+        );
         assert_eq!(glass.len(), 1);
-        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].bounds, backdrop[1]);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 1.0);
         assert!(prompt.exclusive_presentation_active());

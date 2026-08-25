@@ -900,6 +900,7 @@ impl Chrome for Hud {
                 y: chip.y,
                 w: chip.w,
                 h: chip.h,
+                wash: None,
             })
             .collect()
     }

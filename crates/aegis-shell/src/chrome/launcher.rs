@@ -35,7 +35,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
-    LiquidGlassRegion, Localizer, Message, Reserved, WindowAction, ellipsize,
+    LiquidGlassRegion, Localizer, Message, Reserved, WindowAction, backdrop_wash, ellipsize,
 };
 use aegis_model::app::Entry;
 use aegis_model::input::{KeyAction, KeyChar, key_action};
@@ -400,7 +400,7 @@ impl Chrome for Launcher {
 
         let target = if self.brain.is_open() { 1.0 } else { 0.0 };
         let progress = self.advance_visibility(target, raw.dt_seconds.max(0.0));
-        if !self.brain.is_open() && progress <= 0.001 {
+        if !self.active() {
             self.page = 0;
             self.page_shift = 0.0;
             self.page_gesture = 0.0;
@@ -566,20 +566,11 @@ impl Chrome for Launcher {
         let mut clicked_page = None;
         let mut context_app = None;
 
-        // Paint the scrim on the fixed full-screen placement itself. A nested
-        // child would inherit the surface layout's default padding and leave
-        // visible seams along the top and sides.
-        let full = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: display.x,
-            h: display.y,
-        };
-        frame.place(
-            "aegis-launcher-backdrop",
-            &chrome_place(full, backdrop_layer(&self.design)),
-            |_| {},
-        );
+        // The launcher's dim veil is no longer painted here: it is a wash
+        // blended into the frosted backdrop region (`backdrop_regions`),
+        // beneath the analytic glass. Painting it in chrome would put a
+        // translucent rect between the frost and the glass — exactly the
+        // layer split the backdrop material exists to prevent.
 
         // Everything after the scrim is content: it fades with the product of
         // both windows, so below the content threshold nothing of it exists
@@ -1040,7 +1031,7 @@ impl Chrome for Launcher {
     }
 
     fn launcher_active(&self) -> bool {
-        self.brain.is_open()
+        self.active()
     }
 
     fn anim_pending(&self) -> bool {
@@ -1081,11 +1072,16 @@ impl Chrome for Launcher {
         _workspaces: &crate::WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
         if self.active() {
+            // The launcher's veil is a wash INTO the frost (beneath any
+            // glass body), not a chrome-painted rect above it: the glass
+            // context-menu must refract the dimmed frost, and the veil must
+            // not sit between the frost and the glass.
             vec![BackdropRegion {
                 x: 0.0,
                 y: 0.0,
                 w: display.0,
                 h: display.1,
+                wash: Some(backdrop_wash(self.design.colors.scrim.with_alpha(126))),
             }]
         } else {
             Vec::new()
@@ -1191,15 +1187,6 @@ fn centered_layer() -> LayoutOpts {
         bg: Color::TRANSPARENT,
         border: Color::TRANSPARENT,
         pad: 0.0,
-        ..surface_layout()
-    }
-}
-
-fn backdrop_layer(design: &Design) -> LayoutOpts {
-    LayoutOpts {
-        gap: 0.0,
-        pad: 0.0,
-        bg: design.colors.scrim.with_alpha(126),
         ..surface_layout()
     }
 }
@@ -1316,11 +1303,28 @@ mod tests {
     }
 
     #[test]
-    fn backdrop_layer_has_no_layout_inset() {
-        let opts = backdrop_layer(&Design::dark());
-        assert_eq!(opts.pad, 0.0);
-        assert_eq!(opts.gap, 0.0);
-        assert_ne!(opts.bg, Color::TRANSPARENT);
+    fn backdrop_region_carries_the_veil_wash() {
+        let mut launcher = Launcher::new();
+        launcher.update(ChromeUpdate::Appearance(&Design::dark()));
+        let regions = launcher.backdrop_regions(
+            (1024.0, 768.0),
+            &[],
+            &crate::WorkspaceSnapshot { outputs: vec![] },
+        );
+        assert_eq!(regions.len(), 0, "closed launcher declares no backdrop");
+
+        launcher.command(&ChromeCommand::ToggleLauncher, &mut ChromeEvents::default());
+        let regions = launcher.backdrop_regions(
+            (1024.0, 768.0),
+            &[],
+            &crate::WorkspaceSnapshot { outputs: vec![] },
+        );
+        let region = regions
+            .first()
+            .expect("open launcher declares its backdrop");
+        let wash = region.wash.expect("the veil is a wash into the frost");
+        assert!(wash.strength > 0.0);
+        assert!(wash.strength < 1.0, "the veil stays translucent");
     }
 
     #[test]
@@ -1750,6 +1754,10 @@ mod tests {
         );
         assert!(launcher.anim_active, "the exit animation is in flight");
         assert!(launcher.active(), "still modal while the fade runs");
+        assert!(
+            launcher.launcher_active(),
+            "launcher_active stays true during the exit fade"
+        );
         assert_eq!(
             launcher
                 .backdrop_regions(
@@ -1770,6 +1778,7 @@ mod tests {
         launcher.advance_visibility(0.0, 1.0 / 60.0);
         assert_eq!(launcher.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
         assert!(launcher.active(), "the fade is still running");
+        assert!(launcher.launcher_active());
 
         // The underdamped spring crosses zero while settling; the gate must
         // hold through those overshoot frames instead of toggling the blur.

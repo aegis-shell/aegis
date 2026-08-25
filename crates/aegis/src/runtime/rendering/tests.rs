@@ -1,7 +1,13 @@
 use super::*;
 
 fn region(x: f32, y: f32, w: f32, h: f32) -> aegis_shell::BackdropRegion {
-    aegis_shell::BackdropRegion { x, y, w, h }
+    aegis_shell::BackdropRegion {
+        x,
+        y,
+        w,
+        h,
+        wash: None,
+    }
 }
 
 #[test]

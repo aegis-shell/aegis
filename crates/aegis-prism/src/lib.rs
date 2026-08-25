@@ -226,27 +226,9 @@ impl Chrome for Prism {
             self.close();
         }
 
-        frame.set_opacity(progress);
-        frame.place(
-            "aegis-prism-scrim",
-            &chrome_place(
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: display.x,
-                    h: display.y,
-                },
-                LayoutOpts {
-                    // A gentle dark veil behind the panel — lighter than the
-                    // `scrim` color token's modal dim, so the desktop stays
-                    // readable behind the glass. Dark in both appearances.
-                    bg: Color::rgba(4, 6, 14, 54),
-                    pad: 0.0,
-                    ..surface_layout()
-                },
-            ),
-            |_| {},
-        );
+        // The gentle dark veil behind the panel is declared in
+        // `backdrop_regions` as a wash into the frost, beneath the glass —
+        // nothing is painted here for it.
 
         let design = self.design;
         let type_scale = design.typography;
@@ -570,12 +552,26 @@ impl Chrome for Prism {
             return Vec::new();
         }
         let panel = Self::panel_rect(display, self.brain.filtered().len(), self.visibility);
-        vec![BackdropRegion {
-            x: panel.x,
-            y: panel.y,
-            w: panel.w,
-            h: panel.h,
-        }]
+        // The gentle dark veil behind the panel is a wash INTO the frost,
+        // beneath the panel's glass body — it used to be painted by
+        // `render` above the glass, hiding the lens's refraction. The veil
+        // is fullscreen and dims the whole desktop behind the spotlight.
+        vec![
+            BackdropRegion {
+                x: 0.0,
+                y: 0.0,
+                w: display.0,
+                h: display.1,
+                wash: Some(aegis_shell::backdrop_wash(lens::Color::rgba(4, 6, 14, 54))),
+            },
+            BackdropRegion {
+                x: panel.x,
+                y: panel.y,
+                w: panel.w,
+                h: panel.h,
+                wash: None,
+            },
+        ]
     }
 
     fn liquid_glass_regions(
@@ -674,9 +670,16 @@ mod tests {
 
         let backdrop = prism.backdrop_regions(display, &[], &workspaces);
         let glass = prism.liquid_glass_regions(display, &[], &workspaces);
-        assert_eq!(backdrop.len(), 1);
+        // Two declared regions: the fullscreen veil wash beneath everything,
+        // then the panel region the glass body sits on. The glass body
+        // itself equals the panel region (the last one).
+        assert_eq!(backdrop.len(), 2);
         assert_eq!(glass.len(), 1);
-        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert!(
+            backdrop[0].wash.is_some(),
+            "the veil is a wash into the frost"
+        );
+        assert_eq!(glass[0].bounds, backdrop[1]);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 0.75);
     }

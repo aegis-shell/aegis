@@ -102,16 +102,91 @@ pub struct Reserved {
     pub right: i32,
 }
 
+/// A wash composited INTO the frosted backdrop, beneath every glass body.
+///
+/// This is the architectural home for a surface's scheme-adaptive veil: the
+/// command panel's ink/pearl scrim, a modal's dim. A wash painted by chrome
+/// sits ABOVE the analytic glass — it hides the glass's refraction and severs
+/// the layer stack into "effects below, paint above". A wash declared here is
+/// blended into the frost by the layered backdrop material, so glass bodies
+/// refract the washed frost and the whole surface reads as one material.
+/// `strength` is the blend factor into the frosted colour (`0.0` keeps the
+/// plain frost).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BackdropWash {
+    /// Wash colour, sRGB bytes.
+    pub tint: [u8; 3],
+    /// Blend strength into the frosted backdrop, `[0, 1]`.
+    pub strength: f32,
+}
+
+impl Default for BackdropWash {
+    fn default() -> Self {
+        Self {
+            tint: [0xFF, 0xFF, 0xFF],
+            strength: 0.0,
+        }
+    }
+}
+
+/// Convert a lens paint colour into a [`BackdropWash`].
+///
+/// A chrome-painted veil composites with straight alpha over whatever is
+/// below it; the frost wash blends by strength instead. The mapping that
+/// preserves the veil's visual weight is `strength = alpha`: a 50%-alpha
+/// ink wash over the frost reads, to the glass lens above, exactly as the
+/// painted veil read over the blur — but beneath the glass instead of over
+/// it. `components()` returns premultiplied bytes, so RGB is unpremultiplied
+/// against the source alpha here.
+#[must_use]
+pub fn backdrop_wash(color: lens::Color) -> BackdropWash {
+    let (pr, pg, pb, a) = color.components();
+    if a == 0 {
+        return BackdropWash::default();
+    }
+    let un = |p: u8| {
+        let v = (u32::from(p) * 255 + u32::from(a) / 2) / u32::from(a);
+        u8::try_from(v.min(255)).unwrap_or(255)
+    };
+    BackdropWash {
+        tint: [un(pr), un(pg), un(pb)],
+        strength: f32::from(a) / 255.0,
+    }
+}
+
+/// A modal's full-display dim as a backdrop wash region.
+///
+/// Modals dim the whole output and float one glass panel over it. The dim
+/// belongs beneath the panel's glass — blended into the frost — not painted
+/// above it by chrome, where it would hide the panel's refraction and split
+/// the layer stack. Return this region (plus the panel's own region) from
+/// `Chrome::backdrop_regions` instead of calling a painted scrim placement
+/// from `render`.
+#[must_use]
+pub fn modal_scrim_backdrop(display: (f32, f32), design: &aegis_design::Design) -> BackdropRegion {
+    BackdropRegion {
+        x: 0.0,
+        y: 0.0,
+        w: display.0,
+        h: display.1,
+        wash: Some(backdrop_wash(design.colors.scrim)),
+    }
+}
+
 /// Logical output-space rectangle whose already-composited desktop should be
 /// sampled and blurred before chrome is drawn over it. Components declare
 /// only the area occupied by their glass material; the executable shares one
-/// desktop capture across every request.
+/// desktop capture across every request. An optional [`BackdropWash`] blends
+/// a veil into this region's frost — see its documentation for why a wash
+/// belongs here and not in the chrome paint pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BackdropRegion {
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// Optional wash baked into this region's frost, beneath the glass.
+    pub wash: Option<BackdropWash>,
 }
 
 impl From<aegis_model::Rect> for BackdropRegion {
@@ -121,6 +196,7 @@ impl From<aegis_model::Rect> for BackdropRegion {
             y: rect.origin.y as f32,
             w: rect.size.w as f32,
             h: rect.size.h as f32,
+            wash: None,
         }
     }
 }
@@ -132,6 +208,7 @@ impl From<lens::Rect> for BackdropRegion {
             y: rect.y,
             w: rect.w,
             h: rect.h,
+            wash: None,
         }
     }
 }

@@ -7,6 +7,30 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- Liquid glass now composes **inside** the frosted backdrop instead of
+  over it: the compositor's backdrop pass issues one layered material
+  dispatch (new Optics `prism` backdrop-layer material) that writes the
+  frost sheet first and then evaluates every glass body against the
+  frosted image, so a glass body refracts and frosts the frost beneath it
+  rather than bypassing it into the sharp desktop. The command panel's
+  island bodies no longer punch through the fullscreen veil; bodies that
+  declare their own frost rect (dock, HUD chips, prism pane, modal panels)
+  now sit visibly on that frost, and the layer image is a complete opaque
+  background so a lens never samples a transparent hole or a premultiplied
+  edge fragment
+  ([ADR-0142](docs/adr/0142-layered-glass-backdrop-compositor.md)).
+- Scheme-adaptive veils moved **into** the frosted backdrop as declared
+  washes (`BackdropRegion::wash`, blended by the layered material beneath
+  every glass body): the command panel's ink/pearl scrim, the launcher's
+  dim, the prism spotlight's veil, and every modal prompt's full-display
+  dim. Their chrome-painted scrims are deleted — a painted veil sat between
+  the frost and the analytic glass, hiding the glass's refraction and
+  splitting the layer stack into "effects below, paint above"
+  ([ADR-0142](docs/adr/0142-layered-glass-backdrop-compositor.md)).
+  Requires an Optics revision carrying `prism_backdrop_layer_filter`
+  (post-v0.0.27; linked worktrees pick it up via the local patch).
 ## [0.0.48] - 2026-08-24
 
 ### Changed
