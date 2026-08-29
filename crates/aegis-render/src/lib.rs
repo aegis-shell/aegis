@@ -26,9 +26,7 @@ fn drm_format_to_flux(drm: u32) -> Option<flux::Format> {
     match drm {
         DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 => Some(flux::Format::Bgra8Unorm),
         DRM_FORMAT_ABGR8888 | DRM_FORMAT_XBGR8888 => Some(flux::Format::Rgba8Unorm),
-        DRM_FORMAT_ABGR2101010 | DRM_FORMAT_XBGR2101010 => {
-            Some(flux::Format::Rgb10a2Unorm)
-        }
+        DRM_FORMAT_ABGR2101010 | DRM_FORMAT_XBGR2101010 => Some(flux::Format::Rgb10a2Unorm),
         _ => None,
     }
 }
@@ -1267,8 +1265,8 @@ impl Renderer {
                     // exactly as the live path does. The duplicate is an
                     // `OwnedFd` from the start: a failed import closes it via
                     // its own drop, and success hands it to flux.
-                    let import_fd = unsafe { BorrowedFd::borrow_raw(ghost.dmabuf_fd) }
-                        .try_clone_to_owned();
+                    let import_fd =
+                        unsafe { BorrowedFd::borrow_raw(ghost.dmabuf_fd) }.try_clone_to_owned();
                     let import_fd = match import_fd {
                         Ok(fd) => fd,
                         Err(_) => continue,
@@ -1832,21 +1830,22 @@ impl Renderer {
                     // later commits, so hand Flux a fresh duplicate. Wrapping
                     // the duplicate in `OwnedFd` right away means every early
                     // `continue` below drops (and closes) it.
-                    let import_fd =
-                        match unsafe { BorrowedFd::borrow_raw(f.fd) }.try_clone_to_owned() {
-                            Ok(fd) => fd,
-                            Err(error) => {
-                                if self.failed_imports.insert(f.id, ()).is_none() {
-                                    log::warn!(
-                                        "[render] failed to duplicate dma-buf fd {} for {}x{}: {error}",
-                                        f.fd,
-                                        f.width,
-                                        f.height,
-                                    );
-                                }
-                                continue;
+                    let import_fd = match unsafe { BorrowedFd::borrow_raw(f.fd) }
+                        .try_clone_to_owned()
+                    {
+                        Ok(fd) => fd,
+                        Err(error) => {
+                            if self.failed_imports.insert(f.id, ()).is_none() {
+                                log::warn!(
+                                    "[render] failed to duplicate dma-buf fd {} for {}x{}: {error}",
+                                    f.fd,
+                                    f.width,
+                                    f.height,
+                                );
                             }
-                        };
+                            continue;
+                        }
+                    };
                     let acquire_fence = if f.acquire_fence >= 0 {
                         match unsafe { BorrowedFd::borrow_raw(f.acquire_fence) }
                             .try_clone_to_owned()

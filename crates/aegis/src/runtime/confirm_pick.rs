@@ -114,7 +114,10 @@ impl CompositorRuntime {
         let (title, body) = match action {
             SystemAction::Reboot => ("Restart?", "The session ends and the computer restarts."),
             SystemAction::Suspend => ("Suspend?", "The computer sleeps until you wake it."),
-            _ => ("Power off?", "The session ends and the computer powers off."),
+            _ => (
+                "Power off?",
+                "The session ends and the computer powers off.",
+            ),
         };
         self.pending_system_action = Some(action);
         self.shell

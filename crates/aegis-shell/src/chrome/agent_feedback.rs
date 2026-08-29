@@ -756,14 +756,7 @@ fn upload_sprite(device: &flux::Device, svg: &str, width: u32, height: u32) -> O
     for chunk in pixels.chunks_exact_mut(4) {
         chunk.swap(0, 2);
     }
-    flux::Image::from_bytes(
-        device,
-        width,
-        height,
-        flux::Format::Bgra8Unorm,
-        &pixels,
-    )
-    .ok()
+    flux::Image::from_bytes(device, width, height, flux::Format::Bgra8Unorm, &pixels).ok()
 }
 
 fn window_contains(window: &Window, position: Point) -> bool {

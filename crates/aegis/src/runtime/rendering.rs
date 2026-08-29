@@ -1128,9 +1128,7 @@ impl BackdropGraphExecutor {
         }
         self.material[slot] = Some(material);
         let format = match surface.format() {
-            flux::Format::Rgba8Unorm | flux::Format::Bgra8Unorm => {
-                flux::Format::Rgba8Unorm
-            }
+            flux::Format::Rgba8Unorm | flux::Format::Bgra8Unorm => flux::Format::Rgba8Unorm,
             other => {
                 log::warn!(
                     "backdrop: realtime graph unavailable for surface format {other:?}; using translucent fallback"
@@ -1748,9 +1746,7 @@ impl ScreenshotFreeze {
         surface_size: (u32, u32),
     ) -> bool {
         let format = match surface.format() {
-            flux::Format::Rgba8Unorm | flux::Format::Bgra8Unorm => {
-                flux::Format::Rgba8Unorm
-            }
+            flux::Format::Rgba8Unorm | flux::Format::Bgra8Unorm => flux::Format::Rgba8Unorm,
             other => {
                 log::warn!(
                     "screenshot: frame freeze unavailable for surface format {other:?}; falling back to live scene"
@@ -2510,12 +2506,9 @@ impl WindowShadowRenderer {
             let rebuild = !matches!(&self.masks[slot],
                 Some(existing) if existing.size().0 == px_w && existing.size().1 == px_h);
             if rebuild {
-                let Ok(image) = flux::Image::render_target(
-                    device,
-                    px_w,
-                    px_h,
-                    flux::Format::Rgba8Unorm,
-                ) else {
+                let Ok(image) =
+                    flux::Image::render_target(device, px_w, px_h, flux::Format::Rgba8Unorm)
+                else {
                     continue;
                 };
                 self.masks[slot] = Some(image);
