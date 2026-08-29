@@ -76,13 +76,7 @@ impl CommandPanel {
                     &chrome_place(avatar_rect, transparent()),
                     |f| {
                         f.row_ex(&sized(avatar_size, avatar_size), |f| {
-                            unsafe {
-                                f.image(
-                                    texture as *mut lens::sys::flux_image,
-                                    avatar_size,
-                                    avatar_size,
-                                )
-                            };
+                            unsafe { f.image(texture, avatar_size, avatar_size) };
                         });
                     },
                 );
@@ -839,7 +833,7 @@ impl CommandPanel {
         let status = self.status.clone();
         let gap = 12.0;
         let tile_gap = 10.0;
-        let grid_h = area.h.min(320.0).max(1.0);
+        let grid_h = area.h.clamp(1.0, 320.0);
         let fader_w = (area.w * 0.20).clamp(82.0, 116.0);
         let tile_cluster_w = (area.w - fader_w * 2.0 - gap * 2.0).max(1.0);
         let tile_w = ((tile_cluster_w - tile_gap) * 0.5).max(1.0);
@@ -1042,7 +1036,7 @@ impl CommandPanel {
                     self.tray
                         .as_ref()
                         .and_then(|tray| tray.textures.get(&cell.key))
-                        .map(|(_, image)| image.as_raw() as *mut lens::sys::flux_image)
+                        .map(|(_, image)| image.as_raw())
                 } else {
                     None
                 },

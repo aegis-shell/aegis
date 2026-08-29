@@ -744,12 +744,7 @@ impl Chrome for Hud {
                         |f| match texture {
                             Some(texture) => unsafe {
                                 f.push_style(hud_glyph_outline(&design));
-                                f.image_tinted(
-                                    texture as *mut lens::sys::flux_image,
-                                    18.0,
-                                    18.0,
-                                    design.hud_foreground.primary,
-                                );
+                                f.image_tinted(texture, 18.0, 18.0, design.hud_foreground.primary);
                                 f.pop_style();
                             },
                             None => match fallback {
