@@ -488,7 +488,7 @@ impl Chrome for CapabilityPrompt {
                 &materials::chrome_place(
                     rect,
                     LayoutOpts {
-                        bg: design.colors.application_hover,
+                        bg: design.colors.application_surface_hover,
                         border: design.colors.application_border,
                         border_width: design.strokes.hairline,
                         radius: design.radii.control,

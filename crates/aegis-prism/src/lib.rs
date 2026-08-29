@@ -384,9 +384,9 @@ impl Chrome for Prism {
                         row,
                         LayoutOpts {
                             bg: if selected {
-                                design.colors.application_active
+                                design.colors.application_surface_active
                             } else if hovered {
-                                design.colors.application_hover
+                                design.colors.application_surface_hover
                             } else {
                                 Color::TRANSPARENT
                             },

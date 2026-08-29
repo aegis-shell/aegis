@@ -180,7 +180,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     for output in initial_outputs {
         app.ensure_output(output, &qh);
     }
-    WaylandSource::new(connection.clone(), event_queue).insert(event_loop.handle())?;
+    WaylandSource::new(connection, event_queue).insert(event_loop.handle())?;
 
     while !app.exit {
         let timeout = if app.dirty || app.is_animating() {

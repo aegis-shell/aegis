@@ -1355,7 +1355,7 @@ fn minimize_targets_map_windows_to_their_resting_tile_icons() {
     dock.update(ChromeUpdate::AllWindows(&[
         pinned_window.clone(),
         second_firefox.clone(),
-        transient.clone(),
+        transient,
     ]));
     let targets = dock.minimize_targets((1920.0, 1080.0));
     let first = targets

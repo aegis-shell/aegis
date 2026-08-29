@@ -359,7 +359,7 @@ pub(super) fn begin_interaction_domain_capture(
     let surface_order = server.interaction_domain_client_surface_frame_order(interaction_domain);
     renderer.draw_surfaces_ordered(device, &target.canvas, &surface_order, &shm, &dmabuf);
     target.canvas.restore();
-    target.canvas.end_checked().map_err(|error| {
+    target.canvas.end_frame_checked().map_err(|error| {
         format!(
             "end interaction_domain {} canvas: {error}{}",
             interaction_domain.0,

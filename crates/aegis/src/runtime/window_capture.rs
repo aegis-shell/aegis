@@ -212,7 +212,7 @@ pub(super) fn begin_window_capture(
         )
     })?;
     draw_window_tree(device, renderer, server, &canvas, &geometry);
-    canvas.end_checked().map_err(|error| {
+    canvas.end_frame_checked().map_err(|error| {
         format!(
             "end window {} canvas: {error}{}",
             window.0,

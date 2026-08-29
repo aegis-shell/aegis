@@ -355,7 +355,9 @@ impl CompositorRuntime {
         cursor_hidden: bool,
         frame_capture_pending: bool,
     ) -> PrimaryPlanePlan {
-        let shell = self.shell.composition_requirements();
+        let shell = self
+            .shell
+            .composition_requirements(self.input_acc.display_size);
         // One shared visibility/occlusion snapshot for every count here: the
         // scanout planner previously rebuilt both full frame lists (each an
         // O(windows × surfaces) occlusion walk plus per-surface Vec clones of

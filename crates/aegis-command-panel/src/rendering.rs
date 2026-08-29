@@ -1,7 +1,5 @@
 use super::*;
 
-use std::collections::VecDeque;
-
 use lens::Icon;
 
 /// A deferred row click captured during the menu frame's column closure.
@@ -69,71 +67,159 @@ pub(super) fn volume_icon(status: &SystemStatus) -> Icon {
     }
 }
 
-pub(super) fn volume_icon_name(status: &SystemStatus) -> &'static str {
-    if status.muted || status.volume.unwrap_or(0) == 0 {
-        "audio-volume-muted-symbolic"
-    } else if status.volume.unwrap_or(0) < 34 {
-        "audio-volume-low-symbolic"
-    } else if status.volume.unwrap_or(0) < 67 {
-        "audio-volume-medium-symbolic"
-    } else {
-        "audio-volume-high-symbolic"
-    }
-}
-
-pub(super) fn network_icon_name(network: NetworkState) -> &'static str {
-    match network {
-        NetworkState::Wifi => "network-wireless-signal-excellent-symbolic",
-        NetworkState::Wired => "network-wired-symbolic",
-        NetworkState::Offline => "network-offline-symbolic",
-    }
-}
-
-pub(super) fn network_text(status: &SystemStatus, i18n: &Localizer) -> &'static str {
-    match status.network {
-        NetworkState::Wifi => i18n.text(Message::WifiConnected),
-        NetworkState::Wired => i18n.text(Message::WiredConnected),
-        NetworkState::Offline => i18n.text(Message::Disconnected),
-    }
-}
-
-/// The network surface's identity line: the live interface, plus the SSID
-/// when the link is wireless. `wlan0 · Homelab-5G` for Wi-Fi, `enp3s0` for
-/// wired, a muted "Offline" when no link is up.
-pub(super) fn network_identity(status: &SystemStatus, i18n: &Localizer) -> String {
-    if status.network_interface.is_empty() {
-        return i18n.text(Message::Offline).to_owned();
-    }
-    match (status.network, &status.wifi_ssid) {
-        (NetworkState::Wifi, Some(ssid)) if !ssid.is_empty() => {
-            format!("{} · {}", status.network_interface, ssid)
-        }
-        _ => status.network_interface.clone(),
-    }
-}
-
-/// An unavailable-on-this-host control row: the label plus a muted
-/// "Unavailable" marker, matching the status bar's old panel.
-pub(super) fn unavailable_control(
+/// One compact Control Center tile: icon above label, with the whole rounded
+/// rectangle acting as the target. Active state is communicated by both the
+/// accent glyph and a selected surface, so colour is not the sole cue.
+pub(super) fn render_control_tile(
     f: &mut Frame,
+    id: &str,
     label: &str,
-    i18n: &Localizer,
+    icon: Icon,
+    active: bool,
+    enabled: bool,
+    size: (f32, f32),
+    hud: CommandPanelColors,
     type_scale: TypeScale,
-) {
-    f.row_ex(
+) -> bool {
+    let original = f.theme();
+    let fg = if !enabled {
+        hud.text_muted.with_alpha(110)
+    } else if active {
+        hud.accent
+    } else {
+        hud.text
+    };
+    f.set_theme(themes::hud(&hud).with_fg(fg));
+    let (response, _) = f.pressable_row(
+        id,
+        label,
         &LayoutOpts {
-            height: 20.0,
-            gap: 6.0,
+            width: size.0,
+            height: size.1,
+            pad: 10.0,
+            radius: 16.0,
+            cross: Align::Center,
+            bg: if active {
+                hud.selection_surface
+            } else {
+                hud.surface_recessed
+            },
+            border: if active {
+                hud.accent.with_alpha(70)
+            } else {
+                hud.border
+            },
+            border_width: 1.0,
+            ..Default::default()
+        },
+        |f, _| {
+            f.column_ex(
+                &LayoutOpts {
+                    width: (size.0 - 20.0).max(1.0),
+                    height: (size.1 - 20.0).max(1.0),
+                    gap: 6.0,
+                    cross: Align::Center,
+                    ..Default::default()
+                },
+                |f| {
+                    f.flex(1.0);
+                    f.spacer(0.0);
+                    f.icon(icon, 20.0);
+                    display_label(
+                        f,
+                        &truncate(label, ((size.0 - 24.0) / 6.6).max(4.0) as usize),
+                        type_scale.footnote,
+                    );
+                    f.flex(1.0);
+                    f.spacer(0.0);
+                },
+            );
+        },
+    );
+    f.set_theme(original);
+    response.clicked && enabled
+}
+
+/// A tall Control Center fader. The thick vertical track exposes value as a
+/// filled capsule; its compact card keeps the value, control, and label on a
+/// single visual axis instead of spreading them over several form rows.
+pub(super) fn render_control_fader(
+    f: &mut Frame,
+    id: &str,
+    label: &str,
+    icon: Icon,
+    value: Option<u8>,
+    range: (u8, u8),
+    size: (f32, f32),
+    fill: Color,
+    hud: CommandPanelColors,
+    type_scale: TypeScale,
+) -> Option<u8> {
+    let original = f.theme();
+    let enabled = value.is_some();
+    let mut level = value.unwrap_or(range.0) as f32;
+    let theme = themes::hud(&hud)
+        .with_fg(if enabled { hud.text } else { hud.text_muted })
+        .with_slider_track_color(hud.control_track)
+        .with_slider_fill_color(if enabled { fill } else { hud.text_muted })
+        .with_slider_knob_color(if enabled {
+            hud.control_knob
+        } else {
+            hud.text_muted
+        })
+        .with_slider_track_thickness((size.0 * 0.42).clamp(38.0, 48.0))
+        .with_slider_knob_size(8.0);
+    f.set_theme(theme);
+    let mut changed = false;
+    f.column_ex(
+        &LayoutOpts {
+            width: size.0,
+            height: size.1,
+            gap: 5.0,
+            pad: 10.0,
+            radius: 18.0,
+            bg: hud.surface_recessed,
+            border: hud.border,
+            border_width: 1.0,
             cross: Align::Center,
             ..Default::default()
         },
         |f| {
-            display_label(f, label, type_scale.footnote);
-            f.flex(1.0);
-            f.spacer(0.0);
-            display_label(f, i18n.text(Message::Unavailable), type_scale.footnote);
+            display_label(
+                f,
+                &value
+                    .map(|value| format!("{value}%"))
+                    .unwrap_or_else(|| "--".to_string()),
+                type_scale.footnote,
+            );
+            f.size_next((size.0 - 20.0).max(40.0), (size.1 - 73.0).max(80.0));
+            changed = f.slider_vertical(
+                &format!("##{id}"),
+                &mut level,
+                range.0 as f32,
+                range.1 as f32,
+                2.0,
+            );
+            f.row_ex(
+                &LayoutOpts {
+                    height: 24.0,
+                    gap: 5.0,
+                    cross: Align::Center,
+                    ..Default::default()
+                },
+                |f| {
+                    f.icon(icon, 15.0);
+                    display_label(
+                        f,
+                        &truncate(label, ((size.0 - 38.0) / 6.4).max(4.0) as usize),
+                        type_scale.footnote,
+                    );
+                },
+            );
         },
     );
+    f.set_theme(original);
+    (changed && enabled).then(|| level.round().clamp(range.0 as f32, range.1 as f32) as u8)
 }
 
 // ---- dbusmenu popover helpers -------------------------------------------
@@ -178,146 +264,6 @@ pub(super) fn menu_bounds(owner: Rect, visible: &[MenuNode], display: (f32, f32)
     place_popup(owner, (MENU_WIDTH, height), display)
 }
 
-/// Fixed-capacity ring of utilization samples for the header sparklines:
-/// pushing past `cap` evicts the oldest sample.
-pub(super) struct History {
-    samples: VecDeque<f32>,
-    cap: usize,
-}
-
-impl History {
-    pub(super) fn new(cap: usize) -> History {
-        History {
-            samples: VecDeque::with_capacity(cap),
-            cap,
-        }
-    }
-
-    pub(super) fn push(&mut self, value: f32) {
-        if self.cap == 0 {
-            return;
-        }
-        while self.samples.len() >= self.cap {
-            self.samples.pop_front();
-        }
-        self.samples.push_back(value);
-    }
-
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.samples.len()
-    }
-
-    #[cfg(test)]
-    pub(super) fn newest(&self) -> Option<f32> {
-        self.samples.back().copied()
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn samples(&self) -> impl Iterator<Item = f32> + '_ {
-        self.samples.iter().copied()
-    }
-}
-
-/// A thin horizontal gauge: rounded track with an accent fill of
-/// `fraction * width`.
-#[allow(dead_code)]
-pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32) {
-    let hud = Hud::classic();
-    f.place(
-        id,
-        &materials::chrome_place(
-            rect,
-            LayoutOpts {
-                bg: hud.track,
-                border: Color::TRANSPARENT,
-                radius: rect.h * 0.5,
-                pad: 0.0,
-                ..materials::surface_layout()
-            },
-        ),
-        |_| {},
-    );
-    let fill_w = rect.w * fraction.clamp(0.0, 1.0);
-    if fill_w >= 0.5 {
-        f.place(
-            &format!("{id}-fill"),
-            &materials::chrome_place(
-                Rect { w: fill_w, ..rect },
-                LayoutOpts {
-                    bg: hud.accent,
-                    border: Color::TRANSPARENT,
-                    radius: rect.h * 0.5,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |_| {},
-        );
-    }
-}
-
-/// A btop-style history strip: thin vertical bars right-aligned in `rect`,
-/// newest sample at the right, height proportional to the 0..=100 sample.
-#[allow(dead_code)]
-pub(super) fn render_sparkline(f: &mut Frame, metric: &str, history: &History, rect: Rect) {
-    const BAR_W: f32 = 2.0;
-    const BAR_GAP: f32 = 1.5;
-    let hud = Hud::classic();
-    let max_bars = ((rect.w + BAR_GAP) / (BAR_W + BAR_GAP)).floor().max(0.0) as usize;
-    let samples: Vec<f32> = history.samples().collect();
-    let count = samples.len().min(max_bars);
-    for (index, sample) in samples[samples.len() - count..].iter().enumerate() {
-        let h = (rect.h * (sample / 100.0).clamp(0.0, 1.0))
-            .max(1.5)
-            .min(rect.h);
-        let right = rect.x + rect.w - (count - 1 - index) as f32 * (BAR_W + BAR_GAP);
-        f.place(
-            &format!("aegis-hud-spark-{metric}-{index}"),
-            &materials::chrome_place(
-                Rect {
-                    x: right - BAR_W,
-                    y: rect.y + rect.h - h,
-                    w: BAR_W,
-                    h,
-                },
-                LayoutOpts {
-                    bg: hud.accent,
-                    border: Color::TRANSPARENT,
-                    radius: 0.75,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |_| {},
-        );
-    }
-}
-
-/// SI throughput: "<10 → one decimal (`1.2M`), otherwise none (`340K`)".
-#[allow(dead_code)]
-pub(super) fn format_rate(bytes_per_sec: f64) -> String {
-    const UNITS: [&str; 4] = ["B", "K", "M", "G"];
-    let mut value = bytes_per_sec.max(0.0);
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 || value >= 10.0 {
-        format!("{value:.0}{}", UNITS[unit])
-    } else {
-        format!("{value:.1}{}", UNITS[unit])
-    }
-}
-
-/// A "used/total" GiB pair for the RAM gauge, one decimal each: `6.4/15.6G`.
-#[allow(dead_code)]
-pub(super) fn format_gib_pair(used: u64, total: u64) -> String {
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    format!("{:.1}/{:.1}G", used as f64 / GIB, total as f64 / GIB)
-}
-
 // ---- display typography (ADR-0080 refresh) -------------------------------
 
 /// Weight of the panel's display typography. lens draws text at the theme's
@@ -334,80 +280,3 @@ pub(super) fn display_label(f: &mut Frame, text: &str, size: f32) {
 }
 
 // ---- network surface charts ----------------------------------------------
-
-/// A framed throughput chart box: a hairline frame plus a centered
-/// polyline built from the history's samples, newest at the right. The
-/// polyline is drawn as thin vertical bars whose heights follow the sample
-/// ramp — the workspace's only "line" idiom (lens has no path primitive).
-pub(super) fn render_rate_chart(
-    f: &mut Frame,
-    id: &str,
-    history: &History,
-    rect: Rect,
-    color: Color,
-    frame_color: Color,
-) {
-    f.place(
-        &format!("{id}-frame"),
-        &materials::chrome_place(
-            rect,
-            LayoutOpts {
-                bg: Color::TRANSPARENT,
-                border: frame_color,
-                border_width: 1.0,
-                radius: 8.0,
-                pad: 0.0,
-                ..materials::surface_layout()
-            },
-        ),
-        |_| {},
-    );
-    // Chart body inset inside the frame, keeping the stroke visible.
-    const INSET: f32 = 7.0;
-    let body = Rect {
-        x: rect.x + INSET,
-        y: rect.y + INSET,
-        w: (rect.w - INSET * 2.0).max(1.0),
-        h: (rect.h - INSET * 2.0).max(1.0),
-    };
-    const BAR_W: f32 = 2.5;
-    const BAR_GAP: f32 = 2.0;
-    let max_bars = ((body.w + BAR_GAP) / (BAR_W + BAR_GAP)).floor().max(0.0) as usize;
-    if max_bars == 0 {
-        return;
-    }
-    // Normalize against the series' own peak (bytes/s have no natural
-    // ceiling), then ramp the bar heights along the series so the shape
-    // reads as a line rather than a bar meter.
-    let samples: Vec<f32> = history.samples().collect();
-    let count = samples.len().min(max_bars);
-    if count == 0 {
-        return;
-    }
-    let peak = samples.iter().fold(0.0_f32, |a, b| a.max(*b)).max(1.0);
-    for (index, sample) in samples[samples.len() - count..].iter().enumerate() {
-        let level = (sample / peak).clamp(0.0, 1.0);
-        // A 1.5px floor keeps flat traffic visible as a live baseline.
-        let h = ((body.h - 2.0) * level + 1.5).min(body.h);
-        let right = body.x + body.w - (count - 1 - index) as f32 * (BAR_W + BAR_GAP);
-        f.place(
-            &format!("{id}-bar-{index}"),
-            &materials::chrome_place(
-                Rect {
-                    x: right - BAR_W,
-                    y: body.y + body.h - h,
-                    w: BAR_W,
-                    h,
-                },
-                LayoutOpts {
-                    bg: color,
-                    border: Color::TRANSPARENT,
-                    radius: 1.0,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |_| {},
-        );
-    }
-}

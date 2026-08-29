@@ -79,7 +79,10 @@ pub struct SystemStatus {
     pub network_interface: String,
     /// The associated Wi-Fi network name when `network` is a live wireless
     /// link, `None` otherwise (wired, offline, or the forked probe has not
-    /// answered yet).
+    /// answered yet). Probed through daemon-neutral paths — `iwgetid -r`,
+    /// falling back to `iw dev <if> link` — so iwd, wpa_supplicant, and
+    /// NetworkManager stations resolve the same answer without caring
+    /// which service owns the radio.
     #[cfg_attr(feature = "serde", serde(default))]
     pub wifi_ssid: Option<String>,
     pub battery: Option<BatteryStatus>,

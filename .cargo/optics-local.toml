@@ -12,6 +12,7 @@ flux = { path = "../optics/bindings/flux-rs/crates/flux" }
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
 flux-scene-graph = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph" }
 flux-scene-graph-sys = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph-sys" }
+flux-composition-graph = { path = "../optics/crates/flux-composition-graph" }
 lens = { path = "../optics/bindings/lens-rs/crates/lens" }
 lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
 prism = { path = "../optics/bindings/prism-rs/crates/prism" }

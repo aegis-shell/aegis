@@ -933,7 +933,7 @@ mod tests {
         record_composite_present(&mut slots, 1, second.clone());
         // Slot zero missed the second frame; when it comes around again, its
         // repaint includes both that history and the new frame's damage.
-        assert_eq!(slots, [second.clone(), FrameDamage::None]);
+        assert_eq!(slots, [second, FrameDamage::None]);
         let combined = composite_repaint_for_slot(&mut slots, 0, first);
         // The combined damage covers both rects (union spans 10..50).
         assert_eq!(

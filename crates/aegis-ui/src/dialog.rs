@@ -51,7 +51,7 @@ pub fn place_modal_scrim(frame: &mut Frame, id: &str, display: (f32, f32), desig
                 h: display.1,
             },
             LayoutOpts {
-                bg: design.colors.scrim,
+                bg: design.colors.modal_scrim,
                 ..materials::surface_layout()
             },
         ),
@@ -94,14 +94,14 @@ pub fn render_action_button(
     let bg = match style {
         ActionButtonStyle::Accented => {
             if is_hovered {
-                design.colors.application_active
+                design.colors.application_surface_active
             } else {
                 design.colors.application_accent
             }
         }
         ActionButtonStyle::Subtle | ActionButtonStyle::Default => {
             if is_hovered {
-                design.colors.application_hover
+                design.colors.application_surface_hover
             } else {
                 design.colors.card_surface
             }
@@ -110,7 +110,7 @@ pub fn render_action_button(
             if is_hovered {
                 design.colors.critical
             } else {
-                design.colors.critical
+                design.colors.card_surface
             }
         }
     };

@@ -609,19 +609,6 @@ impl CompositorRuntime {
             // skipped behind a lock or another modal retries on the next tick.
             self.poll_battery_warning();
         }
-        while let Ok(stats) = self.resource_rx.try_recv() {
-            // Keep the shell's copy fresh regardless (opening the panel must
-            // not show stale numbers), but only schedule a chrome repaint
-            // when something can actually display it: resource figures are
-            // consumed by the command panel alone, and the sampler fires
-            // every few seconds — an unconditional dirty flag repainted the
-            // whole shell on that cadence even with the panel closed.
-            let panel_visible = self.shell.command_panel_active();
-            self.shell.set_resource_stats(stats);
-            if panel_visible {
-                self.damage.chrome_dirty = true;
-            }
-        }
         // Input device presence/config only moves on hotplug or a settings
         // write, and the probe interrogates libinput per device — throttle
         // it instead of running it on every frame-loop wakeup. A device
@@ -864,6 +851,7 @@ impl CompositorRuntime {
         self.drain_app_pick_controls();
         self.drain_secret_prompt_controls();
         self.drain_confirm_pick_controls();
+        self.drain_system_confirm_requests();
         self.drain_capability_pick_controls();
         while let Ok(request) = self.stream_control_rx.try_recv() {
             match request.action {

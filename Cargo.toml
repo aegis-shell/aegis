@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "tooling/*"]
 
 [workspace.package]
 version = "0.0.49"
@@ -22,6 +22,8 @@ flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
+# Renderer-neutral offscreen DAG planning above Flux image operators.
+flux-composition-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
 iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.28" }
@@ -192,6 +194,18 @@ ash = "0.38"
 xkbcommon = "0.9"
 zeroize = "1.8"
 
+# CLI, automation, and shared utility tooling
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+anyhow = "1"
+rustc-hash = "2"
+walkdir = "2"
+tempfile = "3"
+toml_edit = "0.22"
+cc = "1"
+pkg-config = "0.3"
+
+
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
@@ -199,11 +213,35 @@ split-debuginfo = "unpacked"
 incremental = true
 codegen-units = 256
 
+# Accelerate proc-macro expansion and code generation in dev builds
+[profile.dev.package]
+syn = { opt-level = 3 }
+quote = { opt-level = 3 }
+proc-macro2 = { opt-level = 3 }
+serde_derive = { opt-level = 3 }
+thiserror-impl = { opt-level = 3 }
+zbus_macros = { opt-level = 3 }
+serde_json = { opt-level = 3 }
+resvg = { opt-level = 3 }
+tiny-skia = { opt-level = 3 }
+usvg = { opt-level = 3 }
+image = { opt-level = 3 }
+aegis-design = { codegen-units = 1 }
+aegis-logging = { codegen-units = 1 }
+
 # Keep the compositor responsive without applying full release optimization to
 # workspace crates on every edit. Dependencies change less often, so their
 # one-time optimization cost is amortized by Cargo's build cache.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Dedicated profiling & benchmark profile: avoids ThinLTO compile delays
+# while maintaining near-release runtime speed with full debug symbols.
+[profile.release-fast]
+inherits = "release"
+debug = "full"
+lto = false
+codegen-units = 16
 
 # Release builds favor a smaller binary: thin LTO plus a single codegen unit
 # deduplicates generics across crate boundaries, and the symbol table is
@@ -215,3 +253,18 @@ opt-level = 2
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "allow" }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+declare_interior_mutable_const = "deny"
+redundant_clone = "deny"
+disallowed_methods = "deny"
+
+# Practical exceptions for GUI / UI and complex protocol models
+too_many_arguments = "allow"
+enum_variant_names = "allow"
+large_enum_variant = "allow"

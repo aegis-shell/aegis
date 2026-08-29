@@ -111,6 +111,8 @@ pub enum Message {
     Restart,
     PowerOff,
     QuickControls,
+    NowPlaying,
+    NotPlaying,
     Sound,
     Brightness,
     Display,
@@ -139,6 +141,8 @@ pub enum Message {
     WifiConnected,
     WiredConnected,
     Disconnected,
+    On,
+    Off,
     Network,
     NoBatteryDetected,
     Battery,
@@ -347,6 +351,8 @@ impl Localizer {
             Message::Restart => &catalog.restart,
             Message::PowerOff => &catalog.power_off,
             Message::QuickControls => &catalog.quick_controls,
+            Message::NowPlaying => &catalog.now_playing,
+            Message::NotPlaying => &catalog.not_playing,
             Message::Sound => &catalog.sound,
             Message::Brightness => &catalog.brightness,
             Message::Display => &catalog.display,
@@ -375,6 +381,8 @@ impl Localizer {
             Message::WifiConnected => &catalog.wifi_connected,
             Message::WiredConnected => &catalog.wired_connected,
             Message::Disconnected => &catalog.disconnected,
+            Message::On => &catalog.on,
+            Message::Off => &catalog.off,
             Message::Network => &catalog.network,
             Message::NoBatteryDetected => &catalog.no_battery_detected,
             Message::Battery => &catalog.battery,
@@ -607,6 +615,8 @@ struct Catalog {
     suspend: String,
     restart: String,
     power_off: String,
+    now_playing: String,
+    not_playing: String,
     sound: String,
     brightness: String,
     display: String,
@@ -636,6 +646,8 @@ struct Catalog {
     wifi_connected: String,
     wired_connected: String,
     disconnected: String,
+    on: String,
+    off: String,
     network: String,
     charging_with_level: String,
     no_battery_detected: String,
@@ -827,9 +839,15 @@ mod tests {
         assert_eq!(en.agent_workspace_count(2), "2 workspaces");
         assert_eq!(en.text(Message::QuickControls), "Quick Controls");
         assert_eq!(zh.text(Message::QuickControls), "快捷控制");
+        assert_eq!(en.text(Message::NotPlaying), "Not Playing");
+        assert_eq!(zh.text(Message::NowPlaying), "正在播放");
         assert_eq!(en.text(Message::Network), "Network");
         assert_eq!(zh.text(Message::Network), "网络");
         assert_eq!(en.text(Message::Offline), "Offline");
         assert_eq!(zh.text(Message::Offline), "离线");
+        assert_eq!(en.text(Message::On), "On");
+        assert_eq!(zh.text(Message::On), "开");
+        assert_eq!(en.text(Message::Off), "Off");
+        assert_eq!(zh.text(Message::Off), "关");
     }
 }

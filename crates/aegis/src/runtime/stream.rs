@@ -1051,7 +1051,7 @@ impl CompositorRuntime {
             begin_opaque_frame(&canvas, &frame, flux::rgba(0, 0, 0, 255))
                 .map_err(|error| format!("capture slot clear: {error}"))?;
             canvas
-                .end_checked()
+                .end_frame_checked()
                 .map_err(|error| format!("capture slot clear: {error}"))?;
             let submitted = frame
                 .submit()
@@ -1478,48 +1478,41 @@ fn blit_presented_frame(
         .transpose()?;
     // SAFETY: the backend's descriptor references a live dma-buf matching the
     // metadata it reported; the fence, when present, orders the capture pass
-    // after the compositor's own rendering of that image.
+    // after the compositor's own rendering of that image. The import entry
+    // points take `OwnedFd`s by value: on success flux consumes and closes
+    // them, on error the `OwnedFd` drops close them — no leak, no
+    // double-close, so the old `mem::forget` choreography is gone.
     let import = unsafe {
-        match &fence {
+        match fence {
             Some(fence) => flux::Image::import_dmabuf_with_acquire_fence(
                 device,
                 presented.width,
                 presented.height,
-                flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                flux::Format::Bgra8Unorm,
                 presented.modifier,
-                fd.as_raw_fd(),
+                fd,
                 0,
                 presented.stride,
-                fence.as_raw_fd(),
+                fence,
             ),
             None => flux::Image::import_dmabuf(
                 device,
                 presented.width,
                 presented.height,
-                flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                flux::Format::Bgra8Unorm,
                 presented.modifier,
-                fd.as_raw_fd(),
+                fd,
                 0,
                 presented.stride,
             ),
         }
     };
-    let source = match import {
-        Ok(image) => {
-            // Flux took ownership of both descriptor duplicates.
-            std::mem::forget(fd);
-            if let Some(fence) = fence {
-                std::mem::forget(fence);
-            }
-            image
-        }
-        Err(error) => {
-            return Err(BlitFailure::Retryable(format!(
-                "import presented dma-buf: {error}{}",
-                flux_last_error_detail()
-            )));
-        }
-    };
+    let source = import.map_err(|error| {
+        BlitFailure::Retryable(format!(
+            "import presented dma-buf: {error}{}",
+            flux_last_error_detail()
+        ))
+    })?;
     let frame = dmabuf.surface.begin_frame().map_err(|error| {
         BlitFailure::Retryable(format!(
             "capture begin_frame: {error}{}",
@@ -1569,7 +1562,7 @@ fn blit_presented_frame(
     }
     dmabuf
         .canvas
-        .end_checked()
+        .end_frame_checked()
         .map_err(|error| BlitFailure::Retryable(format!("capture pass: {error}")))?;
     let (slot, fence) = submit_capture_frame(dmabuf, frame)?;
     Ok((slot, fence, source))
@@ -1748,7 +1741,7 @@ fn render_window_stream_shm(
     }
     target
         .canvas
-        .end_checked()
+        .end_frame_checked()
         .map_err(|error| format!("end window stream pass: {error}"))?;
     frame
         .request_readback()
@@ -1791,7 +1784,7 @@ fn render_window_stream_dmabuf(
     }
     dmabuf
         .canvas
-        .end_checked()
+        .end_frame_checked()
         .map_err(|error| BlitFailure::Retryable(format!("capture pass: {error}")))?;
     submit_capture_frame(dmabuf, frame)
 }
@@ -2997,7 +2990,7 @@ mod dmabuf_tests {
         for expected_slot in 0..STREAM_SLOT_COUNT {
             let frame = surface.begin_frame().unwrap();
             begin_opaque_frame(&canvas, &frame, flux::rgba(0, 0, 0, 255)).unwrap();
-            canvas.end_checked().unwrap();
+            canvas.end_frame_checked().unwrap();
             frame.submit().unwrap().present().unwrap();
             let export = surface.export_dmabuf().unwrap();
             assert_eq!(export.slot as usize, expected_slot);
@@ -3014,7 +3007,7 @@ mod dmabuf_tests {
         // ring wrapped back to slot 0.
         let frame = surface.begin_frame().unwrap();
         begin_opaque_frame(&canvas, &frame, flux::rgba(10, 20, 30, 255)).unwrap();
-        canvas.end_checked().unwrap();
+        canvas.end_frame_checked().unwrap();
         frame.submit().unwrap().present().unwrap();
         let export = surface.export_dmabuf_explicit().unwrap();
         assert_eq!(export.slot, 0);

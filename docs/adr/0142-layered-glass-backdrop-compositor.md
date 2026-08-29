@@ -1,6 +1,6 @@
 # ADR-0142: Layered glass — the backdrop compositor owns the frost→glass nesting
 
-- Status: Accepted
+- Status: Superseded by ADR-0143
 - Date: 2026-08-25
 - Scope: `crates/aegis/src/runtime/{rendering,presentation}.rs`; adds an Optics-side material (`prism` backdrop layer, Optics ADR-0079); amends [ADR-0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md)
 

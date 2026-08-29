@@ -186,7 +186,10 @@ fn surface_damage_accumulates_until_present_and_full_is_sticky() {
         vec![aegis_model::Rect::new(1, 1, 2, 2)],
         false,
     );
-    assert_eq!(surface.committed_damage, vec![aegis_model::Rect::new(1, 1, 2, 2)]);
+    assert_eq!(
+        surface.committed_damage,
+        vec![aegis_model::Rect::new(1, 1, 2, 2)]
+    );
     assert!(surface.committed_damage_full);
 }
 

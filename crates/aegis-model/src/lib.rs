@@ -673,14 +673,8 @@ impl SurfaceGeometry {
 
         let corners = [
             (rect.origin.x as f32, rect.origin.y as f32),
-            (
-                (rect.origin.x + rect.size.w) as f32,
-                rect.origin.y as f32,
-            ),
-            (
-                rect.origin.x as f32,
-                (rect.origin.y + rect.size.h) as f32,
-            ),
+            ((rect.origin.x + rect.size.w) as f32, rect.origin.y as f32),
+            (rect.origin.x as f32, (rect.origin.y + rect.size.h) as f32),
             (
                 (rect.origin.x + rect.size.w) as f32,
                 (rect.origin.y + rect.size.h) as f32,

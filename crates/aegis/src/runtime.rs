@@ -215,7 +215,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let canvas = flux::Canvas::new(&surface)?;
-    let launcher_backdrop = LauncherBackdrop::new(&device)?;
+    let backdrop_graph = BackdropGraphExecutor::new(&device)?;
     let window_shadows = WindowShadowRenderer::new(&device)?;
     // Frozen-frame snapshot behind the screenshot selector: allocated lazily
     // on the first trigger, reused across later sessions.
@@ -545,11 +545,13 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     //
     // The poll is split into two cadences. The cheap poll reads only `/sys`
     // (battery, brightness, charging, network link) every few seconds to keep
-    // the HUD fresh. The two forked commands — `wpctl get-volume` and
-    // `nmcli radio wifi` — change far more slowly (volume only on user action,
-    // which already triggers an out-of-cycle refresh; the Wi-Fi radio is
-    // toggled rarely), so they run on a longer interval instead of forking
-    // twice every cycle just to re-discover an unchanged answer.
+    // the HUD fresh. The forked probes — `wpctl get-volume`, `nmcli radio
+    // wifi`, and the Wi-Fi SSID lookup — change far more slowly (volume only
+    // on user action, which already triggers an out-of-cycle refresh; the
+    // Wi-Fi radio is toggled rarely; the association changes on network
+    // events the link poll already observes), so they run on a longer
+    // interval instead of forking every cycle just to re-discover an
+    // unchanged answer.
     const SYSTEM_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
     const FORKED_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
     let mut system_status = aegis_shell::detect_system_status();
@@ -562,9 +564,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         error: None,
     };
     shell.set_system_status(system_status.clone());
-    // Seed the panel with one resource sample so it never opens on all zeros.
-    shell.set_resource_stats(aegis_shell::ResourceProbe::new().sample());
-    let (resource_tx, resource_rx) = std::sync::mpsc::channel::<aegis_shell::ResourceStats>();
+    // Resource sampling was retired with the command panel's machine
+    // monitor: no surface displays utilization anymore, and an always-on
+    // CPU/GPU/RAM/network probe contradicted the panel's event-driven
+    // scope. `ResourceProbe` stays available for any future consumer that
+    // wants to poll on its own cadence.
     let (status_tx, status_rx) = std::sync::mpsc::channel::<aegis_shell::SystemStatus>();
     // System actions wake the poller for an out-of-cycle refresh so the HUD
     // reconciles its optimistic values right away; the main loop itself never
@@ -655,20 +659,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .expect("spawn status poller");
     // Resource utilisation (CPU/GPU/memory/net/disk) polls on its own channel:
     // the probe reads only /proc and /sys plus one statvfs, so it never
-    // blocks a frame, and a failed send means the main loop is gone.
-    std::thread::Builder::new()
-        .name("aegis-resources".into())
-        .spawn(move || {
-            let mut probe = aegis_shell::ResourceProbe::new();
-            loop {
-                if resource_tx.send(probe.sample()).is_err() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_secs(2));
-            }
-        })
-        .expect("spawn resource poller");
-
     // mtime-based reload watcher, polled each frame. `None` when there is no
     // default config path on this host.
     let reload = config_path.as_deref().map(aegis_config::ReloadWatcher::at);
@@ -899,7 +889,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         revision: settings_revision,
         input: system_status.input.clone(),
         display: system_status.display.clone(),
-        preferences: desktop_preferences.clone(),
+        preferences: desktop_preferences,
         idle: config
             .as_ref()
             .map(|config| config.idle)
@@ -1038,7 +1028,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         host,
         surface,
         canvas,
-        launcher_backdrop,
+        backdrop_graph,
         window_shadows,
         glass_adaptation: GlassAdaptation::new(),
         submitted_glass_ids: Vec::new(),
@@ -1078,7 +1068,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         system_status,
         status_rx,
         status_refresh_tx,
-        resource_rx,
         config_writer,
         reload,
         idle_process,
@@ -1112,6 +1101,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         pending_secret_prompt: None,
         confirm_pick_rx: confirm_pick_control_rx,
         pending_confirm_pick: None,
+        system_confirm_requests: Vec::new(),
+        pending_system_action: None,
         capability_pick_rx: capability_pick_control_rx,
         pending_capability_pick: None,
         battery_latches: aegis_model::system::BatteryWarningLatches::default(),

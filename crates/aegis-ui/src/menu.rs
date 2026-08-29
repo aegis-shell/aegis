@@ -34,7 +34,7 @@ pub fn menu_item_layout(is_hovered: bool, design: &Design) -> LayoutOpts {
         gap: 8.0,
         radius: design.radii.menu_item,
         bg: if is_hovered {
-            design.colors.menu_hover
+            design.colors.menu_surface_hover
         } else {
             lens::Color::TRANSPARENT
         },

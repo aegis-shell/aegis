@@ -15,27 +15,26 @@ component, so window tiling and Agent Workspaces are in scope while
 Interaction Domain lifecycle management is not. Every proposed tab,
 section, or status row justifies itself against this scope.
 
-Visually the panel is organized according to a **9-grid spatial anchor architecture**:
+Visually the panel is organized according to a **9-grid spatial anchor
+architecture**:
+
 - **Top-Left (左上): Frameless user identity block** (ringed avatar + name + hostname).
 - **Top-Right (右上): Floating notification stream.**
 - **Right-Middle (右中): Network monitor** (interface, charts, rates).
-- **Center (中): Split Main Control Panel (Left Liquid Glass Nav Rail + Right Gaussian Blur Content View).**
-- **Other Anchor Zones**: Peripheral zones remain open for frictionless focus. Machine resource telemetry is currently disabled.
+- **Center (中): Split Main Control Panel (solid nav rail + elevated content view).**
+- **Other Anchor Zones**: Peripheral zones remain open for frictionless
+  focus. Machine resource telemetry is currently disabled.
 
-## Blurred Translucent Background
+## Solid Scheme-Adaptive Background
 
-The whole output sits behind one blurred translucent background:
+The whole output uses one opaque grouped background:
 
-- `backdrop_regions` declares a single fullscreen capture while the panel
-  is revealing, so the compositor's realtime dual-Kawase blur frosts the
-  entire desktop behind the panel (the same pattern the launcher uses).
-- A painted scrim veil on top of the blur blends bright and dark into the
-  frost, adaptive to the color scheme: dark mode washes toward deep ink
-  (`rgba(8, 11, 20, ~150)`) so bright content recedes; light mode washes
-  toward pearl (`rgba(238, 241, 248, ~150)`) so dark content recedes. The
-  veil's alpha rides the reveal animation.
-- The per-component liquid-glass bodies (chips, capsules, view) still
-  carry their own refraction on top of the shared frost.
+- Dark mode uses a near-black canvas with opaque elevated-gray panels.
+- Light mode uses a pale grouped-gray canvas with opaque white panels.
+- System blue marks active tabs, slider fills, and semantic focus. Quiet
+  separators define inactive surfaces without decorative edge lighting.
+- The reveal animates the painted canvas's opacity. The command panel does
+  not declare backdrop capture, blur, frost, or analytic Liquid Glass.
 
 ## 9-Grid Anchor Spatial Geometry
 
@@ -55,9 +54,9 @@ The whole output sits behind one blurred translucent background:
 
 ## Identity Block (Top-Left)
 
-- The block is **frameless**: no chip glass body, no painted background, no
-  border — content sits directly on the blurred translucent background.
-- A 56 px avatar orb floats with a cyan **line ring separated from the avatar
+- The block is **frameless**: no chip body, painted background, or border;
+  content sits directly on the grouped canvas.
+- A 56 px avatar orb floats with a blue **line ring separated from the avatar
   edge by a deliberate 3 px gap**, reading as a stroke of the identity mark
   rather than a container border. Every avatar texture is circle-masked in
   its alpha channel — still photos, live-rendered 3D VRM models with VRMA
@@ -72,8 +71,8 @@ The whole output sits behind one blurred translucent background:
 
 - The top-right notifications panel presents the active notification queue in
   a frameless scroll view.
-- Notifications list newest first as pure floating text rows (summary plus body).
-  Clicking a row dismisses it immediately.
+- Notifications list newest first as recessed solid cards (summary plus
+  body). Clicking a row dismisses it immediately.
 
 ## Network Monitor (Right-Middle)
 
@@ -94,16 +93,23 @@ The whole output sits behind one blurred translucent background:
 The main control panel sits in the center of the display as the primary interaction hub,
 split into two functional columns:
 
-### 1. Left Column: Individual Floating Semicircular Liquid Glass Capsules
-- Vertically stacked 100% semicircular ($r = h/2 = 22\text{px}$) **Liquid Glass** capsule pills with zero outer container boundaries and zero 2D stroke outlines.
-- Each tab features **Icon + Text** layout with horizontal padding preventing any subpixel viewport clipping.
-- Selected tab receives an intense **optical spotlight caustic focus beam** (`LiquidGlassFocus` with `strength: 1.25`), crystal clear illuminated refraction core (`frost_strength: 0.55`, `tint_strength: 1.35`), and brilliant white illuminated text.
-- Inactive tabs float in pure optical refraction without artificial 2D borders.
+### 1. Left Column: Individual Solid Semicircular Capsules
 
-### 2. Right Column: Gaussian Blur Content View
-- A frosted **Glass Page View** (`GlassRole::ProminentPanel`, radius: 20px) hosting the active tab content.
+- Vertically stacked 100% semicircular ($r = h/2 = 22\text{px}$) capsule
+  pills have no outer navigation container.
+- Each tab features **Icon + Text** layout with horizontal padding that
+  prevents subpixel viewport clipping.
+- The selected tab uses an opaque blue-tinted surface, primary text, and a
+  system-blue icon.
+- Inactive tabs use the elevated surface, primary text, muted icons, and a
+  quiet separator border. Hover uses a low-strength blue tint.
+
+### 2. Right Column: Elevated Content View
+
+- An opaque elevated page surface hosts the active tab content.
 - Header row renders the active section icon and headline.
-- Scrollable body renders the **Quick Controls** tab or modular settings pages (`aegis-settings` registry).
+- Scrollable body renders the **Quick Controls** tab or modular settings
+  pages (`aegis-settings` registry).
 
 ## Tabs
 
@@ -127,14 +133,12 @@ the shared type scale — nav and section headers at `title`/`headline`,
 control rows at `body`, secondary lines at `label`/`footnote`. The engine's
 default family is already sans-serif; no serif voice enters the panel.
 
-## Liquid Glass Physical Pipeline
+## Rendering Budget
 
-The command panel connects directly to the compositor's analytic **Liquid Glass** pipeline (`prism` / `flux`), emitting `LiquidGlassRegion` descriptors with unified `GlassRole` tokens:
-- **Identity Block (Top-Left)**: frameless — no glass body, only the shared fullscreen frost behind it.
-- **Notifications Stream (Top-Right)**: `GlassRole::FloatingPanel` — physical glass body covering the notification stream.
-- **Network Monitor (Right-Middle)**: `GlassRole::FloatingPanel` — physical glass body covering the network surface.
-- **Left Navigation Capsules**: `GlassRole::Chip` — each capsule pill emits its own discrete `LiquidGlassRegion` ($r = 22\text{px}$) with targeted `capture_bounds`. Active pill attaches `LiquidGlassFocus` for spotlight beam projection.
-- **Right Content View**: `GlassRole::ProminentPanel` with `materials::glass_panel` minimal foreground over the physical liquid-glass body.
+The command panel paints through Lens only. Its `Chrome` implementation uses
+the default zero blur and empty backdrop-effect declarations even while open.
+This keeps the modal presentation to the normal chrome composition pass and
+avoids paying for both a full-screen blur and per-surface Liquid Glass.
 
 ## Motion
 
@@ -143,11 +147,15 @@ The cluster reveals with clean HUD motion:
 - The top-right notifications panel slides in from the right.
 - The network monitor slides in from the right, staggered behind the main panel.
 - The center main control panel rises upward into place.
-- The background scrim's alpha rides the same reveal.
+- The solid background canvas's opacity rides the same reveal.
 - Reduced motion resolves directly to the end state.
 
 ## Material Rules
 
-- Physical refraction, edge lighting, and chromatic dispersion are provided by `prism` via `LiquidGlassRegion`.
-- Painted foregrounds stay deliberately minimal with **zero painted strokes/borders** to preserve raw optical refraction (the identity block's gapped ring is content, not a container edge).
-- The fullscreen blurred translucent background comes from one `BackdropRegion` plus the scheme-adaptive painted scrim; per-component stencil quads are not used.
+- Background, panel, and recessed-surface roles are opaque in both schemes.
+- Borders are separators, not simulated material rims. The identity block's
+  gapped ring remains content rather than a container edge.
+- Interactive emphasis uses the semantic system-blue accent. Destructive
+  actions use the design system's scheme-specific critical color.
+- New command-panel surfaces extend the solid semantic hierarchy. They do
+  not add a backdrop effect unless the complete presentation policy changes.

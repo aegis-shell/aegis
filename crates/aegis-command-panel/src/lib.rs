@@ -1,18 +1,20 @@
-//! The command panel: a full-screen modal overlay in a VR/AR personal-info
-//! HUD language (ADR-0080). The whole output sits behind one blurred
-//! translucent background — the compositor frosts the desktop and a
-//! scheme-adaptive painted wash (ink in dark mode, pearl in light mode)
-//! blends bright and dark into the blur so the HUD island stays legible
-//! either way. Floating glass surfaces carry the cyan accent, hairlines,
-//! and corner brackets on top.
+//! The command panel: a full-screen modal overlay in a personal-info HUD
+//! language (ADR-0080). The presentation uses an opaque, scheme-adaptive
+//! canvas with solid elevated surfaces: pale grouped grays and white panels
+//! in light mode, near-black grouped grays in dark mode, and system blue for
+//! shared interactive emphasis. It does not request backdrop blur or analytic
+//! liquid glass.
 //!
 //! One centered cluster of surfaces: a frameless user identity block with
 //! the avatar, display name, `@username · groups`, and the hostname on the
 //! left; the main panel to its right, hosting the Quick Controls tab plus
-//! one tab per available `aegis-settings` module; a floating notification
-//! stream in the top-right with a network monitor below it (the live
-//! interface and Wi-Fi name, upload/download line charts, and current
-//! rates). Quick Controls holds the daily toggles — volume, brightness,
+//! one tab per available `aegis-settings` module; a notification stream of
+//! individually-carded items in the top-right that fades out at its tail; a
+//! clock and date at top-center; the tray icons as a compact vertical
+//! column at left-middle. The right-bottom corner is one horizontal band
+//! pinned flush to the edges: a work-mode segmented control, an explicit
+//! lock button, and an explicit power button that uses the system-level
+//! power-off confirmation. Quick Controls holds the daily toggles — volume, brightness,
 //! always-on, do-not-disturb — while the System tab keeps the remaining
 //! quick settings and the Agent Workspaces status row (ADR-0083); settings
 //! module tabs host the module registry's pages and route their
@@ -27,18 +29,18 @@
 //! Scope (ADR-0115): the panel is the display-and-control surface for
 //! desktop-computer behavior — the domains daily desktop use involves:
 //! sound, displays, network and Bluetooth, power, the session,
-//! notifications, the tray, the user's persona, machine resources, and
-//! desktop preferences. The scope test is the user's computer, not this
-//! compositor: a surface belongs when its subject exists on any desktop
-//! computer regardless of the compositor implementation. Compositor-
+//! notifications, the tray, the user's persona, and desktop preferences.
+//! The scope test is the user's computer, not this compositor: a surface
+//! belongs when its subject exists on any desktop computer regardless of
+//! the compositor implementation. Compositor-
 //! mechanism surfaces — window-tree internals, protocol or IPC state,
 //! introspection, developer tooling — stay out and remain CLI/MCP
 //! territory. Domains follow the user's model rather than the implementing
 //! component, so window tiling and Agent Workspaces are in scope while
 //! Interaction Domain lifecycle management is not.
 //!
-//! Like the HUD and the dock, the panel is compositor-owned lens
-//! chrome on the [`aegis_shell`] `Chrome` seam: snapshots arrive through the
+//! Like the HUD and the dock, the panel is compositor-owned lens chrome on
+//! the [`aegis_shell`] `Chrome` seam: snapshots arrive through the
 //! trait each frame, and user intents leave through `ChromeEvents` plus the
 //! shared `aegis-tray` command channel.
 
@@ -46,57 +48,71 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
-use aegis_design::tokens::{Hud, TypeScale};
-use aegis_design::{AvatarRole, Design, GlassRole, materials, themes};
+use aegis_design::tokens::TypeScale;
+use aegis_design::{AvatarRole, CommandPanelColors, Design, materials, themes};
 use aegis_model::input::KeyChar;
 use aegis_model::interaction_domain::InteractionDomainSnapshot;
 use aegis_model::notify::{Notification, NotificationQueue};
+use aegis_model::power::PowerMode;
 use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_model::window::{SpaceUse, Window};
 use aegis_model::workspace::WorkspaceSnapshot;
 use aegis_settings::builtin_settings_modules;
 use aegis_settings::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_shell::persona::{Portrait, PortraitConfig, PortraitWatcher, Profile};
+use aegis_ui::Spring;
 use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use aegis_shell::{
-    BackdropRegion, ChassisKind, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
-    IconSet, LiquidGlassRegion, Localizer, Message, NetworkState, ResourceStats, SystemAction,
-    SystemStatus, place_popup, truncate,
+    Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, IconSet, Localizer, Message,
+    SystemAction, SystemStatus, place_popup, truncate,
 };
 use aegis_tray::{MenuNode, MenuState, TrayCommand, TrayHandle, TrayIcon};
 
+mod mpris;
 mod rendering;
 
+use mpris::{MediaCommand, MediaHandle};
 use rendering::*;
 
 #[cfg(test)]
 mod tests;
 
-const BACKDROP_BLUR_SIGMA: f32 = 14.0;
 /// Layout constants for the 9-part visual HUD anchor architecture:
 /// - Top-Left (左上): Compact user profile chip (48px avatar + name).
-/// - Top-Right (右上): Floating notification stream.
-/// - Right-Middle (右中): Network monitor (interface, rate charts).
-/// - Center (中): Split Main Control Panel (Left Nav Rail + Right Tab View).
+/// - Top-Center (上中): Clock & date, frameless.
+/// - Top-Right (右上): Floating notification stream (frameless items).
+/// - Left-Middle (左中): Vertical tray icon column.
+/// - Center (中): Unified Main Control Panel (navigation + active page).
+/// - Right-Bottom (右下): Mode selector, lock button, and power button.
 const PROFILE_W: f32 = 300.0;
 const PROFILE_H: f32 = 84.0;
-const MAIN_W: f32 = 720.0;
-const MAIN_H: f32 = 460.0;
+const MAIN_W: f32 = 820.0;
+const MAIN_H: f32 = 520.0;
 const NOTIF_W: f32 = 260.0;
 const NOTIF_H: f32 = 200.0;
-const NETWORK_W: f32 = 300.0;
-const NETWORK_H: f32 = 300.0;
-#[allow(dead_code)]
-const WORK_MODE_W: f32 = 300.0;
-const WORK_MODE_H: f32 = 110.0;
-#[allow(dead_code)]
-const POWER_PANEL_W: f32 = 300.0;
-const POWER_PANEL_H: f32 = 116.0;
-/// The tray panel's fixed height at the side column's bottom: a small
-/// section header plus two tray-grid rows.
-#[allow(dead_code)]
-const TRAY_PANEL_H: f32 = 172.0;
+/// The clock surface's footprint at top-center; the real glyph box is much
+/// smaller and centered inside.
+const CLOCK_W: f32 = 320.0;
+const CLOCK_H: f32 = 96.0;
+/// The tray column's footprint at the left-middle anchor.
+const TRAY_COL_W: f32 = 56.0;
+/// One tray cell: the hover plate / hit area around the icon.
+const TRAY_CELL: f32 = 40.0;
+/// The SNI glyph itself, centered in the cell.
+const TRAY_ICON: f32 = 22.0;
+/// Vertical rhythm between tray cells; the column scrolls past this many
+/// icons on small displays.
+const TRAY_GAP: f32 = 10.0;
+/// MPRIS now-playing card at the left-bottom anchor. Its width contracts to
+/// preserve a gap from the centered main panel on compact outputs.
+const MEDIA_W: f32 = 260.0;
+const MEDIA_H: f32 = 108.0;
+/// The right-bottom band: one mode selector followed by the lock and power
+/// buttons. All three components share one compact baseline.
+const WORK_MODE_W: f32 = 252.0;
+const WORK_MODE_H: f32 = 44.0;
+const POWER_PANEL_W: f32 = 94.0;
 /// The main panel's flat tab bar.
 #[allow(dead_code)]
 const TAB_BAR_H: f32 = 40.0;
@@ -105,8 +121,13 @@ const PANEL_GAP: f32 = 12.0;
 const CONTENT_STAGGER: f32 = 0.18;
 /// The side column's reveal lags the header's by this fraction.
 const SIDE_STAGGER: f32 = 0.26;
-/// Samples kept per sparkline metric (CPU/GPU/RAM).
-const HISTORY_CAP: usize = 48;
+
+/// Session action buttons in the right-bottom band.
+const SESSION_BUTTON: f32 = 44.0;
+const SESSION_BUTTON_GAP: f32 = 6.0;
+/// Segmented-control indicator spring: under-damped for a light bounce.
+const SEGMENTED_STIFFNESS: f32 = 380.0;
+const SEGMENTED_DAMPING: f32 = 22.0;
 
 /// The command panel explicitly owns its VRM composition. Keeping the
 /// parameters here lets another host choose a different crop without changing
@@ -120,13 +141,6 @@ const MENU_PAD: f32 = 7.0;
 const MENU_ROW_HEIGHT: f32 = 28.0;
 const MENU_HEADER_HEIGHT: f32 = 23.0;
 const MENU_SECTION_HEIGHT: f32 = 7.0;
-
-// Tray grid geometry: cells are 76×64 inside an 84×72 pitch; the column
-// count adapts to the content width.
-#[allow(dead_code)]
-const TRAY_CELL_W: f32 = 84.0;
-#[allow(dead_code)]
-const TRAY_CELL_H: f32 = 72.0;
 
 fn presentation_anim_pending(
     reveal: f32,
@@ -149,33 +163,6 @@ enum Tab {
 /// the bar can finish drawing before state changes.
 enum TabAction {
     Select(Tab),
-}
-
-/// One row of the header band's machine monitor, in priority order; the
-/// band shows at most five rows.
-#[allow(dead_code)]
-enum Gauge {
-    /// CPU: sparkline from the sample history + percent.
-    Cpu,
-    /// GPU (only when the driver exposes a busy percent): bar + percent.
-    Gpu(f32),
-    Ram {
-        fraction: f32,
-        value: String,
-    },
-    /// Throughput figures span the bar and value cells; there is no bar.
-    Net {
-        value: String,
-    },
-    Disk {
-        fraction: f32,
-        value: String,
-    },
-    Battery {
-        fraction: f32,
-        value: String,
-        charging: bool,
-    },
 }
 
 /// Render-thread half of the StatusNotifierItem tray: the shared snapshot the
@@ -246,16 +233,6 @@ pub struct CommandPanel {
     reduced_motion: bool,
     prev_down: bool,
     status: SystemStatus,
-    /// Latest host utilization sample behind the header band's gauges.
-    stats: ResourceStats,
-    /// Sparkline histories for the header band's CPU/GPU/RAM gauges and the
-    /// network surface's upload/download charts, fed by
-    /// `ChromeUpdate::ResourceStats`.
-    cpu_history: History,
-    gpu_history: History,
-    ram_history: History,
-    net_rx_history: History,
-    net_tx_history: History,
     /// Local account behind the header band's profile zone, resolved once
     /// at construction (never per frame).
     profile: Profile,
@@ -282,6 +259,9 @@ pub struct CommandPanel {
     /// when the queue actually changes.
     notification_cache: Option<(u64, Arc<Vec<Notification>>)>,
     tray: Option<SniTray>,
+    /// Session-bus MPRIS source. The worker owns all D-Bus calls; the panel
+    /// reads a small snapshot and sends transport commands over a channel.
+    media: Option<MediaHandle>,
     /// SNI item key whose dbusmenu popover is showing (set on the right-click
     /// that opens it, cleared by click-away, item disappearance, tab change,
     /// or panel close).
@@ -296,6 +276,29 @@ pub struct CommandPanel {
     /// from also immediately closing it.
     menu_just_opened: bool,
     menu_cache: Option<MenuSnapshotCache>,
+    /// Spring driving the segmented control's sliding indicator between
+    /// work-mode segments (0..=2 in segment-width units).
+    work_mode_spring: Spring,
+    /// 0..1 hover reveal of the notification stream's scrollbar; wheel
+    /// activity pushes it to 1, idle decays it back to 0.
+    notif_scrollbar_reveal: f32,
+    /// 0..1 hover reveal of the tray column's scrollbar.
+    tray_scrollbar_reveal: f32,
+    /// Hovered work-mode segment index for the mode tooltip (None = none).
+    work_mode_hover: Option<usize>,
+    /// 0..1 reveal of the work-mode tooltip.
+    work_mode_tooltip_reveal: f32,
+    /// Hovered session control ("power" or "lock") for its tooltip.
+    session_hover: Option<&'static str>,
+    /// 0..1 reveal of the session tooltip.
+    session_tooltip_reveal: f32,
+    /// The action whose system-level confirmation is pending. The runtime
+    /// owns the confirmation chrome; the panel only suppresses duplicate
+    /// requests until it closes.
+    power_pending_confirm: Option<SystemAction>,
+    /// Last frame's cursor position, cached for hover checks inside
+    /// presentation helpers that do not receive the raw input.
+    cursor_hint: (f32, f32),
 }
 
 impl CommandPanel {
@@ -312,11 +315,6 @@ impl CommandPanel {
     #[cfg(test)]
     fn update_windows(&mut self, windows: &[Window]) {
         <Self as Chrome>::update(self, ChromeUpdate::Windows(windows));
-    }
-
-    #[cfg(test)]
-    fn update_resource_stats(&mut self, stats: &ResourceStats) {
-        <Self as Chrome>::update(self, ChromeUpdate::ResourceStats(stats));
     }
 
     /// Construct the panel. The flux device is borrowed (non-owning, like
@@ -406,12 +404,15 @@ impl CommandPanel {
             reduced_motion: false,
             prev_down: false,
             status: SystemStatus::default(),
-            stats: ResourceStats::default(),
-            cpu_history: History::new(HISTORY_CAP),
-            gpu_history: History::new(HISTORY_CAP),
-            ram_history: History::new(HISTORY_CAP),
-            net_rx_history: History::new(HISTORY_CAP),
-            net_tx_history: History::new(HISTORY_CAP),
+            work_mode_spring: Spring::at(0.0),
+            notif_scrollbar_reveal: 0.0,
+            tray_scrollbar_reveal: 0.0,
+            work_mode_hover: None,
+            work_mode_tooltip_reveal: 0.0,
+            session_hover: None,
+            session_tooltip_reveal: 0.0,
+            power_pending_confirm: None,
+            cursor_hint: (0.0, 0.0),
             profile: Profile::current().unwrap_or_else(|_| Profile::fallback()),
             avatar,
             portrait_config,
@@ -424,6 +425,7 @@ impl CommandPanel {
             notifications,
             notification_cache: None,
             tray,
+            media: mpris::spawn(),
             menu_open_for: None,
             menu_path: Vec::new(),
             menu_owner: Rect {
@@ -452,12 +454,15 @@ impl CommandPanel {
             reduced_motion: false,
             prev_down: false,
             status: SystemStatus::default(),
-            stats: ResourceStats::default(),
-            cpu_history: History::new(HISTORY_CAP),
-            gpu_history: History::new(HISTORY_CAP),
-            ram_history: History::new(HISTORY_CAP),
-            net_rx_history: History::new(HISTORY_CAP),
-            net_tx_history: History::new(HISTORY_CAP),
+            work_mode_spring: Spring::at(0.0),
+            notif_scrollbar_reveal: 0.0,
+            tray_scrollbar_reveal: 0.0,
+            work_mode_hover: None,
+            work_mode_tooltip_reveal: 0.0,
+            session_hover: None,
+            session_tooltip_reveal: 0.0,
+            power_pending_confirm: None,
+            cursor_hint: (0.0, 0.0),
             profile: Profile::current().unwrap_or_else(|_| Profile::fallback()),
             avatar: None,
             portrait_config: PortraitConfig::new(Vec::new()),
@@ -470,6 +475,7 @@ impl CommandPanel {
             notifications,
             notification_cache: None,
             tray: None,
+            media: None,
             menu_open_for: None,
             menu_path: Vec::new(),
             menu_owner: Rect {
@@ -487,6 +493,11 @@ impl CommandPanel {
     /// animating closed.
     fn active(&self) -> bool {
         self.open || self.reveal > 0.01
+    }
+
+    /// Resolve the panel-local semantic palette from the live appearance.
+    fn panel_colors(&self) -> CommandPanelColors {
+        CommandPanelColors::for_scheme(self.design.scheme)
     }
 
     fn avatar_reload_pending(&self) -> bool {
@@ -547,8 +558,27 @@ impl CommandPanel {
 
     fn advance(&mut self, dt: f32) {
         let target = if self.open { 1.0 } else { 0.0 };
+        // The segmented control's current segment, as an index into
+        // `PowerMode::ALL` (the control's fixed segment order).
+        let mode_index = PowerMode::ALL
+            .iter()
+            .position(|mode| *mode == self.status.power_mode)
+            .unwrap_or(0) as f32;
         if self.reduced_motion {
             self.reveal = target;
+            self.work_mode_spring.snap_to(mode_index);
+            self.notif_scrollbar_reveal = 0.0;
+            self.tray_scrollbar_reveal = 0.0;
+            self.work_mode_tooltip_reveal = if self.work_mode_hover.is_some() {
+                1.0
+            } else {
+                0.0
+            };
+            self.session_tooltip_reveal = if self.session_hover.is_some() {
+                1.0
+            } else {
+                0.0
+            };
             return;
         }
         let dt = dt.clamp(0.0, 1.0 / 15.0);
@@ -557,11 +587,56 @@ impl CommandPanel {
         if (target - self.reveal).abs() < 0.002 {
             self.reveal = target;
         }
+        // Segmented-control indicator: an under-damped spring gives the
+        // switch its slight overshoot ("弹力") without ringing.
+        self.work_mode_spring
+            .advance(mode_index, SEGMENTED_STIFFNESS, SEGMENTED_DAMPING, dt);
+        // Wheel-activity reveals decay once the stream is left alone.
+        let decay = 1.0 - (-3.5 * dt).exp();
+        self.notif_scrollbar_reveal *= 1.0 - decay;
+        if self.notif_scrollbar_reveal < 0.01 {
+            self.notif_scrollbar_reveal = 0.0;
+        }
+        self.tray_scrollbar_reveal *= 1.0 - decay;
+        if self.tray_scrollbar_reveal < 0.01 {
+            self.tray_scrollbar_reveal = 0.0;
+        }
+        let tip_target = if self.work_mode_hover.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        self.work_mode_tooltip_reveal += (tip_target - self.work_mode_tooltip_reveal) * follow;
+        let session_tip_target = if self.session_hover.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        self.session_tooltip_reveal += (session_tip_target - self.session_tooltip_reveal) * follow;
     }
 
-    /// Close the panel, also dismissing any open dbusmenu popover.
+    /// Whether any of the always-animating micro-interactions (segment
+    /// indicator spring, scrollbar reveals, tooltip reveals) is still
+    /// settling; keeps the frame loop ticking while open.
+    fn interaction_anim_pending(&self) -> bool {
+        let mode_index = PowerMode::ALL
+            .iter()
+            .position(|mode| *mode == self.status.power_mode)
+            .unwrap_or(0) as f32;
+        !self.work_mode_spring.settled_on(mode_index, 0.01, 0.5)
+            || self.notif_scrollbar_reveal > 0.0
+            || self.tray_scrollbar_reveal > 0.0
+            || self.work_mode_tooltip_reveal > 0.02
+            || self.session_tooltip_reveal > 0.02
+    }
+
+    /// Close the panel, also dismissing any open dbusmenu popover and
+    /// dropping the pending-confirmation latch: the
+    /// system-level consent dialog (if one opened) resolves on its own
+    /// while the panel is closed, so a reopened panel starts collapsed.
     fn close(&mut self) {
         self.open = false;
+        self.power_pending_confirm = None;
         if let Some(key) = self.menu_open_for.take() {
             self.menu_path.clear();
             self.menu_just_opened = false;
@@ -582,16 +657,19 @@ impl CommandPanel {
         }
     }
 
-    /// The profile panel (screen top-left), notifications panel (screen top-right),
-    /// main control panel (screen center), network monitor (screen right-middle),
-    /// and side column (machine monitor over tray).
+    /// The profile panel (screen top-left), clock (screen top-center),
+    /// notifications stream (screen top-right), tray column (screen
+    /// left-middle), media card (screen left-bottom), and the work-mode +
+    /// session cluster (screen right-bottom).
     /// Calculate panel bounds based on the 9-region spatial anchor system:
     /// - Top-Left (左上): User Profile Chip
-    /// - Top-Right (右上): Notifications Stream
-    /// - Right-Middle (右中): Network Monitor
-    /// - Right-Bottom (右下): Work Mode Quick Switcher + Power & Session Actions
+    /// - Top-Center (上中): Clock & Date
+    /// - Top-Right (右上): Notifications Stream (frameless items)
+    /// - Left-Middle (左中): Vertical tray icon column
+    /// - Left-Bottom (左下): MPRIS now-playing controls
+    /// - Right-Bottom (右下): Work-mode segmented control + power/session
     /// - Center (中): Split Main Control Panel (Left Nav Rail + Right Tab View)
-    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
+    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect, Rect) {
         let margin_x = (display.0 * 0.025).clamp(16.0, 48.0);
         let margin_y = (display.1 * 0.035).clamp(16.0, 40.0);
         let gap = PANEL_GAP;
@@ -608,13 +686,8 @@ impl CommandPanel {
 
         // 2. Top-Right Anchor (右上): Notifications Stream
         let notif_w = NOTIF_W.min((display.0 * 0.38).max(140.0));
-        let notif_h = NOTIF_H.min((display.1 * 0.38).max(64.0));
-
-        // 3. Right Column: Notifications -> Network -> Work Mode -> Power & Session
-        let network_w = NETWORK_W.min((display.0 * 0.3).max(0.0));
-        let network_x = (display.0 - margin_x - network_w).max(profile.x + profile.w + gap);
-
-        let notif_x = (network_x + network_w - notif_w).max(profile.x + profile.w + gap);
+        let notif_h = NOTIF_H.min((display.1 * 0.42).max(64.0));
+        let notif_x = (display.0 - margin_x - notif_w).max(profile.x + profile.w + gap);
         let notifications = Rect {
             x: notif_x,
             y: margin_y,
@@ -622,74 +695,107 @@ impl CommandPanel {
             h: notif_h.min((display.1 - margin_y * 2.0).max(1.0)),
         };
 
-        let right_col_top = notifications.y + notifications.h + gap;
-        let right_col_avail_h = (display.1 - right_col_top - margin_y).max(0.0);
+        // 3. Top-Center Anchor (上中): Clock & Date. Framed between the
+        // profile chip and the notification stream when space is tight.
+        let clock_w = CLOCK_W.min(
+            (notifications.x - gap - (profile.x + profile.w + gap))
+                .max(0.0)
+                .max(display.0 * 0.16),
+        );
+        let clock_h = CLOCK_H.min((display.1 * 0.2).max(48.0));
+        let clock_x = ((display.0 - clock_w) * 0.5)
+            .max(profile.x + profile.w + gap)
+            .min((notifications.x - gap - clock_w).max(profile.x + profile.w + gap));
+        let clock = Rect {
+            x: clock_x,
+            y: margin_y,
+            w: clock_w.max(1.0),
+            h: clock_h.min((display.1 - margin_y * 2.0).max(1.0)),
+        };
 
-        let network_ideal_h = NETWORK_H;
-        let work_mode_ideal_h = WORK_MODE_H;
-        let power_ideal_h = POWER_PANEL_H;
-        let total_ideal = network_ideal_h + work_mode_ideal_h + power_ideal_h + gap * 2.0;
+        // 4. Left-Middle Anchor (左中): the vertical tray icon column,
+        // vertically centered against the main panel's band.
+        let main_h_for_tray = MAIN_H.min((display.1 - margin_y * 2.0).max(1.0));
+        let tray_h = (main_h_for_tray * 0.66).min((TRAY_CELL + TRAY_GAP) * 8.0);
+        let tray = Rect {
+            x: margin_x,
+            y: ((display.1 - tray_h) * 0.5).max(margin_y),
+            w: TRAY_COL_W.min((display.0 * 0.1).max(40.0)),
+            h: tray_h.max(1.0),
+        };
 
-        let (network_h, work_mode_h, power_h) = if right_col_avail_h >= total_ideal {
-            (network_ideal_h, work_mode_ideal_h, power_ideal_h)
+        // 5. Right-Bottom Anchor (右下): one horizontal band pinned into the
+        // corner — the work-mode segmented control to the left of the
+        // power/session cluster, both sharing one height and flush against
+        // the display's right and bottom margins.
+        let band_w_total = WORK_MODE_W + POWER_PANEL_W + gap;
+        let scale = if display.0 * 0.62 < band_w_total {
+            (display.0 * 0.62 / band_w_total).max(0.4)
         } else {
-            let space = (right_col_avail_h - gap * 2.0).max(0.0);
-            let sum_ideal = network_ideal_h + work_mode_ideal_h + power_ideal_h;
-            let scale = if sum_ideal > 0.0 {
-                space / sum_ideal
-            } else {
-                0.0
-            };
-            (
-                network_ideal_h * scale,
-                work_mode_ideal_h * scale,
-                power_ideal_h * scale,
-            )
+            1.0
         };
-
-        let network = Rect {
-            x: network_x,
-            y: right_col_top,
-            w: network_w.min((display.0 - network_x - margin_x).max(1.0)),
-            h: network_h,
-        };
-
-        let work_mode_top = network.y + network.h + gap;
+        let power_w = (POWER_PANEL_W * scale).max(SESSION_BUTTON * 2.0 + SESSION_BUTTON_GAP);
+        let work_w = (WORK_MODE_W * scale).max(150.0);
+        // Flush to the right and bottom edges of the margin box.
+        let power_x = display.0 - margin_x - power_w;
+        let work_x = power_x - gap - work_w;
+        // Clamp out of the tray column's band on very narrow displays.
+        let work_x = work_x.max(tray.x + tray.w + gap);
+        let work_w = work_w.min((power_x - gap - work_x).max(1.0));
+        let band_h = WORK_MODE_H
+            .min((display.1 * 0.12).max(56.0))
+            .min((display.1 - margin_y * 2.0).max(1.0));
         let work_mode = Rect {
-            x: network_x,
-            y: work_mode_top,
-            w: network_w.min((display.0 - network_x - margin_x).max(1.0)),
-            h: work_mode_h,
+            x: work_x,
+            y: display.1 - margin_y - band_h,
+            w: work_w.max(1.0),
+            h: band_h,
         };
-
-        let power_top = work_mode.y + work_mode.h + gap;
         let power = Rect {
-            x: network_x,
-            y: power_top,
-            w: network_w.min((display.0 - network_x - margin_x).max(1.0)),
-            h: power_h,
+            x: power_x,
+            y: display.1 - margin_y - band_h,
+            w: power_w,
+            h: band_h,
         };
 
-        // 4. Center Anchor (中): Split Main Control Panel (Nav Rail + Content View)
+        // 6. Center Anchor (中): the main panel owns the visual centre. The
+        // bottom actions are far below it, so they must not become a
+        // horizontal fence that squeezes the content column.
         let main_w = MAIN_W.min((display.0 - margin_x * 2.0).max(1.0));
         let main_h = MAIN_H.min((display.1 - margin_y * 2.0).max(1.0));
         let main_x = ((display.0 - main_w) * 0.5).max(margin_x);
         let main_y = ((display.1 - main_h) * 0.5).max(margin_y);
-        // Keep the centered cluster clear of the right column when both
-        // compete for the same horizontal band.
-        let main_w = if network.h > 0.0 {
-            main_w.min((network.x - gap - main_x).max(1.0))
-        } else {
-            main_w
-        };
         let main = Rect {
             x: main_x,
             y: main_y,
-            w: main_w.min((display.0 - main_x - margin_x).max(1.0)),
+            w: main_w,
             h: (display.1 - main_y - margin_y).min(main_h).max(1.0),
         };
 
-        (profile, main, notifications, network, work_mode, power)
+        // 7. Left-Bottom Anchor (左下): the MPRIS card grows to its design
+        // width when space permits and contracts before touching the main
+        // panel on compact nested outputs.
+        let media_w = MEDIA_W
+            .min((main.x - margin_x - gap).max(1.0))
+            .min((display.0 - margin_x * 2.0).max(1.0));
+        let media_h = MEDIA_H.min((display.1 - margin_y * 2.0).max(1.0));
+        let media = Rect {
+            x: margin_x,
+            y: display.1 - margin_y - media_h,
+            w: media_w,
+            h: media_h,
+        };
+
+        (
+            profile,
+            main,
+            notifications,
+            clock,
+            tray,
+            media,
+            work_mode,
+            power,
+        )
     }
 
     /// Clone the notification queue, memoized on the queue's revision: an
@@ -772,7 +878,7 @@ impl CommandPanel {
                         &tray.device,
                         pixmap.width,
                         pixmap.height,
-                        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                        flux::Format::Bgra8Unorm,
                         &pixmap.bgra,
                     ) {
                         Ok(image) => {
@@ -852,8 +958,30 @@ impl Chrome for CommandPanel {
             self.avatar_warned = true;
         }
         let reveal = self.reveal.clamp(0.0, 1.0);
-        let (profile_rect, main_rect, notifications_rect, network_rect, work_mode_rect, power_rect) =
-            Self::cluster_bounds(display);
+        let (
+            profile_rect,
+            main_rect,
+            notifications_rect,
+            clock_rect,
+            tray_rect,
+            media_rect,
+            work_mode_rect,
+            power_rect,
+        ) = Self::cluster_bounds(display);
+
+        // Cache the cursor for presentation helpers that only see `Frame`.
+        self.cursor_hint = cursor;
+        // Wheel activity over the two scrollable streams keeps their
+        // scrollbars revealed; `advance` decays them when idle.
+        let wheel_dy = raw.scroll_pixels_y.abs().max(raw.scroll_y.abs() * 16.0);
+        if wheel_dy > 0.0 {
+            if contains(notifications_rect, cursor.0, cursor.1) {
+                self.notif_scrollbar_reveal = 1.0;
+            }
+            if contains(tray_rect, cursor.0, cursor.1) {
+                self.tray_scrollbar_reveal = 1.0;
+            }
+        }
 
         // Click-away: a press landing on none of the cluster's surfaces nor
         // an open tray popover dismisses the panel.
@@ -865,7 +993,9 @@ impl Chrome for CommandPanel {
             && !contains(profile_rect, cursor.0, cursor.1)
             && !contains(notifications_rect, cursor.0, cursor.1)
             && !contains(main_rect, cursor.0, cursor.1)
-            && !contains(network_rect, cursor.0, cursor.1)
+            && !contains(clock_rect, cursor.0, cursor.1)
+            && !contains(tray_rect, cursor.0, cursor.1)
+            && !contains(media_rect, cursor.0, cursor.1)
             && !contains(work_mode_rect, cursor.0, cursor.1)
             && !contains(power_rect, cursor.0, cursor.1)
             && !on_popover
@@ -881,9 +1011,30 @@ impl Chrome for CommandPanel {
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
         let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
 
-        // The blurred translucent background and its scheme-adaptive wash
-        // are declared in `backdrop_regions` (a wash INTO the frost,
-        // beneath the glass bodies) — nothing is painted here for them.
+        // One opaque canvas replaces the former blur → wash → liquid-glass
+        // stack. It fades with the reveal but is fully solid at rest, so the
+        // open panel needs no backdrop capture or material recomposition.
+        let hud = self.panel_colors();
+        f.set_opacity(reveal);
+        f.place(
+            "aegis-command-panel-background",
+            &materials::chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.0,
+                    h: display.1,
+                },
+                LayoutOpts {
+                    bg: hud.background,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
+            |f| {
+                f.column_ex(&materials::sized(display.0, display.1), |_| {});
+            },
+        );
 
         // Display typography is per-call (`display_label`, bold sans at the
         // amplified HUD sizes), so no context-wide scope is needed here.
@@ -898,9 +1049,11 @@ impl Chrome for CommandPanel {
         f.set_opacity(content_progress);
         self.render_main_panel(f, main_rect, content_progress, i18n, out);
         f.set_opacity(side_progress.max(content_progress));
-        self.render_network_panel(f, network_rect, side_progress, i18n);
+        self.render_clock_panel(f, clock_rect, side_progress, i18n);
+        self.render_tray_column(f, tray_rect, side_progress, cursor, i18n);
+        self.render_media_panel(f, media_rect, side_progress, i18n);
         self.render_work_mode_panel(f, work_mode_rect, side_progress, i18n, out);
-        self.render_power_session_panel(f, power_rect, side_progress, i18n, out);
+        self.render_power_session_panel(f, power_rect, side_progress, cursor, i18n, out);
 
         // The dbusmenu popover floats above the panels; it belongs to the
         // tray, so it fades with the side column.
@@ -994,21 +1147,9 @@ impl Chrome for CommandPanel {
         match update {
             ChromeUpdate::AppCatalog(catalog) => self.icons = catalog.icons.clone(),
             ChromeUpdate::SystemStatus(status) => self.status = status.clone(),
-            ChromeUpdate::ResourceStats(stats) => {
-                self.stats = *stats;
-                self.cpu_history.push(stats.cpu_percent);
-                if let Some(gpu) = stats.gpu_percent {
-                    self.gpu_history.push(gpu);
-                }
-                let ram_percent = if stats.mem_total_bytes > 0 {
-                    stats.mem_used_bytes as f32 / stats.mem_total_bytes as f32 * 100.0
-                } else {
-                    0.0
-                };
-                self.ram_history.push(ram_percent);
-                self.net_rx_history.push(stats.net_rx_bytes_per_sec as f32);
-                self.net_tx_history.push(stats.net_tx_bytes_per_sec as f32);
-            }
+            // Resource sampling was retired with the machine monitor: the
+            // panel no longer displays utilization, so the host-side probe
+            // is gone and there is nothing to fold into panel state.
             ChromeUpdate::InteractionDomains(snapshot) => {
                 self.interaction_domains = snapshot.clone();
             }
@@ -1042,216 +1183,10 @@ impl Chrome for CommandPanel {
             target,
             self.open && self.avatar.as_ref().is_some_and(Portrait::is_animated),
             self.avatar_reload_pending(),
-        )
+        ) || self.interaction_anim_pending()
     }
 
     fn requires_composition(&self) -> bool {
         self.active()
-    }
-
-    fn backdrop_blur_sigma(&self) -> f32 {
-        if self.active() {
-            BACKDROP_BLUR_SIGMA
-        } else {
-            0.0
-        }
-    }
-
-    fn backdrop_regions(
-        &self,
-        display: (f32, f32),
-        _windows: &[Window],
-        _workspaces: &WorkspaceSnapshot,
-    ) -> Vec<BackdropRegion> {
-        // The blurred translucent background (ADR-0080 refresh): while the
-        // panel is revealing, the whole output is one backdrop capture, so
-        // the compositor's realtime blur frosts everything behind the HUD
-        // island. The per-component glass bodies still carry their own
-        // refraction on top; this region only supplies the blur the painted
-        // scrim washes over. The launcher uses the same fullscreen-region
-        // pattern.
-        if self.active() {
-            // The blurred translucent background (ADR-0080 refresh): while
-            // the panel is revealing, the whole output is one backdrop
-            // capture, so the compositor's realtime blur frosts everything
-            // behind the HUD island. The scheme-adaptive wash (ink in dark
-            // mode, pearl in light) is declared HERE — blended into the
-            // frost, beneath every glass body — not painted by `render`:
-            // a chrome-painted veil would sit between the frost and the
-            // analytic glass, hiding the glass's refraction and splitting
-            // the stack into "effects below, paint above". The wash's
-            // strength rides the reveal exactly as the painted veil's
-            // alpha did, so the blur still surfaces first and the wash
-            // settles in behind the cluster.
-            let reveal = self.reveal.clamp(0.0, 1.0);
-            let base = if self.design.is_light() {
-                Color::rgba(238, 241, 248, 255)
-            } else {
-                Color::rgba(8, 11, 20, 255)
-            };
-            vec![BackdropRegion {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-                wash: Some(aegis_shell::backdrop_wash(
-                    base.with_alpha((150.0 * reveal).round().min(255.0) as u8),
-                )),
-            }]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn liquid_glass_regions(
-        &self,
-        display: (f32, f32),
-        _windows: &[Window],
-        _workspaces: &WorkspaceSnapshot,
-    ) -> Vec<LiquidGlassRegion> {
-        if !self.active() {
-            return Vec::new();
-        }
-        let reveal = self.reveal.clamp(0.0, 1.0);
-        let notif_progress = stagger(reveal, 0.0);
-        let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
-        let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
-
-        let (_, main_rect, notifications_rect, network_rect, work_mode_rect, power_rect) =
-            Self::cluster_bounds(display);
-        let nav_w = 190.0_f32.min(main_rect.w * 0.28).max(150.0);
-        let gap = 16.0;
-        let view_w = (main_rect.w - nav_w - gap).max(1.0);
-        let nav_rect = Rect {
-            x: main_rect.x,
-            y: main_rect.y,
-            w: nav_w,
-            h: main_rect.h,
-        };
-        let view_rect = Rect {
-            x: main_rect.x + nav_w + gap,
-            y: main_rect.y,
-            w: view_w,
-            h: main_rect.h,
-        };
-
-        let mut regions = Vec::new();
-
-        // The fullscreen blurred translucent background is NOT a glass body:
-        // it comes from the plain frost `BackdropRegion` in `backdrop_regions`
-        // plus the painted scheme-adaptive scrim in `render`, so the analytic
-        // bodies below carry their refraction over a shared frost instead of
-        // stacking on a second fullscreen body.
-
-        // 1. Top-Left Identity Block: frameless — no glass body, no painted
-        //    foreground. The block's content sits directly on the shared
-        //    blurred translucent background.
-
-        // 2. Top-Right Notifications (GlassRole::FloatingPanel)
-        if notif_progress > 0.01 {
-            let region = LiquidGlassRegion::from_role(
-                &self.design,
-                GlassRole::FloatingPanel,
-                BackdropRegion::from(notifications_rect),
-                self.design.radii.glass_panel,
-                notif_progress,
-            )
-            .with_capture_bounds(BackdropRegion::from(notifications_rect));
-            regions.push(region);
-        }
-
-        // 2.5 Right-Middle Network Monitor (GlassRole::FloatingPanel)
-        if side_progress > 0.01 && network_rect.w > 1.0 && network_rect.h > 1.0 {
-            let region = LiquidGlassRegion::from_role(
-                &self.design,
-                GlassRole::FloatingPanel,
-                BackdropRegion::from(network_rect),
-                self.design.radii.glass_panel,
-                side_progress,
-            )
-            .with_capture_bounds(BackdropRegion::from(network_rect));
-            regions.push(region);
-        }
-
-        // 2.6 Right-Bottom Work Mode Panel (GlassRole::FloatingPanel)
-        if side_progress > 0.01 && work_mode_rect.w > 1.0 && work_mode_rect.h > 1.0 {
-            let region = LiquidGlassRegion::from_role(
-                &self.design,
-                GlassRole::FloatingPanel,
-                BackdropRegion::from(work_mode_rect),
-                self.design.radii.glass_panel,
-                side_progress,
-            )
-            .with_capture_bounds(BackdropRegion::from(work_mode_rect));
-            regions.push(region);
-        }
-
-        // 2.7 Right-Bottom Power & Session Panel (GlassRole::FloatingPanel)
-        if side_progress > 0.01 && power_rect.w > 1.0 && power_rect.h > 1.0 {
-            let region = LiquidGlassRegion::from_role(
-                &self.design,
-                GlassRole::FloatingPanel,
-                BackdropRegion::from(power_rect),
-                self.design.radii.glass_panel,
-                side_progress,
-            )
-            .with_capture_bounds(BackdropRegion::from(power_rect));
-            regions.push(region);
-        }
-
-        // 3. Central Control Panel: Left Individual Semicircle Capsule Tabs + Right View
-        if content_progress > 0.01 {
-            let mut tabs = vec![Tab::QuickControls];
-            tabs.extend(
-                self.modules
-                    .metadata()
-                    .filter(|module| module.availability == ModuleAvailability::Available)
-                    .map(|module| Tab::Settings(module.id)),
-            );
-
-            const CAPSULE_H: f32 = 44.0;
-            const TAB_GAP: f32 = 8.0;
-
-            // Emit an individual 100% semicircle LiquidGlassRegion for each capsule tab
-            // with exact 1:1 alignment to the Lens 2D foreground and unified capture bounds.
-            for (index, tab) in tabs.iter().enumerate() {
-                let tab_rect = Rect {
-                    x: nav_rect.x,
-                    y: nav_rect.y + index as f32 * (CAPSULE_H + TAB_GAP),
-                    w: nav_rect.w,
-                    h: CAPSULE_H,
-                };
-                let selected = self.tab == *tab;
-                let mut region = LiquidGlassRegion::from_role(
-                    &self.design,
-                    GlassRole::Chip,
-                    BackdropRegion::from(tab_rect),
-                    CAPSULE_H * 0.5, // 100% semicircle on left and right ends
-                    content_progress,
-                )
-                .with_capture_bounds(BackdropRegion::from(nav_rect));
-
-                if selected {
-                    // Active tab: Crystal clear luminous glass lit from within
-                    region.frost_strength = 0.45; // Clearer luminous core
-                    region.tint_strength = 1.25;
-                    region.saturation = 1.20;
-                }
-                regions.push(region);
-            }
-
-            // Right Tab Page View (GlassRole::ProminentPanel)
-            let view_region = LiquidGlassRegion::from_role(
-                &self.design,
-                GlassRole::ProminentPanel,
-                BackdropRegion::from(view_rect),
-                self.design.radii.glass_panel,
-                content_progress,
-            )
-            .with_capture_bounds(BackdropRegion::from(view_rect));
-            regions.push(view_region);
-        }
-
-        regions
     }
 }

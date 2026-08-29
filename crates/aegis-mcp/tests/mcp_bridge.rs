@@ -463,17 +463,17 @@ fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
         "io.modelcontextprotocol/clientCapabilities": {}
     });
     let requests = [
-        json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"interaction_domain_ensure","arguments":{},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"interaction_domain_observe","arguments":{},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"interaction_domain_input","arguments":{"target_window_id":7,"target_local_id":0,"observation_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","actions":[{"type":"pointer_move","x":160,"y":90}]},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"interaction_domain_capture","arguments":{},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"window_capture","arguments":{"window_id":7},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"launch_app","arguments":{"desktop_id":"visual-smoke.test.desktop","new_workspace":true,"workspace_label":"smoke run"},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"launch_app","arguments":{"desktop_id":"visual-smoke.test.desktop","workspace_id":1,"new_workspace":true},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"focus_window","arguments":{"window_id":7,"switch_workspace":false},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"interaction_domain_reset","arguments":{},"_meta":meta}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"interaction_domain_ensure","arguments":{},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"interaction_domain_observe","arguments":{},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"interaction_domain_input","arguments":{"target_window_id":7,"target_local_id":0,"observation_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","actions":[{"type":"pointer_move","x":160,"y":90}]},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"interaction_domain_capture","arguments":{},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"window_capture","arguments":{"window_id":7},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"launch_app","arguments":{"desktop_id":"visual-smoke.test.desktop","new_workspace":true,"workspace_label":"smoke run"},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"launch_app","arguments":{"desktop_id":"visual-smoke.test.desktop","workspace_id":1,"new_workspace":true},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"focus_window","arguments":{"window_id":7,"switch_workspace":false},"_meta": &meta}}),
+        json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"interaction_domain_reset","arguments":{},"_meta": &meta}}),
     ];
     {
         let stdin = child.stdin.as_mut().expect("child stdin");

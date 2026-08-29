@@ -501,7 +501,7 @@ impl DrmBackend {
                     &self.displays.modifiers,
                     flux::SurfaceColorOptions {
                         color_spaces: &spaces,
-                        offscreen_formats: &[flux::Format::FLUX_FORMAT_RGB10A2_UNORM],
+                        offscreen_formats: &[flux::Format::Rgb10a2Unorm],
                         ..Default::default()
                     },
                 )?
@@ -515,7 +515,7 @@ impl DrmBackend {
                     &self.displays.modifiers,
                     flux::SurfaceColorOptions {
                         color_spaces: &[flux::ColorSpace::BT2020_PQ],
-                        offscreen_formats: &[flux::Format::FLUX_FORMAT_RGB10A2_UNORM],
+                        offscreen_formats: &[flux::Format::Rgb10a2Unorm],
                         hdr: Some(flux::SurfaceHdr {
                             sdr_white_nits: sdr_white,
                             metadata: None,

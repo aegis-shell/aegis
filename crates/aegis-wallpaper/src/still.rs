@@ -390,7 +390,7 @@ mod tests {
                 )
             })
             .collect();
-        let out = composite_frames(frames.clone(), 8, 1);
+        let out = composite_frames(frames, 8, 1);
         assert!(
             out.len() <= MAX_RETAINED_FRAMES,
             "retained {} frames over the {} ceiling",

@@ -305,6 +305,7 @@ pub struct SettingsSnapshot {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 pub enum SettingsAction {
     SetInput { config: crate::input::InputConfig },
     SetDisplay { settings: DisplaySettings },

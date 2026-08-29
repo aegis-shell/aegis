@@ -1,0 +1,32 @@
+[default]
+extend-ignore-identifiers-re = [
+    # Wayland protocol identifiers & optics symbols
+    "wl_.*",
+    "xkb_.*",
+    "drm_.*",
+    "vulkan_.*",
+]
+
+[default.extend-words]
+# Project-specific terms, acronyms and abbreviations
+aegis = "aegis"
+optics = "optics"
+atspi = "atspi"
+subcompositor = "subcompositor"
+compositor = "compositor"
+libseat = "libseat"
+libinput = "libinput"
+scanout = "scanout"
+wayland = "wayland"
+wayland-protocols = "wayland-protocols"
+damagetracking = "damagetracking"
+wireformat = "wireformat"
+xdg = "xdg"
+
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "assets/cursors/**",
+    "assets/wallpapers/**",
+    ".git/**",
+]

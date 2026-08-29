@@ -175,8 +175,12 @@ ADR-0047.
   [Surfaces](surfaces.md).
 - One region, one body. Declare each floating body once; the SDF pass
   owns its shape, so no rectangular clip or corner patch-up may follow.
-- Never stack glass on glass. A body over another glass body reads as
-  clutter; the upper element belongs to the material as content instead.
+- Do not stack glass on glass by default. A body over another glass body
+  usually reads as clutter; ordinary upper elements belong to the lower
+  material as content. When cumulative optics are intentional, declare an
+  explicit `BackdropLayerSource::Layer` edge, keep the upper footprint
+  bounded, and review both readability and GPU cost. Paint order alone is
+  never a sampling relation.
 - Interactive selection inside a glass panel uses that panel's single focus
   field. Its bounds remain inside the primary body. It changes local clarity
   and color-preserving contrast, never coverage, silhouette, shadow, rim, or

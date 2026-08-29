@@ -1022,7 +1022,7 @@ mod tests {
                 ask_ops: Some(vec![ActorCapability::CaptureWindow]),
                 ..Scope::default()
             },
-            ..window_capture.clone()
+            ..window_capture
         };
         assert!(ToolKind::WindowCapture.allowed(&askable));
     }

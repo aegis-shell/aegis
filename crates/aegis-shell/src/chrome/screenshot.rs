@@ -43,11 +43,14 @@ use aegis_model::workspace::WorkspaceSnapshot;
 /// real selection rather than an accidental tap.
 const MIN_DRAG: f32 = 8.0;
 
-/// Shared optical character of screenshot-picker glass bodies. The selector
-/// is static, so it uses the same full-strength blur as the window switcher
+/// Optical character of the pixel-picking loupe — the only picker glass
+/// body left. It uses the same full-strength blur as the window switcher
 /// without introducing another component-local material.
 const BACKDROP_BLUR_SIGMA: f32 = 16.0;
 const PIXEL_LENS_SIZE: f32 = 48.0;
+/// Selection border weight: thin enough to read as a marquee, thick enough
+/// to stay visible against any desktop content.
+const SELECTION_BORDER_WIDTH: f32 = 1.5;
 const STATUS_PAD: f32 = 8.0;
 const STATUS_MARGIN: f32 = 12.0;
 /// Sub-logical-pixel bands keep the inverse rounded-corner mask smooth on
@@ -285,13 +288,14 @@ impl ScreenshotSelector {
         self.hovered_output = None;
     }
 
-    /// Current Liquid Glass body. Region and window selection use the target
-    /// itself; pixel picking uses a compact lens centred on the pointer.
-    fn glass_rect(&self, display: (f32, f32), windows: &[Window]) -> Option<LensRect> {
+    /// Analytic Liquid Glass body. Only the pixel-picking loupe supplies one —
+    /// it is an optical instrument. Region, window, and output targets are
+    /// markers over pixels the user is about to capture; blurring or
+    /// refracting them would obscure exactly what is being framed, so those
+    /// modes render plain Lens borders instead.
+    fn glass_rect(&self, display: (f32, f32)) -> Option<LensRect> {
         match self.mode {
-            PickerMode::Region => self
-                .shown_rect()
-                .and_then(|rect| (rect.size.w > 0 && rect.size.h > 0).then_some(to_lens(rect))),
+            PickerMode::Region => None,
             PickerMode::Pixel => {
                 let w = PIXEL_LENS_SIZE.min(display.0.max(1.0));
                 let h = PIXEL_LENS_SIZE.min(display.1.max(1.0));
@@ -302,6 +306,29 @@ impl ScreenshotSelector {
                     h,
                 })
             }
+            PickerMode::Window | PickerMode::Output => None,
+        }
+        .filter(|rect| rect.w > 0.0 && rect.h > 0.0)
+    }
+
+    fn glass_radius(&self, rect: LensRect) -> f32 {
+        self.design
+            .radii
+            .glass_panel
+            .min(rect.w * 0.5)
+            .min(rect.h * 0.5)
+    }
+
+    /// The rect the scrim must leave undimmed. This is the pick target
+    /// itself — the region being framed, the hovered window or output, or
+    /// the pixel loupe. It no longer equals the analytic glass body: only
+    /// the loupe has one.
+    fn scrim_hole(&self, display: (f32, f32), windows: &[Window]) -> Option<LensRect> {
+        match self.mode {
+            PickerMode::Region => self
+                .shown_rect()
+                .and_then(|rect| (rect.size.w > 0 && rect.size.h > 0).then_some(to_lens(rect))),
+            PickerMode::Pixel => self.glass_rect(display),
             PickerMode::Window => self
                 .hovered
                 .and_then(|id| windows.iter().find(|window| window.id == id))
@@ -331,20 +358,17 @@ impl ScreenshotSelector {
         }
     }
 
-    fn glass_radius(&self, rect: LensRect) -> f32 {
-        self.design
-            .radii
-            .glass_panel
-            .min(rect.w * 0.5)
-            .min(rect.h * 0.5)
-    }
-
     /// Dim only outside the active optical body. A full-screen translucent
     /// placement would dim the already-composited Liquid Glass along with the
     /// desktop and collapse it back into a classic flat selection rectangle.
+    /// Dim everything outside the active pick target. Region, window, and
+    /// output holes are square: what is inside the border is exactly what
+    /// will be captured, with no corners previewed as excluded that the
+    /// capture actually includes. Only the pixel loupe keeps a rounded
+    /// body, so only it gets corner infill.
     fn render_scrim(&self, frame: &mut Frame, display: (f32, f32), hole: Option<LensRect>) {
         let scrim = LayoutOpts {
-            bg: self.design.colors.scrim.with_alpha(128),
+            bg: self.design.colors.modal_scrim.with_alpha(128),
             ..materials::surface_layout()
         };
         let full = LensRect {
@@ -364,7 +388,7 @@ impl ScreenshotSelector {
                 |_| {},
             );
         }
-        if let Some(hole) = hole {
+        if let Some(hole) = hole.filter(|_| self.mode == PickerMode::Pixel) {
             render_rounded_scrim_corners(frame, hole, self.glass_radius(hole), scrim.bg);
         }
     }
@@ -419,6 +443,11 @@ impl ScreenshotSelector {
 
     /// Draw the region-mode overlay: selection rect, dimensions label, and
     /// the confirm hint once a selection is staged.
+    ///
+    /// The selection is a tool, not a surface: it marks the pixels that will
+    /// enter the PNG. A Liquid Glass body here would blur and refract the
+    /// very content the user is framing, so the interior stays untouched and
+    /// a square-cornered border alone marks the boundary.
     fn render_region(&self, frame: &mut Frame, display: (f32, f32), i18n: &Localizer) {
         let Some(rect) = self.shown_rect() else {
             return;
@@ -430,14 +459,17 @@ impl ScreenshotSelector {
             h: rect.size.h.max(1) as f32,
         };
 
-        // Minimal foreground tint only. The compositor-owned analytic pass
-        // supplies the body, refraction, rim light, and shadow.
         let design = &self.design;
-        let mut material = materials::glass_panel(design);
-        material.radius = self.glass_radius(lens_rect);
+        let border = LayoutOpts {
+            bg: Color::TRANSPARENT,
+            border: design.colors.modal_scrim_text.with_alpha(230),
+            border_width: SELECTION_BORDER_WIDTH,
+            radius: 0.0,
+            ..materials::surface_layout()
+        };
         frame.place(
             "aegis-screenshot-selection",
-            &materials::chrome_place(lens_rect, material),
+            &materials::chrome_place(lens_rect, border),
             |_| {},
         );
 
@@ -469,7 +501,7 @@ impl ScreenshotSelector {
     /// Draw a compact optical loupe instead of classic full-screen crosshair
     /// rules. The analytic body is supplied through `liquid_glass_regions`.
     fn render_pixel_lens(&self, frame: &mut Frame, display: (f32, f32)) {
-        let Some(rect) = self.glass_rect(display, &[]) else {
+        let Some(rect) = self.glass_rect(display) else {
             return;
         };
         let design = &self.design;
@@ -518,15 +550,7 @@ impl ScreenshotSelector {
             h: window.size.h.max(1) as f32,
         };
         let label = window.title.clone().unwrap_or_default();
-        frame.place(
-            "aegis-picker-window",
-            &materials::chrome_place(rect, {
-                let mut material = materials::glass_panel(&self.design);
-                material.radius = self.glass_radius(rect);
-                material
-            }),
-            |_| {},
-        );
+        self.render_pick_highlight(frame, "aegis-picker-window", rect);
         if !label.is_empty() {
             Self::render_status_pill(
                 frame,
@@ -540,10 +564,9 @@ impl ScreenshotSelector {
         }
     }
 
-    /// Draw the Liquid Glass highlight and connector label for the hovered
-    /// output. With no output under the cursor the frozen canvas itself is
-    /// the implicit whole-desktop target, exactly like window mode's empty
-    /// desktop.
+    /// Draw the highlight and connector label for the hovered output. With no
+    /// output under the cursor the frozen canvas itself is the implicit
+    /// whole-desktop target, exactly like window mode's empty desktop.
     fn render_output_pick(&self, frame: &mut Frame, display: (f32, f32)) {
         let Some(output) = self.hovered_output.as_ref().and_then(|connector| {
             self.outputs
@@ -559,15 +582,7 @@ impl ScreenshotSelector {
             w: logical.size.w.max(1) as f32,
             h: logical.size.h.max(1) as f32,
         };
-        frame.place(
-            "aegis-picker-output",
-            &materials::chrome_place(rect, {
-                let mut material = materials::glass_panel(&self.design);
-                material.radius = self.glass_radius(rect);
-                material
-            }),
-            |_| {},
-        );
+        self.render_pick_highlight(frame, "aegis-picker-output", rect);
         Self::render_status_pill(
             frame,
             "aegis-picker-output-label",
@@ -577,6 +592,21 @@ impl ScreenshotSelector {
             true,
             &self.design,
         );
+    }
+
+    /// Square-cornered border around a pick target. Like the region
+    /// selection, a pick highlight marks pixels the user is about to commit
+    /// to — it is a marker, not a surface, so it gets no glass body and no
+    /// rounded corners that would misrepresent the captured geometry.
+    fn render_pick_highlight(&self, frame: &mut Frame, id: &str, rect: LensRect) {
+        let highlight = LayoutOpts {
+            bg: Color::TRANSPARENT,
+            border: self.design.colors.modal_scrim_text.with_alpha(230),
+            border_width: SELECTION_BORDER_WIDTH,
+            radius: 0.0,
+            ..materials::surface_layout()
+        };
+        frame.place(id, &materials::chrome_place(rect, highlight), |_| {});
     }
 
     fn start_pick(&mut self, mode: PickerMode) {
@@ -673,9 +703,13 @@ fn scrim_regions(full: LensRect, hole: Option<LensRect>) -> [LensRect; 4] {
 }
 
 /// Horizontal samples of one top rounded corner's inverse mask. Mirroring the
-/// bands across both axes fills the four areas outside the rounded glass body
+/// bands across both axes fills the four areas outside the rounded loupe body
 /// but inside its rectangular bounds. Sampling at each band's centre matches
 /// the raster coverage point and avoids a bright seam or dark overlap.
+///
+/// Only the pixel loupe still needs this: it keeps a rounded analytic glass
+/// body. Region, window, and output targets are square-cornered now, so
+/// `scrim_regions` alone leaves their hole exact.
 fn rounded_corner_bands(radius: f32) -> Vec<CornerBand> {
     let radius = radius.max(0.0);
     let mut bands = Vec::new();
@@ -820,8 +854,8 @@ impl Chrome for ScreenshotSelector {
             return;
         }
 
-        let glass_rect = self.glass_rect(display, windows);
-        self.render_scrim(frame, display, glass_rect);
+        let scrim_hole = self.scrim_hole(display, windows);
+        self.render_scrim(frame, display, scrim_hole);
 
         match self.mode {
             PickerMode::Region => self.render_region(frame, display, i18n),
@@ -887,16 +921,9 @@ impl Chrome for ScreenshotSelector {
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
-        if self.active
-            && match self.mode {
-                PickerMode::Region => self
-                    .shown_rect()
-                    .is_some_and(|rect| rect.size.w > 0 && rect.size.h > 0),
-                PickerMode::Pixel => true,
-                PickerMode::Window => self.hovered.is_some(),
-                PickerMode::Output => self.hovered_output.is_some(),
-            }
-        {
+        // Only the pixel loupe still supplies an analytic glass body, so it
+        // is the only mode that asks the backdrop compositor for blur work.
+        if self.active && matches!(self.mode, PickerMode::Pixel) {
             BACKDROP_BLUR_SIGMA
         } else {
             0.0
@@ -906,10 +933,10 @@ impl Chrome for ScreenshotSelector {
     fn backdrop_regions(
         &self,
         display: (f32, f32),
-        windows: &[Window],
+        _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        self.glass_rect(display, windows)
+        self.glass_rect(display)
             .map(|rect| vec![to_backdrop(rect)])
             .unwrap_or_default()
     }
@@ -917,10 +944,10 @@ impl Chrome for ScreenshotSelector {
     fn liquid_glass_regions(
         &self,
         display: (f32, f32),
-        windows: &[Window],
+        _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<LiquidGlassRegion> {
-        self.glass_rect(display, windows)
+        self.glass_rect(display)
             .map(|rect| {
                 vec![LiquidGlassRegion::from_role(
                     &self.design,
@@ -1126,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn active_region_is_one_borderless_liquid_glass_body() {
+    fn active_region_submits_no_glass_and_no_blur() {
         let mut s = ScreenshotSelector::new();
         s.start();
         s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false);
@@ -1135,6 +1162,39 @@ mod tests {
             outputs: Vec::new(),
         };
 
+        // The selection is a capture marker, not a surface: no backdrop
+        // blur, no analytic glass body, and a scrim hole that matches the
+        // staged rect exactly, square corners included.
+        assert_eq!(s.backdrop_blur_sigma(), 0.0);
+        assert!(
+            s.backdrop_regions((800.0, 600.0), &[], &workspaces)
+                .is_empty()
+        );
+        assert!(
+            s.liquid_glass_regions((800.0, 600.0), &[], &workspaces)
+                .is_empty()
+        );
+        let hole = s
+            .scrim_hole((800.0, 600.0), &[])
+            .expect("staged rect is the hole");
+        let staged = s.shown_rect().expect("selection is staged");
+        assert_eq!(hole.x, staged.origin.x as f32);
+        assert_eq!(hole.y, staged.origin.y as f32);
+        assert_eq!(hole.w, staged.size.w as f32);
+        assert_eq!(hole.h, staged.size.h as f32);
+    }
+
+    #[test]
+    fn pixel_loupe_keeps_its_analytic_glass_body() {
+        let mut s = ScreenshotSelector::new();
+        s.start_pick(PickerMode::Pixel);
+        s.update_pointer(Point { x: 400.0, y: 300.0 }, false, false);
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+
+        // The loupe is an optical instrument, so it keeps the full glass
+        // treatment the pick targets no longer get.
         assert_eq!(s.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
         let backdrop = s.backdrop_regions((800.0, 600.0), &[], &workspaces);
         let glass = s.liquid_glass_regions((800.0, 600.0), &[], &workspaces);

@@ -842,6 +842,56 @@ fn send_parametric_info(info: *mut ffi::wl_resource, value: &ParametricColor) {
                 lum.max.round() as u32,
                 lum.reference.round() as u32,
             );
+            ffi::wl_resource_post_event(
+                info,
+                ffi::WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_LUMINANCE,
+                (lum.min * 10_000.0).round() as u32,
+                lum.max.round() as u32,
+            );
+        }
+        let (rx, ry, gx, gy, bx, by, wx, wy) = match &value.primaries {
+            ContentPrimaries::Named(NamedPrimaries::Srgb) => {
+                (0.640, 0.330, 0.300, 0.600, 0.150, 0.060, 0.3127, 0.3290)
+            }
+            ContentPrimaries::Named(NamedPrimaries::Bt2020) => {
+                (0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.3290)
+            }
+            ContentPrimaries::Named(NamedPrimaries::DisplayP3) => {
+                (0.680, 0.320, 0.265, 0.690, 0.150, 0.060, 0.3127, 0.3290)
+            }
+            ContentPrimaries::Named(NamedPrimaries::AdobeRgb) => {
+                (0.640, 0.330, 0.210, 0.710, 0.150, 0.060, 0.3127, 0.3290)
+            }
+            ContentPrimaries::Custom(xy) => {
+                (xy.rx, xy.ry, xy.gx, xy.gy, xy.bx, xy.by, xy.wx, xy.wy)
+            }
+        };
+        let scale = |v: f32| (v * 1_000_000.0).round() as i32;
+        ffi::wl_resource_post_event(
+            info,
+            ffi::WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_PRIMARIES,
+            scale(rx),
+            scale(ry),
+            scale(gx),
+            scale(gy),
+            scale(bx),
+            scale(by),
+            scale(wx),
+            scale(wy),
+        );
+        if let Some(max_cll) = value.max_cll {
+            ffi::wl_resource_post_event(
+                info,
+                ffi::WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_MAX_CLL,
+                max_cll,
+            );
+        }
+        if let Some(max_fall) = value.max_fall {
+            ffi::wl_resource_post_event(
+                info,
+                ffi::WP_IMAGE_DESCRIPTION_INFO_V1_TARGET_MAX_FALL,
+                max_fall,
+            );
         }
     }
 }

@@ -10,10 +10,11 @@ every interaction the bar once hosted moved to the command panel
 ## Responsibilities
 
 - Draw two compact frosted chips composited over the desktop: system
-  status (network, Bluetooth, battery), the StatusNotifierItem tray row,
-  the clock, and the notification count on the left; workspace dots in the
-  center. The top-right belongs to the frameless notification toast strip
-  (ADR-0083).
+  status — network with the associated Wi-Fi network's name, Bluetooth
+  with its on/off word, speaker level (or the localized "Muted" word),
+  battery — the StatusNotifierItem tray row, the clock, and the
+  notification count on the left; workspace dots in the center. The
+  top-right belongs to the frameless notification toast strip (ADR-0083).
 - Reserve no space: `Chrome::reserved()` stays at the default, so tiled and
   maximized windows run underneath the chips.
 - Accept no pointer input: `Chrome::captures_pointer()` stays `false`, so
@@ -70,7 +71,7 @@ application catalog and system status.
 
 ## Related Documentation
 
-- [HUD status chips and SAO command panel decision](../../docs/adr/0080-hud-status-chips-and-sao-command-panel.md)
+- [HUD and command panel naming decision](../../docs/adr/0081-hud-and-command-panel-naming.md)
 - [Frameless transient toasts and HUD consolidation decision](../../docs/adr/0083-frameless-transient-toasts-and-hud-consolidation.md)
 - [Status bar crate and SNI tray decision](../../docs/adr/0045-statusbar-crate-and-sni-tray.md)
 - [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)

@@ -4,9 +4,13 @@
 //! texture (shm via CPU upload, dmabuf via zero-copy import), composited in
 //! z-order into the output's frame.
 
+/// Generic offscreen DAG planning from Optics, re-exported at the renderer
+/// boundary so compositor code does not depend on the package topology.
+pub use flux_composition_graph as composition_graph;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::BorrowedFd;
 
 use aegis_model::{SurfaceDmabuf, SurfacePixels, Transform, dmabuf as drm_fmt};
 
@@ -20,10 +24,10 @@ const DRM_FORMAT_XBGR2101010: u32 = drm_fmt::DRM_FORMAT_XBGR2101010;
 
 fn drm_format_to_flux(drm: u32) -> Option<flux::Format> {
     match drm {
-        DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 => Some(flux::Format::FLUX_FORMAT_BGRA8_UNORM),
-        DRM_FORMAT_ABGR8888 | DRM_FORMAT_XBGR8888 => Some(flux::Format::FLUX_FORMAT_RGBA8_UNORM),
+        DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 => Some(flux::Format::Bgra8Unorm),
+        DRM_FORMAT_ABGR8888 | DRM_FORMAT_XBGR8888 => Some(flux::Format::Rgba8Unorm),
         DRM_FORMAT_ABGR2101010 | DRM_FORMAT_XBGR2101010 => {
-            Some(flux::Format::FLUX_FORMAT_RGB10A2_UNORM)
+            Some(flux::Format::Rgb10a2Unorm)
         }
         _ => None,
     }
@@ -1260,14 +1264,20 @@ impl Renderer {
                     // closing frame settles — handing flux that same
                     // descriptor would double-close it and could take an
                     // unrelated fd down with it. Hand flux a fresh duplicate,
-                    // exactly as the live path does.
-                    let import_fd = unsafe { libc::dup(ghost.dmabuf_fd) };
-                    if import_fd < 0 {
-                        continue;
-                    }
+                    // exactly as the live path does. The duplicate is an
+                    // `OwnedFd` from the start: a failed import closes it via
+                    // its own drop, and success hands it to flux.
+                    let import_fd = unsafe { BorrowedFd::borrow_raw(ghost.dmabuf_fd) }
+                        .try_clone_to_owned();
+                    let import_fd = match import_fd {
+                        Ok(fd) => fd,
+                        Err(_) => continue,
+                    };
                     // SAFETY: the duplicate descriptor and the ghost's layout
                     // describe the snapshotted dma-buf exactly as the live
-                    // path did.
+                    // path did. The import takes the `OwnedFd` by value, so
+                    // failure closes the duplicate via its own drop — no
+                    // manual `libc::close` needed anymore.
                     let imported = unsafe {
                         let tag = self.image_color_tag(ghost.color.as_ref());
                         flux::Image::import_dmabuf_with_color_space(
@@ -1283,7 +1293,6 @@ impl Renderer {
                             tag,
                         )
                     };
-                    // On error flux leaves the descriptor with the caller.
                     match imported {
                         Ok(img) => {
                             self.cache_dmabuf_image(
@@ -1299,10 +1308,7 @@ impl Renderer {
                                 },
                             );
                         }
-                        Err(_) => {
-                            unsafe { libc::close(import_fd) };
-                            continue;
-                        }
+                        Err(_) => continue,
                     }
                 }
                 if let Some(entry) = self.dmabuf_cache.get(&key) {
@@ -1326,7 +1332,7 @@ impl Renderer {
                         device,
                         ghost.buffer_width as u32,
                         ghost.buffer_height as u32,
-                        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                        flux::Format::Bgra8Unorm,
                         ghost.pixels,
                         tag,
                     )
@@ -1554,7 +1560,7 @@ impl Renderer {
                             device,
                             tex_w as u32,
                             tex_h as u32,
-                            flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                            flux::Format::Bgra8Unorm,
                             &transformed,
                             tag,
                         )
@@ -1783,19 +1789,20 @@ impl Renderer {
                     reusable_acquire_wait_required(cached.generation, f.generation, f.acquire_fence)
                 });
                 if needs_acquire_wait {
-                    let fd = unsafe { libc::dup(f.acquire_fence) };
-                    if fd < 0 {
-                        if self.failed_imports.insert(f.id, ()).is_none() {
-                            log::warn!(
-                                "[render] failed to duplicate reusable dma-buf acquire fence fd {}",
-                                f.acquire_fence
-                            );
+                    let fence = match unsafe { BorrowedFd::borrow_raw(f.acquire_fence) }
+                        .try_clone_to_owned()
+                    {
+                        Ok(fd) => fd,
+                        Err(_) => {
+                            if self.failed_imports.insert(f.id, ()).is_none() {
+                                log::warn!(
+                                    "[render] failed to duplicate reusable dma-buf acquire fence fd {}",
+                                    f.acquire_fence
+                                );
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                    // SAFETY: dup returned a fresh descriptor owned by this
-                    // scope and OwnedFd closes it unless Flux consumes it.
-                    let fence = unsafe { OwnedFd::from_raw_fd(fd) };
+                    };
                     let wait = {
                         let cached = self.dmabuf_cache.get(&key).expect("reusable cache entry");
                         canvas.wait_dmabuf_acquire(&cached.image, fence)
@@ -1822,32 +1829,39 @@ impl Renderer {
                 if let Some(fmt) = drm_format_to_flux(f.drm_format) {
                     // Flux consumes the descriptor fd on success. The frame's
                     // fd is borrowed from the server and must remain valid for
-                    // later commits, so hand Flux a fresh duplicate.
-                    let import_fd = unsafe { libc::dup(f.fd) };
-                    if import_fd < 0 {
-                        if self.failed_imports.insert(f.id, ()).is_none() {
-                            log::warn!(
-                                "[render] failed to duplicate dma-buf fd {} for {}x{}",
-                                f.fd,
-                                f.width,
-                                f.height,
-                            );
-                        }
-                        continue;
-                    }
-                    let acquire_fence = if f.acquire_fence >= 0 {
-                        let fd = unsafe { libc::dup(f.acquire_fence) };
-                        if fd < 0 {
-                            unsafe { libc::close(import_fd) };
-                            if self.failed_imports.insert(f.id, ()).is_none() {
-                                log::warn!(
-                                    "[render] failed to duplicate acquire fence fd {}",
-                                    f.acquire_fence
-                                );
+                    // later commits, so hand Flux a fresh duplicate. Wrapping
+                    // the duplicate in `OwnedFd` right away means every early
+                    // `continue` below drops (and closes) it.
+                    let import_fd =
+                        match unsafe { BorrowedFd::borrow_raw(f.fd) }.try_clone_to_owned() {
+                            Ok(fd) => fd,
+                            Err(error) => {
+                                if self.failed_imports.insert(f.id, ()).is_none() {
+                                    log::warn!(
+                                        "[render] failed to duplicate dma-buf fd {} for {}x{}: {error}",
+                                        f.fd,
+                                        f.width,
+                                        f.height,
+                                    );
+                                }
+                                continue;
                             }
-                            continue;
+                        };
+                    let acquire_fence = if f.acquire_fence >= 0 {
+                        match unsafe { BorrowedFd::borrow_raw(f.acquire_fence) }
+                            .try_clone_to_owned()
+                        {
+                            Ok(dup) => Some(dup),
+                            Err(error) => {
+                                if self.failed_imports.insert(f.id, ()).is_none() {
+                                    log::warn!(
+                                        "[render] failed to duplicate acquire fence fd {}: {error}",
+                                        f.acquire_fence
+                                    );
+                                }
+                                continue;
+                            }
                         }
-                        Some(fd)
                     } else {
                         None
                     };
@@ -1899,11 +1913,8 @@ impl Renderer {
                             );
                         }
                         Err(e) => {
-                            // Flux leaves ownership with the caller on error.
-                            unsafe { libc::close(import_fd) };
-                            if let Some(acquire_fence) = acquire_fence {
-                                unsafe { libc::close(acquire_fence) };
-                            }
+                            // The `OwnedFd` drops close the duplicates; flux
+                            // only consumes them on a successful import.
                             // Suppress repeated identical failures; otherwise a
                             // persistent import problem floods the log every
                             // frame, since `stale` keeps re-triggering the path.

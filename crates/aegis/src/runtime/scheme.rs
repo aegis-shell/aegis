@@ -7,7 +7,7 @@
 
 use aegis_model::settings::ColorScheme;
 
-fn scene(scheme: ColorScheme) -> aegis_design::tokens::SceneColors {
+fn scene(scheme: ColorScheme) -> aegis_design::SceneColors {
     aegis_design::Design::for_scheme(scheme).scene
 }
 

@@ -7,8 +7,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod colors;
 pub mod materials;
 pub mod themes;
 pub mod tokens;
 
+pub use colors::{CommandPanelColors, DockColors, ProductColors, SceneColors};
 pub use tokens::{AvatarRole, Design, GlassRole, PreviewSelectionStyle};

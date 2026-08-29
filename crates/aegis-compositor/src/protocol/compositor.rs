@@ -946,8 +946,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
         // every fractional-scale client (Chrome, GTK4, Electron on HiDPI)
         // pay a whole-buffer CPU copy plus a whole-texture GPU upload per
         // commit — the dominant memmove storm on the compositor main loop.
-        let buffer_damage_unmappable =
-            !pending_buffer_damage.is_empty() && buffer_dims.is_none();
+        let buffer_damage_unmappable = !pending_buffer_damage.is_empty() && buffer_dims.is_none();
         if !buffer_damage_unmappable {
             let (bw, bh) = buffer_dims.unwrap_or(((*rec).width, (*rec).height));
             let transform = (*rec).buffer_transform;
@@ -1130,8 +1129,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                                 if aegis_model::dmabuf::is_wl_shm_format_xrgb(format) {
                                     for row in 0..ch {
                                         let base = (y + row) * tight + x * 4;
-                                        let row_pixels =
-                                            &mut pixels[base..base + cw * 4];
+                                        let row_pixels = &mut pixels[base..base + cw * 4];
                                         for quad in row_pixels.chunks_exact_mut(4) {
                                             quad[3] = 0xff;
                                         }

@@ -97,4 +97,53 @@ impl CompositorRuntime {
         }
         self.shell.cancel_confirm_pick();
     }
+
+    /// Park a destructive session action behind the system-level
+    /// confirmation dialog. There is no IPC requester here — the
+    /// compositor's own chrome asked for the transition — so unlike the
+    /// portal picks nothing parks a reply channel; the parked action in
+    /// `pending_system_action` is the whole handshake, and the answer
+    /// delivery in the presentation loop applies or drops it.
+    fn request_system_action_confirmation(&mut self, action: aegis_model::system::SystemAction) {
+        use aegis_model::system::SystemAction;
+        if self.server.session_locked() || !self.host.is_active() {
+            // Locked/inactive sessions never open consent chrome; the
+            // request simply dies here.
+            return;
+        }
+        let (title, body) = match action {
+            SystemAction::Reboot => ("Restart?", "The session ends and the computer restarts."),
+            SystemAction::Suspend => ("Suspend?", "The computer sleeps until you wake it."),
+            _ => ("Power off?", "The session ends and the computer powers off."),
+        };
+        self.pending_system_action = Some(action);
+        self.shell
+            .start_confirm_pick(aegis_shell::ConfirmPickParams {
+                title: title.to_owned(),
+                body: body.to_owned(),
+                accept_label: None,
+                style: aegis_shell::ConfirmPickStyle::YesNo,
+            });
+    }
+
+    /// Destructive session actions queued by chrome during the last frame,
+    /// each opening the system-level confirmation dialog. Only one dialog
+    /// exists at a time; later requests in the same batch drop while one
+    /// is pending, matching the picks' single-modal rule. The consent
+    /// dialog is exclusive chrome, so an open command panel closes first —
+    /// exactly like the battery alert taking over the band.
+    pub(super) fn drain_system_confirm_requests(&mut self) {
+        let requests = std::mem::take(&mut self.system_confirm_requests);
+        if requests.is_empty() {
+            return;
+        }
+        if self.shell.command_panel_active() {
+            self.shell.toggle_command_panel();
+        }
+        for action in requests {
+            if self.pending_system_action.is_none() {
+                self.request_system_action_confirmation(action);
+            }
+        }
+    }
 }

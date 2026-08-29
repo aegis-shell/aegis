@@ -169,7 +169,7 @@ pub fn modal_scrim_backdrop(display: (f32, f32), design: &aegis_design::Design) 
         y: 0.0,
         w: display.0,
         h: display.1,
-        wash: Some(backdrop_wash(design.colors.scrim)),
+        wash: Some(backdrop_wash(design.colors.modal_scrim)),
     }
 }
 
@@ -187,6 +187,69 @@ pub struct BackdropRegion {
     pub h: f32,
     /// Optional wash baked into this region's frost, beneath the glass.
     pub wash: Option<BackdropWash>,
+}
+
+/// Stable identity of one offscreen backdrop layer.
+///
+/// `ROOT` is reserved for the compatibility layer synthesized from the
+/// existing `Chrome::backdrop_*` methods. Components declaring additional
+/// layers should derive their ids with [`backdrop_layer_id`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BackdropLayerId(pub u64);
+
+impl BackdropLayerId {
+    pub const ROOT: Self = Self(0);
+}
+
+/// Image sampled by one backdrop layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackdropLayerSource {
+    /// The already-composited desktop before shell chrome.
+    Scene,
+    /// The resolved image produced by another declared layer.
+    Layer(BackdropLayerId),
+}
+
+/// One declarative level in the offscreen backdrop graph.
+///
+/// A layer blurs its explicit source, applies its frost and glass material,
+/// and produces a resolved image that later layers can sample. Dependencies
+/// form a DAG; the compositor rejects duplicate ids, missing sources, and
+/// cycles. Independent layers retain declaration order as their paint order.
+/// A zero blur sigma remains an active explicit node and resolves the material
+/// without adding a sampling radius.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackdropLayer {
+    pub id: BackdropLayerId,
+    pub source: BackdropLayerSource,
+    pub blur_sigma: f32,
+    pub frost: Vec<BackdropRegion>,
+    pub glass: Vec<LiquidGlassRegion>,
+}
+
+impl BackdropLayer {
+    #[must_use]
+    pub fn new(id: BackdropLayerId, source: BackdropLayerSource, blur_sigma: f32) -> Self {
+        Self {
+            id,
+            source,
+            blur_sigma: blur_sigma.max(0.0),
+            frost: Vec::new(),
+            glass: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_frost(mut self, frost: Vec<BackdropRegion>) -> Self {
+        self.frost = frost;
+        self
+    }
+
+    #[must_use]
+    pub fn with_glass(mut self, glass: Vec<LiquidGlassRegion>) -> Self {
+        self.glass = glass;
+        self
+    }
 }
 
 impl From<aegis_model::Rect> for BackdropRegion {
@@ -281,6 +344,14 @@ pub fn liquid_glass_region_id(layer_id: &str) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// Derive a stable, non-root offscreen-layer identity from a component's
+/// globally unique layer id.
+#[must_use]
+pub fn backdrop_layer_id(layer_id: &str) -> BackdropLayerId {
+    let id = liquid_glass_region_id(layer_id);
+    BackdropLayerId(if id == 0 { 1 } else { id })
 }
 
 impl Default for LiquidGlassRegion {
@@ -1005,6 +1076,22 @@ pub trait Chrome {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<LiquidGlassRegion> {
+        Vec::new()
+    }
+
+    /// Additional offscreen layers declared by this component.
+    ///
+    /// The host already synthesizes [`BackdropLayerId::ROOT`] from the
+    /// compatibility blur/frost/glass methods above. An additional layer may
+    /// sample the scene, that root, or another additional layer by id. Keep
+    /// the default empty unless the material intentionally needs cumulative
+    /// composition such as glass sampling an earlier glass result.
+    fn backdrop_layers(
+        &self,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<BackdropLayer> {
         Vec::new()
     }
 }
@@ -1959,7 +2046,7 @@ impl Shell {
     /// output frame.  Direct-scanout policy consumes this instead of treating
     /// registered components, dormant animations, or a non-zero blur setting
     /// as global blockers.
-    pub fn composition_requirements(&self) -> CompositionRequirements {
+    pub fn composition_requirements(&self, display: (f32, f32)) -> CompositionRequirements {
         let modal_active = self
             .components
             .iter()
@@ -1980,7 +2067,12 @@ impl Shell {
             requirements.visible_pixels |= visible;
             // A blur request belonging to visually empty chrome is not live:
             // there are no output pixels that could consume the backdrop.
-            requirements.live_backdrop_effect |= visible && component.backdrop_blur_sigma() > 0.0;
+            let explicit_backdrop = component
+                .backdrop_layers(display, &self.windows, &self.workspaces)
+                .into_iter()
+                .any(|layer| !layer.frost.is_empty() || !layer.glass.is_empty());
+            requirements.live_backdrop_effect |=
+                visible && (component.backdrop_blur_sigma() > 0.0 || explicit_backdrop);
         }
         requirements
     }
@@ -2105,6 +2197,63 @@ impl Shell {
             }
         }
         regions
+    }
+
+    /// Complete declarative backdrop DAG for this frame.
+    ///
+    /// Legacy component requests are fused into one root layer. Explicit
+    /// layers remain separate so dependencies can accumulate resolved
+    /// offscreen results without teaching any material about nesting.
+    pub fn backdrop_layers(&self, display: (f32, f32)) -> Vec<BackdropLayer> {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
+        let mut root = BackdropLayer::new(BackdropLayerId::ROOT, BackdropLayerSource::Scene, 0.0);
+        let mut explicit = Vec::new();
+        for component in &self.components {
+            if !participates_in_shell_pass(
+                component.as_ref(),
+                self.screenshot_freeze,
+                modal_active,
+                window_switcher_active,
+                exclusive_presentation_active,
+            ) {
+                continue;
+            }
+            let sigma = component.backdrop_blur_sigma().max(0.0);
+            if sigma > 0.0 {
+                root.blur_sigma = root.blur_sigma.max(sigma);
+                root.frost.extend(component.backdrop_regions(
+                    display,
+                    &self.windows,
+                    &self.workspaces,
+                ));
+                root.glass.extend(component.liquid_glass_regions(
+                    display,
+                    &self.windows,
+                    &self.workspaces,
+                ));
+            }
+            explicit.extend(component.backdrop_layers(display, &self.windows, &self.workspaces));
+        }
+        let root_active =
+            root.blur_sigma > 0.0 && (!root.frost.is_empty() || !root.glass.is_empty());
+        let mut layers = Vec::with_capacity(explicit.len() + usize::from(root_active));
+        if root_active {
+            layers.push(root);
+        }
+        // Unlike the compatibility API, an explicit node with sigma zero is
+        // still meaningful: it can resolve an unblurred material or act as a
+        // graph boundary sampled by a later node.
+        layers.extend(
+            explicit
+                .into_iter()
+                .filter(|layer| !layer.frost.is_empty() || !layer.glass.is_empty()),
+        );
+        layers
     }
 
     /// Run every registered component and render the chrome into `canvas`,

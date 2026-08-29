@@ -12,6 +12,7 @@ build = "build.rs"
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
 aegis-ui = { workspace = true }
+libc.workspace = true
 # Settings module registry hosted in the main panel's module tabs.
 aegis-settings = { workspace = true }
 # Shared personalized profile plus the optional still/VRM portrait runtime.
@@ -31,6 +32,12 @@ lens = { workspace = true }
 # for the test harness — `rustc-link-arg` does not propagate across crates.
 lens-sys = { workspace = true }
 log = { workspace = true }
+# MPRIS media-session snapshot and transport controls run on a blocking
+# session-bus worker; the render thread only reads its shared snapshot.
+zbus = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = ["flux-scene-graph-sys", "lens-sys"]
+
+[lints]
+workspace = true

@@ -104,7 +104,7 @@ pub(super) struct CompositorRuntime {
     pub(super) surface: flux::Surface,
     pub(super) host: Host,
     pub(super) device: flux::Device,
-    pub(super) launcher_backdrop: LauncherBackdrop,
+    pub(super) backdrop_graph: BackdropGraphExecutor,
     /// Compositor-side blurred window shadows (ADR-0139): owns the Optics
     /// shadow filter and per-slot mask targets; renders at the frame's pass
     /// boundary, composites inside the output pass.
@@ -164,9 +164,6 @@ pub(super) struct CompositorRuntime {
     pub(super) keymap: aegis_model::keybind::Keymap,
     pub(super) system_status: aegis_shell::SystemStatus,
     pub(super) status_rx: std::sync::mpsc::Receiver<aegis_shell::SystemStatus>,
-    /// Latest host resource-utilisation sample from the "aegis-resources"
-    /// poller thread; drained each frame into the shell.
-    pub(super) resource_rx: std::sync::mpsc::Receiver<aegis_shell::ResourceStats>,
     /// Wakes the status poller for an out-of-cycle refresh after a system
     /// action, so the HUD reconciles optimistic values without the main loop
     /// ever blocking on a probe subprocess.
@@ -217,6 +214,18 @@ pub(super) struct CompositorRuntime {
     pub(super) pending_secret_prompt: Option<PendingSecretPrompt>,
     pub(super) confirm_pick_rx: std::sync::mpsc::Receiver<ConfirmPickControlRequest>,
     pub(super) pending_confirm_pick: Option<PendingConfirmPick>,
+    /// Destructive session actions (power off / reboot / suspend) requested
+    /// by chrome during a frame, waiting to open the system-level
+    /// confirmation dialog. Collected inside the render pass (where the
+    /// frame's borrow forbids the `&mut self` consent call) and drained by
+    /// the iteration loop right after.
+    pub(super) system_confirm_requests: Vec<aegis_model::system::SystemAction>,
+    /// A destructive session action (power off / reboot / suspend) waiting
+    /// behind the system-level confirmation dialog. Chrome surfaces only
+    /// ever *request* these transitions; the runtime owns the consent
+    /// architecture, so the action stays parked here until the user
+    /// confirms or cancels.
+    pub(super) pending_system_action: Option<aegis_model::system::SystemAction>,
     pub(super) capability_pick_rx: std::sync::mpsc::Receiver<CapabilityPickControlRequest>,
     pub(super) pending_capability_pick: Option<PendingCapabilityPick>,
     /// Once-per-discharge-cycle memory of the low-battery warnings already

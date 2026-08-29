@@ -1079,7 +1079,7 @@ fn layout_section_overrides_defaults() {
     assert_eq!(cfg3.layout.gaps, 4);
     assert_eq!(cfg3.layout.master_ratio, 0.5);
     // Converts to the core layout params.
-    let p = aegis_model::layout::LayoutParams::from(cfg.layout.clone());
+    let p = aegis_model::layout::LayoutParams::from(cfg.layout);
     assert_eq!(p.gaps, 16);
 }
 

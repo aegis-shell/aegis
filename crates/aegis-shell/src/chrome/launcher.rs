@@ -431,7 +431,7 @@ impl Chrome for Launcher {
         // in the light appearance too (the page-appropriate theme foreground
         // turns to dark ink there). Restored at the end of the render.
         let original_theme = frame.theme();
-        frame.set_theme(original_theme.with_fg(self.design.colors.on_scrim_text));
+        frame.set_theme(original_theme.with_fg(self.design.colors.modal_scrim_text));
 
         let dt = raw.dt_seconds.clamp(0.0, 1.0 / 15.0);
         if self.reduced_motion {
@@ -730,7 +730,7 @@ impl Chrome for Launcher {
             // search field: translucent dark ink in the dark appearance and
             // translucent white in the light one (透黑/透白 随主题), instead of
             // the fixed light glow the scrim-anchored tone produced.
-            let selection = colors.launcher_selection;
+            let selection = colors.launcher_selection_surface;
             let (_, _, _, selection_alpha) = selection.components();
             let cell_bg = if cell.selected {
                 selection
@@ -807,7 +807,7 @@ impl Chrome for Launcher {
                             ..sized_fill(
                                 diameter,
                                 diameter,
-                                colors.on_scrim_text.with_alpha(if page == self.page {
+                                colors.modal_scrim_text.with_alpha(if page == self.page {
                                     220
                                 } else {
                                     84
@@ -1081,7 +1081,9 @@ impl Chrome for Launcher {
                 y: 0.0,
                 w: display.0,
                 h: display.1,
-                wash: Some(backdrop_wash(self.design.colors.scrim.with_alpha(126))),
+                wash: Some(backdrop_wash(
+                    self.design.colors.modal_scrim.with_alpha(126),
+                )),
             }]
         } else {
             Vec::new()

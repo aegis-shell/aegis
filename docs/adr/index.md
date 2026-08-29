@@ -149,4 +149,6 @@ background and how the decisions fit together, see
 | [0139](0139-animation-effect-placement.md) | Animation effect placement — Optics mechanism, Aegis policy (amends [0029](0029-animation-and-effect-policy.md)) | Accepted |
 | [0140](0140-session-power-modes.md) | Session power modes over the staged idle pipeline (amends [0078](0078-out-of-process-idle-and-session-lock.md)) | Accepted |
 | [0141](0141-locker-broadcasts-the-logind-session-lock-boundary.md) | The locker broadcasts the logind session-lock boundary | Accepted |
-| [0142](0142-layered-glass-backdrop-compositor.md) | Layered glass — the backdrop compositor owns the frost→glass nesting (amends [0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md)) | Accepted |
+| [0142](0142-layered-glass-backdrop-compositor.md) | Layered glass — the backdrop compositor owns the frost→glass nesting (amends [0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md)) | Superseded by [0143](0143-explicit-offscreen-composition-dag.md) |
+| [0143](0143-explicit-offscreen-composition-dag.md) | Explicit offscreen composition DAG for cumulative layers (supersedes [0142](0142-layered-glass-backdrop-compositor.md)) | Accepted |
+| [0144](0144-product-semantic-design-vocabulary.md) | Product-semantic design vocabulary (supersedes Decision 3 of [0081](0081-hud-and-command-panel-naming.md) and the token-retention clause of [0114](0114-panel-hosted-settings-and-hud-command-panel.md)) | Accepted |

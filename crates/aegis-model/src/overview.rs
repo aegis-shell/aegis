@@ -417,7 +417,7 @@ mod tests {
         let plain = grid(area, windows.len());
         let mut assigned = first.clone();
         assigned.sort_by_key(|(_, slot)| (slot.origin.y, slot.origin.x));
-        let mut expected = plain.clone();
+        let mut expected = plain;
         expected.sort_by_key(|slot| (slot.origin.y, slot.origin.x));
         assert_eq!(
             assigned.iter().map(|(_, s)| *s).collect::<Vec<_>>(),

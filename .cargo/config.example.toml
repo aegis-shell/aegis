@@ -1,0 +1,37 @@
+# Example Cargo configuration for local development.
+#
+# To use this configuration locally:
+#   cp .cargo/config.example.toml .cargo/config.toml
+#
+# Note: `.cargo/config.toml` is ignored by Git, allowing individual developers
+# to customize their local toolchain and build acceleration settings without
+# affecting other environments.
+
+[alias]
+xtask = "run --package xtask --"
+
+[build]
+# Optional compiler cache wrapper. Requires `sccache` in your PATH.
+# Alternatively, set `export RUSTC_WRAPPER=sccache` in your shell profile.
+rustc-wrapper = "sccache"
+
+# Optional fast linker & v0 symbol mangling for Linux x86_64 targets.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "symbol-mangling-version=v0", "-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "symbol-mangling-version=v0", "-C", "link-arg=-fuse-ld=mold"]
+
+# When developing against a local checkout of Optics, append the source patches below:
+# [patch."https://github.com/ming2k/optics"]
+# flux = { path = "../optics/bindings/flux-rs/crates/flux" }
+# flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
+# flux-scene-graph = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph" }
+# flux-scene-graph-sys = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph-sys" }
+# flux-composition-graph = { path = "../optics/crates/flux-composition-graph" }
+# lens = { path = "../optics/bindings/lens-rs/crates/lens" }
+# lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
+# prism = { path = "../optics/bindings/prism-rs/crates/prism" }
+# prism-sys = { path = "../optics/bindings/prism-rs/crates/prism-sys" }
+# iris = { path = "../optics/bindings/iris-rs/crates/iris" }
+# iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }

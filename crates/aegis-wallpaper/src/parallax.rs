@@ -90,7 +90,7 @@ impl ImagePlane {
             device,
             self.width,
             self.height,
-            flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+            flux::Format::Bgra8Unorm,
             pixels,
         ) {
             Ok(image) => {

@@ -28,6 +28,109 @@ pub(super) fn network_icon_name(network: NetworkState) -> &'static str {
     }
 }
 
+/// Themed speaker glyph for the audio cell, matching the command panel's
+/// tiering so both surfaces read the same level the same way.
+pub(super) fn volume_icon_name(volume: Option<u8>, muted: bool) -> &'static str {
+    let level = volume.unwrap_or(0);
+    if muted || level == 0 {
+        "audio-volume-muted-symbolic"
+    } else if level < 34 {
+        "audio-volume-low-symbolic"
+    } else if level < 67 {
+        "audio-volume-medium-symbolic"
+    } else {
+        "audio-volume-high-symbolic"
+    }
+}
+
+/// Vector speaker glyph for when the themed raster set is unavailable.
+pub(super) fn volume_icon(volume: Option<u8>, muted: bool) -> Icon {
+    let level = volume.unwrap_or(0);
+    if muted || level == 0 {
+        Icon::VolumeMuted
+    } else if level < 55 {
+        Icon::VolumeLow
+    } else {
+        Icon::VolumeHigh
+    }
+}
+
+/// The compact audio cell label: the percentage when a sink answers, the
+/// localized "Muted" word when it is. `None` when no audio service
+/// answered at all — the cell is absent, not labeled.
+pub(super) fn volume_label(volume: Option<u8>, muted: bool, i18n: &Localizer) -> Option<String> {
+    let volume = volume?;
+    Some(if muted {
+        i18n.text(Message::Muted).to_owned()
+    } else {
+        format!("{}%", volume)
+    })
+}
+
+/// The Bluetooth cell label: the localized on/off word beside the glyph.
+pub(super) fn bluetooth_label(enabled: bool, i18n: &Localizer) -> String {
+    i18n.text(if enabled { Message::On } else { Message::Off })
+        .to_owned()
+}
+
+/// The Wi-Fi cell label: the associated network's name. `None` when the
+/// link is not wireless or carries no known association — the cell then
+/// falls back to bare-icon presentation.
+pub(super) fn wifi_label(status: &SystemStatus) -> Option<&str> {
+    (status.network == NetworkState::Wifi)
+        .then_some(status.wifi_ssid.as_deref())
+        .flatten()
+        .filter(|ssid| !ssid.is_empty())
+}
+
+/// Width estimate for a compact footnote label, used where the chip
+/// geometry is resolved before a frame exists to shape text
+/// ([`Hud::chip_layout`] runs in the backdrop prepass). Proportional
+/// Latin text averages ~0.62em per scalar; full-width CJK and wide
+/// ranges advance a full em. The estimate reserves the cell's budget,
+/// and the render pass ellipsizes against that same budget, so error
+/// shows up as slack, never as overflow.
+pub(super) fn label_width_hint(text: &str, size: f32) -> f32 {
+    text.chars()
+        .map(|c| {
+            let em = if is_wide_scalar(c) { 1.0 } else { 0.62 };
+            em * size
+        })
+        .sum()
+}
+
+/// CJK, Hangul, Kana, full-width forms, and emoji present one glyph per
+/// em square.
+fn is_wide_scalar(c: char) -> bool {
+    let cp = c as u32;
+    (0x1100..=0x115F).contains(&cp) // Hangul Jamo
+        || (0x2E80..=0xA4CF).contains(&cp) // CJK radicals..Yi
+        || (0xA960..=0xA97F).contains(&cp) // Hangul Jamo Extended-A
+        || (0xAC00..=0xD7A3).contains(&cp) // Hangul syllables
+        || (0xF900..=0xFAFF).contains(&cp) // CJK compatibility ideographs
+        || (0xFE10..=0xFE19).contains(&cp) // vertical forms
+        || (0xFE30..=0xFE6F).contains(&cp) // CJK compatibility forms
+        || (0xFF00..=0xFF60).contains(&cp) // full-width forms
+        || (0xFFE0..=0xFFE6).contains(&cp)
+        || (0x1F300..=0x1FAFF).contains(&cp) // emoji
+}
+
+/// The widest a status label may push its cell: SSIDs in particular are
+/// user-chosen and unbounded. Beyond this the label ellipsizes at render.
+pub(super) const MAX_STATUS_LABEL_W: f32 = 96.0;
+
+/// Cell width for an icon-plus-label status cell, shared by the layout
+/// pass and the render pass so the reserved budget and the painted label
+/// agree.
+pub(super) fn icon_label_cell_w(label: &str, size: f32) -> f32 {
+    let label_w = label_width_hint(label, size).min(MAX_STATUS_LABEL_W);
+    CELL_ICON + STATUS_LABEL_GAP + label_w
+}
+
+/// Horizontal gap between the glyph and its label inside one cell —
+/// mirrors the `render_status_cell` row gap.
+pub(super) const STATUS_LABEL_GAP: f32 = 4.0;
+
 pub(super) fn battery_icon_name(battery: BatteryStatus) -> String {
     let mut level = ((battery.percent as u16 + 5) / 10 * 10).min(100) as u8;
     // Adwaita (and several inherited themes) represents a full charging

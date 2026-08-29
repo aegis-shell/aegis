@@ -327,7 +327,7 @@ impl Model {
         #[cfg(debug_assertions)]
         if std::env::var_os("AEGIS_AVATAR_DEBUG_DUMP").is_some() {
             self.canvas
-                .begin(&frame, Some(flux::rgba(0, 0, 0, 0)))
+                .begin_frame(Some(&frame), Some(flux::rgba(0, 0, 0, 0)))
                 .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
             self.canvas.draw_image(
                 &self.rendered,
@@ -337,7 +337,7 @@ impl Model {
                 ATLAS_SIZE as f32,
             );
             self.canvas
-                .end_checked()
+                .end_frame_checked()
                 .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
         }
         frame
@@ -419,8 +419,8 @@ fn portrait_frame(bounds: Bounds, aspect: f32, config: VrmCamera) -> PortraitFra
     }
 }
 
-const TARGET_FORMAT: Format = Format::FLUX_FORMAT_RGBA8_UNORM;
-const DEPTH_FORMAT: Format = Format::FLUX_FORMAT_D32_SFLOAT;
+const TARGET_FORMAT: Format = Format::Rgba8Unorm;
+const DEPTH_FORMAT: Format = Format::D32Sfloat;
 
 // The flux Device type alias; kept out of the public surface for clarity.
 use flux::Device;

@@ -34,7 +34,7 @@ pub(super) fn draw_direct_desktop_scene(
         .as_ref()
         .is_some_and(|wallpaper| wallpaper.has_model())
     {
-        canvas.end_checked()?;
+        canvas.end_frame_checked()?;
         if let Some(wallpaper) = wallpaper.as_mut() {
             wallpaper.draw_model(device, frame);
         }

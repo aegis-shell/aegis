@@ -5,8 +5,10 @@ chrome components on top of lens.
 
 ## Responsibilities
 
-- Define semantic colors, radii, stroke widths, the chrome type scale, and
-  role-based presentation policies.
+- Centralize literal product colors in `colors` and expose semantic
+  `ProductColors`, `CommandPanelColors`, `SceneColors`, and `DockColors` roles.
+- Define radii, stroke widths, the chrome type scale, and role-based
+  presentation policies in `tokens`.
 - Own the scheme palettes for chrome surfaces, the compositor scene (clear
   colors, scrims, glass tint), and the scheme-invariant dock palette.
 - Build lens themes for shared product surfaces, including theme-wide alpha
@@ -35,6 +37,7 @@ Construct a design snapshot and pass it to a theme or material factory:
 let design = aegis_design::Design::dark();
 let theme = aegis_design::themes::menu(frame.theme(), &design);
 let popover = aegis_design::materials::popover(&design);
+let panel_colors = aegis_design::CommandPanelColors::for_scheme(design.scheme);
 let preview_shadow = design
     .glass
     .for_role(aegis_design::GlassRole::FloatingPanel);
@@ -44,4 +47,6 @@ let preview_shadow = design
 
 - [Architecture](../../docs/explanation/architecture.md)
 - [Design system decision](../../docs/adr/0046-design-system-crate.md)
+- [Product-semantic vocabulary](../../docs/adr/0144-product-semantic-design-vocabulary.md)
+- [Color system](../../docs/dev/design/foundations/color.md)
 - [Design language](../../docs/dev/design/index.md)

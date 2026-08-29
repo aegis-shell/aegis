@@ -2,8 +2,8 @@
 
 Chrome surfaces pick one material each, by role. The analytic
 [Liquid Glass](liquid-glass.md) material renders in the compositor's SDF
-pass; everything else is a painted lens overlay over the shared frosted
-backdrop blur. Tokens live in `aegis-design` (see
+pass; other surfaces are painted Lens overlays and may be opaque or sit over
+the shared frosted backdrop blur. Tokens live in `aegis-design` (see
 [ADR-0046](../../adr/0046-design-system-crate.md)); components read them
 through material factories instead of hard-coding values.
 
@@ -14,15 +14,20 @@ through material factories instead of hard-coding values.
 | Floating control layer | Liquid Glass (analytic SDF) | Dock bar, HUD chips, and any persistent or modal body that floats above client content |
 | Transient panels | Frosted popover | Menus, popovers, and small panels that need a readable body over arbitrary content without lensing |
 | Content cards | Card fill | Settings and system-management cards inside a panel; content layer, never floating chrome |
-| HUD panel | Dark glass | The command panel's dark translucent surfaces — header band, main panel, and side column: the VR/AR personal-info-HUD language with the cyan accent and corner brackets |
-
-The frosted-white SAO panel material and its `Sao` tokens remain in
-`aegis-design` for other consumers, but no chrome surface currently
-selects them; the command panel moved to the HUD panel material
-([ADR-0114](../../adr/0114-panel-hosted-settings-and-hud-command-panel.md)).
+| Command panel | Solid grouped surface | Opaque light/dark canvas, elevated panels, recessed cards, and system-blue interaction states |
 
 Do not improvise new materials per component. If none of the rows fits,
 extend `aegis-design` with a semantic factory and document it here.
+
+Selection markers are not surfaces. A region selection, window highlight,
+or other marquee over pixels the user is about to capture never takes a
+material at all: no glass, no blur, no rounded corners. It is a square-
+cornered border over untouched content, because the preview must show
+exactly what the capture will include. Glass on a capture marker blurs the
+content being framed and rounds corners the capture actually keeps, which
+reads as a floating surface rather than a tool. Optical instruments are
+the exception — the pixel-picking loupe is a lens, so it keeps its glass
+body.
 
 ## Surface tokens (dark appearance)
 
@@ -40,11 +45,16 @@ extend `aegis-design` with a semantic factory and document it here.
 | `preview.inactive_content_brightness` | 0.74 | Opaque brightness for nonfocused preview siblings |
 | `preview.focused` | scale 1.0, lift 0 px | Stationary focus inside an anchored preview panel |
 | `preview.staged` | scale 1.06, lift 7 px | Restrained foreground staging in the window switcher |
-| `sao.surface` | rgb(248, 249, 252), alpha 226 | Retained SAO palette; no current chrome consumer |
-| `sao.border` | SAO palette | Retained SAO palette; no current chrome consumer |
-| `hud.surface` | rgb(10, 16, 28), alpha 222 | Command panel dark-glass surfaces |
-| `hud.border` | rgb(96, 205, 255), alpha 52 | Command panel cyan hairline edge |
-| `hud.accent` | rgb(96, 205, 255) | Command panel accent: active tabs, corner brackets, slider and gauge fills |
+| `CommandPanelColors::background` | rgb(18, 18, 20), alpha 255 | Command panel dark grouped background |
+| `CommandPanelColors::surface` | rgb(28, 28, 30), alpha 255 | Command panel dark elevated surfaces |
+| `CommandPanelColors::surface_recessed` | rgb(22, 22, 24), alpha 255 | Command panel dark recessed surfaces |
+| `CommandPanelColors::border` | white, alpha 28 | Command panel quiet separators |
+| `CommandPanelColors::accent` | rgb(10, 132, 255) | Command panel active tabs, sliders, and gauges |
+| `CommandPanelColors::selection_surface` | rgb(24, 55, 86), alpha 255 | Command panel dark selected surface |
+
+The light command-panel appearance maps the same roles to
+`rgb(242, 242, 247)` for the grouped background, opaque white elevated
+surfaces, dark text, and `rgb(0, 122, 255)` for the accent.
 
 ## Liquid Glass roles
 
@@ -60,7 +70,7 @@ that keep glyphs legible over arbitrary content (see
 | `Chip` | 0.16 | 4 px | 2 px | HUD chips |
 | `Tooltip` | 0.14 | 10 px | 5 px | Dock hover labels and similar attached hints |
 | `Menu` | 0.18 | 16 px | 8 px | Text-bearing transient surfaces: the Dock context menu and the launcher menu |
-| `FloatingPanel` | 0.18 | 16 px | 8 px | Dock live previews, the window switcher, and the screenshot selection |
+| `FloatingPanel` | 0.18 | 16 px | 8 px | Dock live previews, the window switcher, and the screenshot status pills |
 | `ProminentPanel` | 0.20 | 18 px | 9 px | Modal prompts, the app picker, and Prism |
 | `Dock` | 0.20 | 12 px | 6 px | The resting Dock; morphing scales blur and offset with its body |
 

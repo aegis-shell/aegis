@@ -455,7 +455,7 @@ mod tests {
         let owner = actor(4, "prin_a");
         let observed = snapshot(7, 11, 3);
         let lease = registry.issue(owner.clone(), observed.clone()).unwrap();
-        let action = intent(lease.token.clone());
+        let action = intent(lease.token);
         let validated = registry
             .consume(&owner, &action, &observed, |_| true)
             .unwrap();

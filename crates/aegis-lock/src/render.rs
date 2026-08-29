@@ -440,7 +440,7 @@ impl LockRenderSurface {
         let frame = self.surface.begin_frame()?;
         let physical = self.surface.size();
         self.canvas
-            .begin(&frame, Some(flux::rgba(8, 12, 24, 255)))?;
+            .begin_frame(Some(&frame), Some(flux::rgba(8, 12, 24, 255)))?;
         let painter = painter_for(assets.visual);
         painter.paint_background(
             &self.canvas,
@@ -487,7 +487,7 @@ impl LockRenderSurface {
             self.ui
                 .render(self.canvas.as_raw().cast::<lens::sys::flux_canvas>())?;
         }
-        self.canvas.end_checked()?;
+        self.canvas.end_frame_checked()?;
         frame.submit()?.present()?;
         Ok(())
     }

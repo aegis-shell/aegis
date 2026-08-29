@@ -9,7 +9,7 @@ use flux_scene_graph::{Bounds, Scene};
 
 use crate::Error;
 
-const DEPTH_FORMAT: flux::Format = flux::Format::FLUX_FORMAT_D32_SFLOAT;
+const DEPTH_FORMAT: flux::Format = flux::Format::D32Sfloat;
 const FOV_Y: f32 = 48.0 * PI / 180.0;
 const ORBIT_SPEED: f32 = 0.10;
 const ORBIT_PITCH: f32 = 0.16;
@@ -345,9 +345,9 @@ mod tests {
 
         let mut frame = surface.begin_frame().unwrap();
         canvas
-            .begin(&frame, Some(flux::rgba(2, 3, 6, 255)))
+            .begin_frame(Some(&frame), Some(flux::rgba(2, 3, 6, 255)))
             .unwrap();
-        canvas.end_checked().unwrap();
+        canvas.end_frame_checked().unwrap();
         model.draw(&device, &mut frame, None).unwrap();
         frame.submit().unwrap().present().unwrap();
 
@@ -379,10 +379,10 @@ mod tests {
         model.draw(&device, &mut frame, Some(&target)).unwrap();
         let blurred = blur.apply(&frame, &target, 3.0).unwrap();
         canvas
-            .begin(&frame, Some(flux::rgba(0, 0, 0, 255)))
+            .begin_frame(Some(&frame), Some(flux::rgba(0, 0, 0, 255)))
             .unwrap();
         blurred.draw(&canvas, 0.0, 0.0, 160.0, 96.0);
-        canvas.end_checked().unwrap();
+        canvas.end_frame_checked().unwrap();
         frame.submit().unwrap().present().unwrap();
 
         let mut pixels = vec![0u8; 160 * 96 * 4];
@@ -412,9 +412,9 @@ mod tests {
         model.draw(&device, &mut frame, Some(&target)).unwrap();
 
         canvas
-            .begin(&frame, Some(flux::rgba(2, 3, 6, 255)))
+            .begin_frame(Some(&frame), Some(flux::rgba(2, 3, 6, 255)))
             .unwrap();
-        canvas.end_checked().unwrap();
+        canvas.end_frame_checked().unwrap();
         model.draw(&device, &mut frame, None).unwrap();
         frame.submit().unwrap().present().unwrap();
 

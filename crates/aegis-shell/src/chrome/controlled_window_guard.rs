@@ -140,7 +140,7 @@ impl Chrome for ControlledWindowGuard {
                 .map(|interaction_domain| interaction_domain.state)
                 .unwrap_or(InteractionDomainState::Active);
             let border = if state == InteractionDomainState::Paused {
-                self.design.colors.menu_disabled.with_alpha(210)
+                self.design.colors.menu_text_disabled.with_alpha(210)
             } else {
                 self.design.colors.application_border.with_alpha(210)
             };
@@ -150,7 +150,7 @@ impl Chrome for ControlledWindowGuard {
                 &chrome_place(
                     rect,
                     LayoutOpts {
-                        bg: self.design.colors.scrim.with_alpha(WASH_ALPHA),
+                        bg: self.design.colors.modal_scrim.with_alpha(WASH_ALPHA),
                         border,
                         border_width: 2.0,
                         radius: if window.state.fullscreen { 0.0 } else { 7.0 },

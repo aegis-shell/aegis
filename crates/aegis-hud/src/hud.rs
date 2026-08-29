@@ -2,10 +2,11 @@
 //! minimal FPS HUD (ADR-0080, ADR-0083).
 //!
 //! What used to be the interactive status bar is now two floating frosted
-//! chips composited over the desktop: system status (network, Bluetooth,
-//! battery), the StatusNotifierItem tray row, the clock, and the
-//! notification count on the left; workspace markers in the center. The
-//! top-right belongs to the frameless notification toast strip
+//! chips composited over the desktop: system status — network (with the
+//! associated Wi-Fi network's name), Bluetooth (with its on/off word),
+//! speaker level, battery — the StatusNotifierItem tray row, the clock,
+//! and the notification count on the left; workspace markers in the center.
+//! The top-right belongs to the frameless notification toast strip
 //! (ADR-0083), and the Agent Workspaces status moved to the command panel
 //! (`aegis-command-panel`). The chips reserve no space (tiled and maximized
 //! windows run underneath), accept no pointer input (clicks fall
@@ -28,7 +29,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 use aegis_shell::{
     BackdropRegion, BatteryStatus, Chrome, ChromeEvents, ChromeUpdate, HUD_HEIGHT, IconSet,
-    LiquidGlassRegion, Localizer, NetworkState, SystemStatus,
+    LiquidGlassRegion, Localizer, Message, NetworkState, SystemStatus, ellipsize,
 };
 
 use crate::tray::{TrayHandle, TrayIcon};
@@ -152,6 +153,11 @@ pub struct Hud {
     /// [`aegis_shell::Shell::add`] and refreshed when the desktop color scheme
     /// changes; defaults to the dark appearance until the first update arrives.
     design: Design,
+    /// Translation handle for the status labels. The render pass receives it
+    /// per frame and mirrors it here so the backdrop prepass — which resolves
+    /// chip geometry before any frame exists — sizes labeled cells with the
+    /// same catalog. A locale switch therefore settles on the next frame.
+    i18n: Localizer,
 }
 
 /// Render-thread half of the StatusNotifierItem tray: the shared snapshot
@@ -245,6 +251,7 @@ impl Hud {
             workspace_target: 0.0,
             workspace_position_initialized: false,
             design: Design::dark(),
+            i18n: Localizer::default(),
         }
     }
 
@@ -321,7 +328,7 @@ impl Hud {
                         &tray.device,
                         pixmap.width,
                         pixmap.height,
-                        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                        flux::Format::Bgra8Unorm,
                         &pixmap.bgra,
                     ) {
                         Ok(image) => {
@@ -362,19 +369,35 @@ impl Hud {
         let mut layout = ChipLayout::default();
         let y = CHIP_TOP;
 
-        // Left chip: recording status (when active), system status (network,
-        // Bluetooth, battery), the tray row, then the clock and the
-        // notification bell (ADR-0083).
+        // Left chip: recording status (when active), system status (network
+        // with its SSID, Bluetooth with its on/off word, speaker level,
+        // battery), the tray row, then the clock and the notification bell
+        // (ADR-0083). Labeled cells reserve `icon_label_cell_w` so the
+        // painted label and the chip geometry agree.
+        let footnote = self.design.typography.footnote;
+        let ssid = wifi_label(&self.status);
+        let bt_label = self
+            .status
+            .bluetooth_enabled
+            .map(|enabled| bluetooth_label(enabled, &self.i18n));
+        let vol_label = volume_label(self.status.volume, self.status.muted, &self.i18n);
         let mut width = 0.0;
         let mut cells = 0usize;
         if self.status.capture_streams > 0 {
             width += recording_cell_width(self.status.capture_streams);
             cells += 1;
         }
-        width += CELL_ICON; // network is always present
+        width += match ssid {
+            Some(ssid) => icon_label_cell_w(ssid, footnote),
+            None => CELL_ICON, // network is always present, bare when unlabeled
+        };
         cells += 1;
-        if self.status.bluetooth_enabled.is_some() {
-            width += CELL_ICON;
+        if let Some(label) = &bt_label {
+            width += icon_label_cell_w(label, footnote);
+            cells += 1;
+        }
+        if let Some(label) = &vol_label {
+            width += icon_label_cell_w(label, footnote);
             cells += 1;
         }
         if self.status.battery.is_some() {
@@ -511,7 +534,7 @@ impl Chrome for Hud {
         input: &Input,
         _windows: &[Window],
         workspaces: &WorkspaceSnapshot,
-        _i18n: &Localizer,
+        i18n: &Localizer,
         _out: &mut ChromeEvents,
     ) {
         if self.dormant() {
@@ -523,6 +546,10 @@ impl Chrome for Hud {
             self.prepare_frame_state(input, workspaces);
         }
         self.frame_prepared = false;
+        // Mirror the frame's locale so the next backdrop prepass — which
+        // runs without a Localizer — sizes labeled cells with the same
+        // catalog the paint below just used.
+        self.i18n = *i18n;
         let notifications = self.notification_snapshot();
         let sni = self.sni_cells();
         // Only applications that explicitly registered a StatusNotifierItem
@@ -575,7 +602,24 @@ impl Chrome for Hud {
                 );
             }
 
-            let rect = cell(CELL_ICON);
+            // Network cell: the icon plus the associated Wi-Fi network's
+            // name when the live link is wireless and an association is
+            // known. The SSID is user-chosen and unbounded, so it is
+            // ellipsized against the same budget the layout reserved.
+            let wifi_label = wifi_label(&self.status);
+            let wifi_w = match &wifi_label {
+                Some(ssid) => icon_label_cell_w(ssid, design.typography.footnote),
+                None => CELL_ICON,
+            };
+            let rect = cell(wifi_w);
+            let wifi_text = wifi_label.map_or_else(String::new, |ssid| {
+                ellipsize(
+                    f,
+                    ssid,
+                    design.typography.footnote,
+                    (wifi_w - CELL_ICON - STATUS_LABEL_GAP).max(0.0),
+                )
+            });
             render_status_cell(
                 f,
                 &design,
@@ -583,41 +627,85 @@ impl Chrome for Hud {
                 rect,
                 self.themed_icon(network_icon_name(self.status.network)),
                 Icon::Globe,
-                "",
+                &wifi_text,
             );
+            // Bluetooth cell: the themed glyph (lens has no Bluetooth vector
+            // glyph) beside the localized on/off word, dimmed to a whisper
+            // while the radio is off.
             if let Some(enabled) = self.status.bluetooth_enabled {
-                let rect = cell(CELL_ICON);
-                // Themed-icon-only cell (lens has no Bluetooth vector glyph);
-                // dimmed to a whisper while the radio is off.
+                let label = bluetooth_label(enabled, i18n);
                 let bt_fade = fade * if enabled { 1.0 } else { 0.35 };
-                if let Some(icon) = self.themed_icon("bluetooth-symbolic") {
-                    f.set_opacity(bt_fade);
-                    f.place(
-                        "aegis-hud-bluetooth",
-                        &chrome_place(rect, centered_layer()),
-                        |f| {
-                            f.row_ex(
-                                &LayoutOpts {
-                                    width: rect.w,
-                                    height: rect.h,
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |f| unsafe {
-                                    f.push_style(hud_glyph_outline(&design));
-                                    f.image_tinted(
-                                        icon as *mut lens::sys::flux_image,
-                                        16.0,
-                                        16.0,
-                                        design.hud_foreground.primary,
-                                    );
-                                    f.pop_style();
-                                },
-                            );
-                        },
-                    );
-                    f.set_opacity(fade);
+                match self.themed_icon("bluetooth-symbolic") {
+                    Some(icon) => {
+                        let rect = cell(icon_label_cell_w(&label, design.typography.footnote));
+                        f.set_opacity(bt_fade);
+                        f.place(
+                            "aegis-hud-bluetooth",
+                            &chrome_place(rect, centered_layer()),
+                            |f| {
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        width: rect.w,
+                                        height: rect.h,
+                                        gap: STATUS_LABEL_GAP,
+                                        cross: Align::Center,
+                                        ..Default::default()
+                                    },
+                                    |f| unsafe {
+                                        f.push_style(hud_glyph_outline(&design));
+                                        f.image_tinted(
+                                            icon as *mut lens::sys::flux_image,
+                                            16.0,
+                                            16.0,
+                                            design.hud_foreground.primary,
+                                        );
+                                        f.pop_style();
+                                        if !label.is_empty() {
+                                            f.push_style(hud_text_outline(&design));
+                                            f.label_compact_sized(
+                                                &label,
+                                                design.typography.footnote,
+                                            );
+                                            f.pop_style();
+                                        }
+                                    },
+                                );
+                            },
+                        );
+                        f.set_opacity(fade);
+                    }
+                    // No themed raster: the label still paints in the same
+                    // cell geometry so the chip's width does not depend on
+                    // the icon cache hit.
+                    None => {
+                        let rect = cell(icon_label_cell_w(&label, design.typography.footnote));
+                        f.set_opacity(bt_fade);
+                        render_text(
+                            f,
+                            &design,
+                            "aegis-hud-bluetooth",
+                            rect,
+                            &label,
+                            design.typography.footnote,
+                        );
+                        f.set_opacity(fade);
+                    }
                 }
+            }
+            // Speaker cell: the sink's level (or the localized "Muted"
+            // word) beside a tiered volume glyph. Absent entirely when no
+            // audio service answered — never a fabricated 0%.
+            if let Some(label) = volume_label(self.status.volume, self.status.muted, i18n) {
+                let rect = cell(icon_label_cell_w(&label, design.typography.footnote));
+                render_status_cell(
+                    f,
+                    &design,
+                    "aegis-hud-volume",
+                    rect,
+                    self.themed_icon(volume_icon_name(self.status.volume, self.status.muted)),
+                    volume_icon(self.status.volume, self.status.muted),
+                    &label,
+                );
             }
             if let Some(battery) = self.status.battery {
                 let rect = cell(CELL_BATTERY);

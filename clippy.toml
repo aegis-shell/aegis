@@ -1,0 +1,9 @@
+# clippy.toml
+# Architectural constraints and lints for Aegis workspace.
+
+avoid-breaking-exported-api = false
+
+disallowed-methods = [
+    # Discourage unbuffered streaming reads from serde_json
+    { path = "serde_json::from_reader", reason = "Parsing directly from an unbuffered reader is slow. Use `serde_json::from_slice` or `serde_json::from_str` instead." },
+]

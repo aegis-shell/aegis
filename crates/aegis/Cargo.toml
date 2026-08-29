@@ -95,3 +95,6 @@ ignored = ["flux-scene-graph-sys", "lens-sys", "prism-sys"]
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

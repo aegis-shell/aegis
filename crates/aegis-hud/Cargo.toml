@@ -30,3 +30,6 @@ log = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = ["lens-sys"]
+
+[lints]
+workspace = true

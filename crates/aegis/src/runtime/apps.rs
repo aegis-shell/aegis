@@ -337,7 +337,7 @@ pub(super) fn build_icon_cache(device: &flux::Device, decoded: &[DecodedIcon]) -
             device,
             icon.width,
             icon.height,
-            flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+            flux::Format::Bgra8Unorm,
             &icon.bgra,
         ) {
             Ok(img) => {

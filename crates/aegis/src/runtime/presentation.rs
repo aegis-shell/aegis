@@ -382,7 +382,7 @@ impl CompositorRuntime {
                     // No backdrop slot was maintained while the compositor
                     // was bypassed. Re-entering composition must rebuild from
                     // the then-current desktop rather than reuse an old effect.
-                    self.launcher_backdrop.invalidate();
+                    self.backdrop_graph.invalidate();
                     if entered_scanout {
                         log::info!(
                             "{}: direct scanout active for {:#x} (mod {:#x}); composite bypassed",
@@ -481,7 +481,7 @@ impl CompositorRuntime {
         if was_scanout {
             self.damage.force_full_redraw = true;
             damage = FrameDamage::Full;
-            self.launcher_backdrop.invalidate();
+            self.backdrop_graph.invalidate();
         }
         // Opportunistic stream capture: this frame composites for real
         // damage, so every due SHM stream may piggyback on it with the
@@ -564,10 +564,7 @@ impl CompositorRuntime {
                 } else {
                     Vec::new()
                 };
-                let blur_sigma = self.shell.backdrop_blur_sigma();
-                let backdrop_regions = self.shell.backdrop_regions(self.input_acc.display_size);
-                let mut liquid_glass_regions =
-                    self.shell.liquid_glass_regions(self.input_acc.display_size);
+                let mut backdrop_layers = self.shell.backdrop_layers(self.input_acc.display_size);
                 // Region-level backdrop adaptation: fold the statistics this
                 // frame slot submitted FLUX_MAX_FRAMES_IN_FLIGHT frames ago
                 // into the smoothed policy, then write it back into the
@@ -581,7 +578,7 @@ impl CompositorRuntime {
                     .unwrap_or(&[]);
                 if !submitted.is_empty() {
                     let mut stats = [prism::BackdropStats::default(); 64];
-                    if let Ok(count) = self.launcher_backdrop.glass_stats(&frame, &mut stats) {
+                    if let Ok(count) = self.backdrop_graph.glass_stats(&frame, &mut stats) {
                         let dt = input.as_raw().dt_seconds.max(0.0);
                         for (index, stat) in
                             stats.iter().take(count.min(submitted.len())).enumerate()
@@ -598,14 +595,53 @@ impl CompositorRuntime {
                         }
                     }
                 }
-                let mut live_glass_ids = Vec::with_capacity(liquid_glass_regions.len());
-                for region in &mut liquid_glass_regions {
-                    self.glass_adaptation.apply_to(region);
-                    if region.id != 0 {
-                        live_glass_ids.push(region.id);
+                let mut live_glass_ids = Vec::new();
+                for layer in &mut backdrop_layers {
+                    for region in &mut layer.glass {
+                        self.glass_adaptation.apply_to(region);
+                        if region.id != 0 {
+                            live_glass_ids.push(region.id);
+                        }
                     }
                 }
                 self.glass_adaptation.retain(&live_glass_ids);
+                let graph_plan =
+                    match plan_backdrop_graph(&backdrop_layers, logical_size, physical_size, scale)
+                    {
+                        Ok(plan) => Some(plan),
+                        Err(error) => {
+                            log::warn!(
+                                "backdrop graph rejected ({error}); using translucent fallback"
+                            );
+                            None
+                        }
+                    };
+                let (
+                    backdrop_layers,
+                    backdrop_sources,
+                    planned_layer_regions,
+                    planned_resolve_regions,
+                    planned_capture_regions,
+                ) = if let Some(plan) = graph_plan {
+                    let ordered = plan
+                        .order
+                        .iter()
+                        .map(|index| backdrop_layers[*index].clone())
+                        .collect::<Vec<_>>();
+                    (
+                        ordered,
+                        plan.sources,
+                        plan.layer_regions,
+                        plan.resolve_regions,
+                        plan.capture_regions,
+                    )
+                } else {
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+                };
+                let blur_sigma = backdrop_layers
+                    .iter()
+                    .map(|layer| layer.blur_sigma)
+                    .fold(0.0_f32, f32::max);
                 let model_active = self
                     .wallpaper
                     .as_ref()
@@ -615,7 +651,7 @@ impl CompositorRuntime {
                 // effect capture local to the glass footprint in that state.
                 let backdrop_model_active = model_active && !self.screenshot_freeze.active();
                 // Overview mode (M9) swaps the whole client scene for the
-                // thumbnail grid and skips the launcher-blur capture path.
+                // thumbnail grid and skips the backdrop graph capture path.
                 // The grid stays up while the reveal animation runs in
                 // either direction: keying the swap on `open` alone would
                 // pop the desktop back the instant the close fade starts,
@@ -626,7 +662,7 @@ impl CompositorRuntime {
                 // the trigger-frame snapshot: the capture frame renders the
                 // desktop scene *and* the chrome into an offscreen target
                 // below; later frames blit that snapshot and draw only the
-                // selector on top. The launcher-blur path stays off for the
+                // selector on top. The backdrop graph stays off for the
                 // whole session.
                 let freeze_capturing = self.screenshot_freeze.needs_capture();
                 // Compositor blurred shadows (ADR-0139): render masks and
@@ -669,7 +705,7 @@ impl CompositorRuntime {
                     })
                     .collect();
                 let soft_shadow_layer =
-                    (!soft_shadow_entries.is_empty()).then(|| aegis_render::SoftShadowLayer {
+                    (!soft_shadow_entries.is_empty()).then_some(aegis_render::SoftShadowLayer {
                         entries: soft_shadow_entries.as_slice(),
                     });
                 // Restrict the backdrop capture to the union of the declared
@@ -679,28 +715,35 @@ impl CompositorRuntime {
                 // A live 3D wallpaper still draws its model into the whole
                 // capture image, so it keeps the full-frame extent.
                 //
-                // Capture coverage comes from the declared backdrop regions
-                // plus each glass body's optional `capture_bounds` footprint:
-                // a body whose shape animates every frame declares the stable
-                // envelope its shapes stay inside, so the animation alone can
-                // never invalidate the capture (only the effect is rebuilt).
-                let mut capture_inputs = backdrop_regions.clone();
-                capture_inputs.extend(
-                    liquid_glass_regions
+                // Optics propagates each layer's requested material footprint
+                // backwards through its source edge. A three-level chain
+                // therefore accumulates all three sampling radii without
+                // turning the UI hierarchy into implicit saveLayer calls.
+                let capture_active =
+                    !backdrop_layers.is_empty() && !planned_capture_regions.is_empty();
+                let capture_bounds = (capture_active && !backdrop_model_active).then(|| {
+                    let x0 = planned_capture_regions
                         .iter()
-                        .filter_map(|region| region.capture_bounds),
-                );
-                let capture_bounds =
-                    (blur_sigma > 0.0 && !capture_inputs.is_empty() && !backdrop_model_active)
-                        .then(|| {
-                            blur_capture_bounds(
-                                &capture_inputs,
-                                logical_size,
-                                physical_size,
-                                scale,
-                                blur_sigma,
-                            )
-                        });
+                        .map(|region| region.origin.0)
+                        .min()
+                        .unwrap_or(0);
+                    let y0 = planned_capture_regions
+                        .iter()
+                        .map(|region| region.origin.1)
+                        .min()
+                        .unwrap_or(0);
+                    let x1 = planned_capture_regions
+                        .iter()
+                        .map(|region| region.origin.0 + region.extent.0)
+                        .max()
+                        .unwrap_or(physical_size.0);
+                    let y1 = planned_capture_regions
+                        .iter()
+                        .map(|region| region.origin.1 + region.extent.1)
+                        .max()
+                        .unwrap_or(physical_size.1);
+                    ((x0, y0), (x1 - x0, y1 - y0))
+                });
                 let (capture_origin, capture_extent) =
                     capture_bounds.unwrap_or(((0, 0), physical_size));
                 // Keep disconnected chrome bodies disconnected all the way
@@ -709,20 +752,14 @@ impl CompositorRuntime {
                 // composition), but the compute passes no longer dispatch
                 // the otherwise-empty bounding box between a top HUD and a
                 // bottom Dock.
-                let capture_regions = if blur_sigma > 0.0 && !capture_inputs.is_empty() {
+                let capture_regions = if capture_active {
                     if backdrop_model_active {
                         vec![BackdropCaptureRegion {
                             origin: (0, 0),
                             extent: physical_size,
                         }]
                     } else {
-                        blur_capture_regions(
-                            &capture_inputs,
-                            logical_size,
-                            physical_size,
-                            scale,
-                            blur_sigma,
-                        )
+                        planned_capture_regions
                     }
                 } else {
                     Vec::new()
@@ -731,22 +768,6 @@ impl CompositorRuntime {
                     capture_extent.0.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
                     capture_extent.1.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
                 );
-                // Fallback-only frost clips (used when the layered dispatch
-                // fails and the composite degrades to plain frosted rects):
-                // a region that exactly equals a glass body's bounds is
-                // dropped there, because in that degraded view the body is
-                // replaced BY its frost rect rather than layered over it.
-                // The layered dispatch itself consumes the unfiltered set
-                // (see `frost_layer_regions` below).
-                let frost_backdrop_regions: Vec<_> = backdrop_regions
-                    .iter()
-                    .copied()
-                    .filter(|region| {
-                        !liquid_glass_regions
-                            .iter()
-                            .any(|glass| glass.bounds == *region)
-                    })
-                    .collect();
                 let backdrop_key = BackdropCacheKey::new(
                     capture_origin,
                     capture_extent,
@@ -755,26 +776,26 @@ impl CompositorRuntime {
                     scale,
                     backdrop_model_active,
                     &capture_regions,
+                    &planned_layer_regions,
+                    &backdrop_layers,
                     window_switcher.as_ref(),
                 );
-                let backdrop_material_key = BackdropMaterialKey::new(
-                    &frost_backdrop_regions,
-                    &liquid_glass_regions,
-                    glass_tint(color_scheme),
-                );
+                let backdrop_material_key =
+                    BackdropStackMaterialKey::new(&backdrop_layers, glass_tint(color_scheme));
                 let backdrop_plan = if overview_active
                     || (self.screenshot_freeze.armed && !self.screenshot_freeze.active())
                 {
-                    self.launcher_backdrop.invalidate();
+                    self.backdrop_graph.invalidate();
                     BackdropPlan::Direct
                 } else {
-                    self.launcher_backdrop.prepare(
-                        blur_sigma > 0.0 && !capture_inputs.is_empty(),
+                    self.backdrop_graph.prepare(
+                        capture_active,
                         &self.device,
                         &self.surface,
                         &frame,
                         backdrop_key,
                         backdrop_material_key,
+                        &backdrop_layers,
                         &backdrop_source_damage,
                     )
                 };
@@ -806,7 +827,7 @@ impl CompositorRuntime {
                 // the capture passes entirely.
                 let capture_started = refresh_requested
                     && effect_work_regions.first().is_some_and(|region| {
-                        self.launcher_backdrop.begin_capture(
+                        self.backdrop_graph.begin_capture(
                             &self.canvas,
                             &frame,
                             self.clear,
@@ -825,7 +846,7 @@ impl CompositorRuntime {
                         if capture_started || recompute_ready =>
                     {
                         let capture_size = self
-                            .launcher_backdrop
+                            .backdrop_graph
                             .capture_size(&frame)
                             .unwrap_or(capture_extent);
                         let capture_ratio = capture_size.0 as f32 / capture_extent.0.max(1) as f32;
@@ -844,12 +865,12 @@ impl CompositorRuntime {
                             if index > 0 {
                                 if let Err(error) = self.canvas.end_target_checked() {
                                     log::warn!(
-                                        "launcher: backdrop capture pass failed ({error}); using translucent fallback"
+                                        "backdrop: graph capture pass failed ({error}); using translucent fallback"
                                     );
                                     capture_ok = false;
                                     break;
                                 }
-                                if !self.launcher_backdrop.begin_capture(
+                                if !self.backdrop_graph.begin_capture(
                                     &self.canvas,
                                     &frame,
                                     self.clear,
@@ -902,13 +923,13 @@ impl CompositorRuntime {
                                 if model_active {
                                     if let Err(error) = self.canvas.end_target_checked() {
                                         log::warn!(
-                                            "launcher: backdrop capture pass failed ({error}); using translucent fallback"
+                                            "backdrop: graph capture pass failed ({error}); using translucent fallback"
                                         );
                                         self.canvas.restore();
                                         capture_ok = false;
                                         break;
                                     }
-                                    if let Some(target) = self.launcher_backdrop.target(&frame) {
+                                    if let Some(target) = self.backdrop_graph.target(&frame) {
                                         if let Some(wallpaper) = self.wallpaper.as_mut() {
                                             wallpaper.draw_model_to(
                                                 &self.device,
@@ -932,7 +953,7 @@ impl CompositorRuntime {
                                             },
                                         ) {
                                             log::warn!(
-                                                "launcher: failed to resume backdrop capture ({error}); using translucent fallback"
+                                                "backdrop: failed to resume graph capture ({error}); using translucent fallback"
                                             );
                                             self.canvas.restore();
                                             capture_ok = false;
@@ -963,13 +984,6 @@ impl CompositorRuntime {
                             }
                             self.canvas.restore();
                         }
-                        let glass_groups = liquid_glass_groups(
-                            &liquid_glass_regions,
-                            capture_origin,
-                            scale,
-                            capture_ratio,
-                            color_scheme,
-                        );
                         let capture_pixel_scale = scale * capture_ratio;
                         let capture_covers_output = capture_origin == (0, 0)
                             && capture_extent == physical_size
@@ -982,47 +996,71 @@ impl CompositorRuntime {
                                     width: capture_size.0,
                                     height: capture_size.1,
                                 });
-                        // The layered compositor consumes rounded frost
-                        // declarations (not rectangular clips), and it needs
-                        // the UNFILTERED set: a glass body refracts the frost
-                        // beneath it, so a body whose frost region equals its
-                        // bounds (the dock, the HUD chips, the prism pane)
-                        // must still have that frost written into the layer
-                        // image — otherwise its lens samples cleared
-                        // transparent pixels. The body's own material then
-                        // composites over its frost exactly as the layer
-                        // relation defines.
-                        let frost_layer_regions = backdrop_frost_in_capture(
-                            &backdrop_regions,
-                            capture_origin,
-                            capture_extent,
-                            capture_size,
-                            scale,
-                        );
-                        // The liquid-failure fallback frosts every visible
-                        // effect body: the rectangular frost regions plus
-                        // each glass body's live bounds. Capture-only
-                        // footprints carry no material and stay out.
-                        let all_backdrop_capture_regions = backdrop_regions_in_capture(
-                            &frost_backdrop_regions
-                                .iter()
-                                .copied()
-                                .chain(liquid_glass_regions.iter().map(|region| region.bounds))
-                                .collect::<Vec<_>>(),
-                            capture_origin,
-                            capture_extent,
-                            capture_size,
-                            scale,
-                        );
+                        let layer_work: Vec<_> = backdrop_layers
+                            .iter()
+                            .zip(&backdrop_sources)
+                            .zip(&planned_layer_regions)
+                            .zip(&planned_resolve_regions)
+                            .map(|(((layer, source), regions), resolve_regions)| {
+                                // Frost remains inside the layer-local Prism
+                                // operator. Only the resolved image crossing
+                                // the explicit dependency edge is visible to
+                                // a later layer.
+                                let frost = backdrop_frost_in_capture(
+                                    &layer.frost,
+                                    capture_origin,
+                                    capture_extent,
+                                    capture_size,
+                                    scale,
+                                );
+                                let fallback_frost: Vec<_> = layer
+                                    .frost
+                                    .iter()
+                                    .copied()
+                                    .filter(|region| {
+                                        !layer.glass.iter().any(|glass| glass.bounds == *region)
+                                    })
+                                    .chain(layer.glass.iter().map(|region| region.bounds))
+                                    .collect();
+                                BackdropLayerWork {
+                                    source: *source,
+                                    sigma: layer.blur_sigma * capture_scale,
+                                    regions: blur_regions_in_capture(
+                                        regions,
+                                        capture_origin,
+                                        capture_extent,
+                                        capture_size,
+                                    ),
+                                    resolve_regions: blur_regions_in_capture(
+                                        resolve_regions,
+                                        capture_origin,
+                                        capture_extent,
+                                        capture_size,
+                                    ),
+                                    frost,
+                                    fallback: backdrop_regions_in_capture(
+                                        &fallback_frost,
+                                        capture_origin,
+                                        capture_extent,
+                                        capture_size,
+                                        scale,
+                                    ),
+                                    glass: liquid_glass_groups(
+                                        &layer.glass,
+                                        capture_origin,
+                                        scale,
+                                        capture_ratio,
+                                        color_scheme,
+                                    ),
+                                }
+                            })
+                            .collect();
                         let refreshed = if recompute_only {
-                            self.launcher_backdrop.recompute_effects(
+                            self.backdrop_graph.recompute_effects(
                                 &self.canvas,
                                 &frame,
-                                blur_sigma * capture_scale,
                                 &effect_work_regions,
-                                &frost_layer_regions,
-                                &all_backdrop_capture_regions,
-                                &glass_groups,
+                                &layer_work,
                                 prism::LiquidGlassParams {
                                     refraction: 8.0 * capture_pixel_scale,
                                     chromatic_aberration: 1.25 * capture_pixel_scale,
@@ -1032,14 +1070,11 @@ impl CompositorRuntime {
                             )
                         } else {
                             capture_ok
-                                && self.launcher_backdrop.finish_refresh(
+                                && self.backdrop_graph.finish_refresh(
                                     &self.canvas,
                                     &frame,
-                                    blur_sigma * capture_scale,
                                     &effect_work_regions,
-                                    &frost_layer_regions,
-                                    &all_backdrop_capture_regions,
-                                    &glass_groups,
+                                    &layer_work,
                                     prism::LiquidGlassParams {
                                         refraction: 8.0 * capture_pixel_scale,
                                         chromatic_aberration: 1.25 * capture_pixel_scale,
@@ -1058,8 +1093,9 @@ impl CompositorRuntime {
                                 .resize_with(glass_slot + 1, Vec::new);
                         }
                         self.submitted_glass_ids[glass_slot] = if refreshed {
-                            liquid_glass_regions
+                            backdrop_layers
                                 .iter()
+                                .flat_map(|layer| layer.glass.iter())
                                 .filter(|region| glass_region_active(region))
                                 .map(|region| region.id)
                                 .collect()
@@ -1109,7 +1145,7 @@ impl CompositorRuntime {
                             }
                         } else if capture_covers_output
                             && refreshed
-                            && self.launcher_backdrop.draw_capture_opaque(
+                            && self.backdrop_graph.draw_capture_opaque(
                                 &self.canvas,
                                 &frame,
                                 physical_size,
@@ -1141,7 +1177,7 @@ impl CompositorRuntime {
                             )?;
                         }
                         if refreshed {
-                            self.launcher_backdrop.draw_cached(
+                            self.backdrop_graph.draw_cached(
                                 &self.canvas,
                                 &frame,
                                 capture_origin,
@@ -1189,7 +1225,7 @@ impl CompositorRuntime {
                                 shadow_style,
                             )?;
                         }
-                        self.launcher_backdrop.draw_cached(
+                        self.backdrop_graph.draw_cached(
                             &self.canvas,
                             &frame,
                             capture_origin,
@@ -1525,7 +1561,7 @@ impl CompositorRuntime {
                             .expect("active freeze capture has an allocated target");
                         begin_stencil_target_overlay(&self.canvas, &frame, target, None)?;
                     } else {
-                        self.canvas.end_checked()?;
+                        self.canvas.end_frame_checked()?;
                         begin_stencil_frame_overlay(&self.canvas, &frame, output_render_area)?;
                     }
                     // Lens replay draws chrome text through flux-text, whose
@@ -1799,8 +1835,11 @@ impl CompositorRuntime {
                 }
                 // Confirmation delivery (portal consent dialogs and
                 // ADR-0088 runtime grants), same shape as the other picks
-                // above.
-                if let Some(answer) = self.shell.take_confirm_pick_answered()
+                // above. The single answered value fans out to every
+                // confirmation consumer this frame: the waiting IPC reply
+                // and any parked destructive system action.
+                let confirm_answer = self.shell.take_confirm_pick_answered();
+                if let Some(answer) = confirm_answer
                     && let Some(pick) = self.pending_confirm_pick.take()
                 {
                     let _ = pick.reply.send(Ok(answer));
@@ -1810,6 +1849,37 @@ impl CompositorRuntime {
                     && let Some(pick) = self.pending_confirm_pick.take()
                 {
                     let _ = pick.reply.send(Ok(aegis_shell::ConfirmAnswer::Cancelled));
+                }
+
+                // Destructive system actions parked behind the same consent
+                // chrome: the panel requested power off / reboot / suspend,
+                // and the user just answered. Confirmed applies the parked
+                // action through the authoritative runtime path; anything
+                // else simply drops it.
+                if let Some(answer) = confirm_answer
+                    && let Some(action) = self.pending_system_action.take()
+                    && matches!(
+                        answer,
+                        aegis_shell::ConfirmAnswer::Confirmed
+                            | aegis_shell::ConfirmAnswer::AllowOnce
+                    )
+                    && let Err(reason) = apply_system_action(
+                        &mut self.server,
+                        &mut self.host,
+                        &self.notif_queue,
+                        &mut self.system_status,
+                        &mut self.ipc_idle_inhibits,
+                        &mut self.idle_process,
+                        action,
+                    )
+                {
+                    log::warn!("system control: {reason}");
+                }
+                // The dialog vanished without an answer reaching us (Escape
+                // paths already resolve through the pick flow above); a
+                // parked action with no live dialog must not linger.
+                if self.pending_system_action.is_some() && !self.shell.confirm_pick_active() {
+                    self.pending_system_action = None;
                 }
                 // Capability-checklist delivery (ADR-0088 agent pairing),
                 // same shape as the other picks above.
@@ -2069,6 +2139,23 @@ impl CompositorRuntime {
                 if !system_actions.is_empty() {
                     let mut applied = false;
                     for action in system_actions {
+                        // Destructive lifecycle transitions route through the
+                        // system-level confirmation first: the same consent
+                        // chrome the portal flows use, so a stray click on the
+                        // panel's power knob never powers the machine off.
+                        // The consent chrome opens in the iteration loop right
+                        // after this frame (the flux frame's borrow below
+                        // forbids the `&mut self` call here).
+                        if matches!(
+                            action,
+                            aegis_model::system::SystemAction::PowerOff
+                                | aegis_model::system::SystemAction::Reboot
+                                | aegis_model::system::SystemAction::Suspend
+                        ) && self.pending_system_action.is_none()
+                        {
+                            self.system_confirm_requests.push(action);
+                            continue;
+                        }
                         let command = aegis_ipc::Command::System {
                             action: action.clone(),
                         };
@@ -2355,7 +2442,7 @@ impl CompositorRuntime {
                         );
                     }
                 }
-                self.canvas.end_checked()?;
+                self.canvas.end_frame_checked()?;
                 let mut capture_for_present = frame_capture.take().and_then(|capture| {
                     let FrameCapture {
                         crop,
@@ -2520,7 +2607,7 @@ impl CompositorRuntime {
                     frame_slot,
                     presented_damage,
                 );
-                self.launcher_backdrop
+                self.backdrop_graph
                     .record_present(frame_slot, backdrop_source_damage);
                 if let Some(capture) = capture_for_present {
                     debug_assert!(self.pending_capture.is_none());

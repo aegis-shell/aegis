@@ -460,7 +460,7 @@ impl CursorCache {
                     "cursor: theme {name:?} not installed; using bundled Aegis theme at {size} logical px"
                 );
             }
-            self.theme = Some((name.clone(), size, theme));
+            self.theme = Some((name, size, theme));
             self.cursors.clear();
         }
         let key = (shape, (scale * 4.0).round() as u32);
@@ -474,7 +474,7 @@ impl CursorCache {
                     device,
                     img.width,
                     img.height,
-                    flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                    flux::Format::Bgra8Unorm,
                     &pixels,
                 )
                 .ok()?;

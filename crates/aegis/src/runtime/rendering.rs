@@ -242,6 +242,7 @@ pub(super) fn blur_capture_regions(
 /// capture-pixel offset. Everything is clamped to the physical extent, so
 /// blur sampling at the screen edge keeps the capture's clamp-to-edge
 /// behaviour rather than sampling undefined padding.
+#[cfg(test)]
 pub(super) fn blur_capture_bounds(
     regions: &[aegis_shell::BackdropRegion],
     logical_size: (u32, u32),
@@ -274,6 +275,240 @@ pub(super) fn blur_capture_bounds(
         .max()
         .unwrap();
     ((x0, y0), (x1 - x0, y1 - y0))
+}
+
+/// Product declarations compiled through Optics' generic composition DAG.
+#[derive(Debug)]
+pub(super) struct BackdropGraphPlan {
+    /// Declaration indices in stable topological execution/paint order.
+    pub(super) order: Vec<usize>,
+    /// Source layer index in `order`, or the captured scene.
+    pub(super) sources: Vec<Option<usize>>,
+    /// Stable padded material footprints, aligned with `order`.
+    pub(super) layer_regions: Vec<Vec<BackdropCaptureRegion>>,
+    /// Downstream-required resolved footprints, aligned with `order`.
+    pub(super) resolve_regions: Vec<Vec<BackdropCaptureRegion>>,
+    /// Exact scene regions reached by reverse ROI propagation through every
+    /// blur edge in the graph.
+    pub(super) capture_regions: Vec<BackdropCaptureRegion>,
+}
+
+/// Validate a backdrop DAG and propagate its sampling footprints back to the
+/// desktop source. Glass and frost remain ordinary leaf material operators;
+/// nesting is represented only by image dependencies here.
+pub(super) fn plan_backdrop_graph(
+    layers: &[aegis_shell::BackdropLayer],
+    logical_size: (u32, u32),
+    physical_size: (u32, u32),
+    scale: f32,
+) -> Result<BackdropGraphPlan, String> {
+    use aegis_render::composition_graph as graph;
+
+    if layers.is_empty() {
+        return Ok(BackdropGraphPlan {
+            order: Vec::new(),
+            sources: Vec::new(),
+            layer_regions: Vec::new(),
+            resolve_regions: Vec::new(),
+            capture_regions: Vec::new(),
+        });
+    }
+    let image = graph::ImageDesc::new(physical_size.0, physical_size.1, 0);
+    let mut composition = graph::CompositionGraph::default();
+    let scene = composition
+        .add_source("desktop", image)
+        .map_err(|error| error.to_string())?;
+    let mut ids = std::collections::HashMap::with_capacity(layers.len());
+    let mut nodes = Vec::with_capacity(layers.len());
+    for layer in layers {
+        if ids.contains_key(&layer.id) {
+            return Err(format!("duplicate backdrop layer id {:?}", layer.id));
+        }
+        let node = composition
+            .add_pass(
+                format!("backdrop-{}", layer.id.0),
+                image,
+                image.bounds(),
+                graph::Storage::Persistent,
+            )
+            .map_err(|error| error.to_string())?;
+        ids.insert(layer.id, node);
+        nodes.push(node);
+    }
+    for (layer, node) in layers.iter().zip(&nodes) {
+        let source = match layer.source {
+            aegis_shell::BackdropLayerSource::Scene => scene,
+            aegis_shell::BackdropLayerSource::Layer(id) => *ids.get(&id).ok_or_else(|| {
+                format!("backdrop layer {:?} references missing {id:?}", layer.id)
+            })?,
+        };
+        let radius = (3.0 * layer.blur_sigma.max(0.0) * scale.max(0.0)).ceil() as u32;
+        composition
+            .add_dependency(*node, source, graph::RegionMap::local(radius, radius))
+            .map_err(|error| error.to_string())?;
+    }
+    let compiled = composition
+        .compile(&nodes)
+        .map_err(|error| error.to_string())?;
+    let mut request = graph::FrameRequest::new();
+    for (layer, node) in layers.iter().zip(&nodes) {
+        let regions = layer
+            .frost
+            .iter()
+            .copied()
+            .chain(
+                layer
+                    .glass
+                    .iter()
+                    .map(|glass| glass.capture_bounds.unwrap_or(glass.bounds)),
+            )
+            .filter_map(|region| {
+                physical_backdrop_rect(region, logical_size, physical_size, scale)
+            });
+        request.request_output(*node, graph::RegionSet::from_rects(regions));
+    }
+    let frame = compiled
+        .plan_frame(&request)
+        .map_err(|error| error.to_string())?;
+    let declaration_for_node: std::collections::HashMap<_, _> = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (*node, index))
+        .collect();
+    let order: Vec<_> = compiled
+        .topological_nodes()
+        .iter()
+        .filter_map(|node| declaration_for_node.get(node).copied())
+        .collect();
+    let position_for_id: std::collections::HashMap<_, _> = order
+        .iter()
+        .enumerate()
+        .map(|(position, declaration)| (layers[*declaration].id, position))
+        .collect();
+    let sources = order
+        .iter()
+        .map(|declaration| match layers[*declaration].source {
+            aegis_shell::BackdropLayerSource::Scene => Ok(None),
+            aegis_shell::BackdropLayerSource::Layer(id) => position_for_id
+                .get(&id)
+                .copied()
+                .map(Some)
+                .ok_or_else(|| format!("backdrop layer source {id:?} was not scheduled")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let layer_regions = order
+        .iter()
+        .map(|declaration| {
+            let layer = &layers[*declaration];
+            let inputs: Vec<_> = layer
+                .frost
+                .iter()
+                .copied()
+                .chain(
+                    layer
+                        .glass
+                        .iter()
+                        .map(|glass| glass.capture_bounds.unwrap_or(glass.bounds)),
+                )
+                .collect();
+            blur_capture_regions(
+                &inputs,
+                logical_size,
+                physical_size,
+                scale,
+                layer.blur_sigma,
+            )
+        })
+        .collect();
+    let resolve_regions = order
+        .iter()
+        .map(|declaration| {
+            merge_physical_regions(
+                frame
+                    .required(nodes[*declaration])
+                    .into_iter()
+                    .flat_map(graph::RegionSet::as_slice)
+                    .copied(),
+            )
+        })
+        .collect();
+    let capture_regions = merge_physical_regions(
+        frame
+            .required(scene)
+            .into_iter()
+            .flat_map(graph::RegionSet::as_slice)
+            .copied(),
+    );
+    Ok(BackdropGraphPlan {
+        order,
+        sources,
+        layer_regions,
+        resolve_regions,
+        capture_regions,
+    })
+}
+
+fn physical_backdrop_rect(
+    region: aegis_shell::BackdropRegion,
+    logical_size: (u32, u32),
+    physical_size: (u32, u32),
+    scale: f32,
+) -> Option<aegis_render::composition_graph::Rect> {
+    let x0 = (region.x.max(0.0) * scale)
+        .floor()
+        .clamp(0.0, physical_size.0 as f32) as i32;
+    let y0 = (region.y.max(0.0) * scale)
+        .floor()
+        .clamp(0.0, physical_size.1 as f32) as i32;
+    let x1 = ((region.x + region.w).min(logical_size.0 as f32).max(0.0) * scale)
+        .ceil()
+        .clamp(0.0, physical_size.0 as f32) as i32;
+    let y1 = ((region.y + region.h).min(logical_size.1 as f32).max(0.0) * scale)
+        .ceil()
+        .clamp(0.0, physical_size.1 as f32) as i32;
+    (x1 > x0 && y1 > y0)
+        .then(|| aegis_render::composition_graph::Rect::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+fn merge_physical_regions(
+    regions: impl IntoIterator<Item = aegis_render::composition_graph::Rect>,
+) -> Vec<BackdropCaptureRegion> {
+    let mut merged: Vec<(u32, u32, u32, u32)> = Vec::new();
+    for region in regions {
+        let mut rect = (
+            region.x.max(0) as u32,
+            region.y.max(0) as u32,
+            region.x.saturating_add(region.width).max(0) as u32,
+            region.y.saturating_add(region.height).max(0) as u32,
+        );
+        let mut index = 0;
+        while index < merged.len() {
+            let other = merged[index];
+            if rect.0 <= other.2 && other.0 <= rect.2 && rect.1 <= other.3 && other.1 <= rect.3 {
+                rect = (
+                    rect.0.min(other.0),
+                    rect.1.min(other.1),
+                    rect.2.max(other.2),
+                    rect.3.max(other.3),
+                );
+                merged.swap_remove(index);
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        merged.push(rect);
+    }
+    merged.sort_unstable_by_key(|rect| (rect.1, rect.0));
+    merged
+        .into_iter()
+        .filter_map(|(x0, y0, x1, y1)| {
+            (x1 > x0 && y1 > y0).then_some(BackdropCaptureRegion {
+                origin: (x0, y0),
+                extent: (x1 - x0, y1 - y0),
+            })
+        })
+        .collect()
 }
 
 /// Map physical-output capture regions into the reusable capture image.
@@ -451,14 +686,18 @@ pub(super) fn liquid_glass_groups(
 
 pub(super) struct BackdropCapture {
     image: flux::Image,
-    /// Transparent, already-composited frost/liquid result sampled by the
-    /// output pass. Keeping this separate from the captured desktop is what
-    /// lets a slot skip both capture and compute when its source footprint did
-    /// not change.
-    composite: flux::Image,
+    /// One cached transparent material result per graph layer. A layer that
+    /// feeds another layer also owns a resolved source image containing its
+    /// input plus this composite.
+    layers: Vec<BackdropLayerCapture>,
     size: (u32, u32),
     format: flux::Format,
     valid: bool,
+}
+
+struct BackdropLayerCapture {
+    composite: flux::Image,
+    resolved: Option<flux::Image>,
 }
 
 struct ScreenshotCapture {
@@ -479,6 +718,8 @@ pub(super) struct BackdropCacheKey {
     scale: u32,
     model_active: bool,
     capture_regions: Vec<BackdropCaptureRegion>,
+    layer_regions: Vec<Vec<BackdropCaptureRegion>>,
+    layer_graph: Vec<[u64; 3]>,
     scene_overlays: Vec<u64>,
 }
 
@@ -493,6 +734,20 @@ pub(super) struct BackdropMaterialKey {
     frost_regions: Vec<[u32; 4]>,
     liquid_regions: Vec<[u32; 23]>,
     glass_tint: [u8; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BackdropStackMaterialKey(Vec<BackdropMaterialKey>);
+
+impl BackdropStackMaterialKey {
+    pub(super) fn new(layers: &[aegis_shell::BackdropLayer], glass_tint: [u8; 3]) -> Self {
+        Self(
+            layers
+                .iter()
+                .map(|layer| BackdropMaterialKey::new(&layer.frost, &layer.glass, glass_tint))
+                .collect(),
+        )
+    }
 }
 
 impl BackdropMaterialKey {
@@ -560,6 +815,8 @@ impl BackdropCacheKey {
         scale: f32,
         model_active: bool,
         capture_regions: &[BackdropCaptureRegion],
+        layer_regions: &[Vec<BackdropCaptureRegion>],
+        layers: &[aegis_shell::BackdropLayer],
         window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
     ) -> Self {
         fn push_rect(out: &mut Vec<u64>, rect: aegis_model::Rect) {
@@ -595,23 +852,80 @@ impl BackdropCacheKey {
             scale: scale.to_bits(),
             model_active,
             capture_regions: capture_regions.to_vec(),
+            layer_regions: layer_regions.to_vec(),
+            layer_graph: layers
+                .iter()
+                .map(|layer| {
+                    let source = match layer.source {
+                        aegis_shell::BackdropLayerSource::Scene => u64::MAX,
+                        aegis_shell::BackdropLayerSource::Layer(id) => id.0,
+                    };
+                    [layer.id.0, source, u64::from(layer.blur_sigma.to_bits())]
+                })
+                .collect(),
             scene_overlays,
         }
     }
 }
 
-/// Live desktop capture used behind the full-screen application launcher.
-///
-/// Capture images and blur intermediates are both indexed by frame slot. A
-/// slot is rewritten only after `begin_frame` has waited its fence, avoiding
-/// device-wide stalls while a 3D wallpaper continues animating.
-pub(super) struct LauncherBackdrop {
+/// Capture-local work for one layer in topological order.
+pub(super) struct BackdropLayerWork {
+    /// Earlier topological layer whose resolved image is sampled, or the
+    /// captured scene when absent.
+    pub(super) source: Option<usize>,
+    pub(super) sigma: f32,
+    /// Capture-local pixels in which this layer's operator output is valid.
+    pub(super) regions: Vec<flux::BlurRegion>,
+    /// Capture-local pixels a downstream consumer may sample.
+    pub(super) resolve_regions: Vec<flux::BlurRegion>,
+    pub(super) frost: Vec<prism::BackdropFrost>,
+    pub(super) fallback: Vec<flux::BlurRegion>,
+    pub(super) glass: Vec<prism::LiquidGlassGroup>,
+}
+
+fn intersect_blur_regions(
+    left: &[flux::BlurRegion],
+    right: &[flux::BlurRegion],
+) -> Vec<flux::BlurRegion> {
+    let mut intersections = Vec::new();
+    for left in left {
+        for right in right {
+            let x0 = left.x.max(right.x);
+            let y0 = left.y.max(right.y);
+            let x1 = left
+                .x
+                .saturating_add(left.width)
+                .min(right.x.saturating_add(right.width));
+            let y1 = left
+                .y
+                .saturating_add(left.height)
+                .min(right.y.saturating_add(right.height));
+            if x1 > x0 && y1 > y0 {
+                intersections.push(flux::BlurRegion {
+                    x: x0,
+                    y: y0,
+                    width: x1 - x0,
+                    height: y1 - y0,
+                });
+            }
+        }
+    }
+    intersections
+}
+
+struct BackdropOperator {
+    id: aegis_shell::BackdropLayerId,
     blur: flux::BlurFilter,
-    /// The layered compositor: frost rects + glass bodies nested in one
-    /// dispatch (see [`Self::recompute_effects`]). A standalone
-    /// `LiquidGlassFilter` cannot express the frost→glass layer relation —
-    /// its lens would sample the sharp capture and pierce the frost.
     glass: prism::BackdropLayerFilter,
+}
+
+/// Generic executor for the shell's explicit offscreen backdrop DAG.
+///
+/// Capture images, per-node material outputs, and resolved edge images are
+/// indexed by frame slot. A slot is rewritten only after `begin_frame` has
+/// waited its fence, avoiding device-wide stalls while sources animate.
+pub(super) struct BackdropGraphExecutor {
+    operators: Vec<BackdropOperator>,
     captures: Vec<Option<BackdropCapture>>,
     /// Source damage missed by each effect-cache slot while another slot was
     /// presented. This mirrors swapchain damage history but is deliberately
@@ -628,7 +942,7 @@ pub(super) struct LauncherBackdrop {
     /// stale shadow/glass composite on their next `Cached` frame — visible as
     /// the composite flickering between two versions every time the slots
     /// rotate.
-    material: Vec<Option<BackdropMaterialKey>>,
+    material: Vec<Option<BackdropStackMaterialKey>>,
     was_active: bool,
     failed_session: bool,
     unsupported: bool,
@@ -683,10 +997,10 @@ fn backdrop_refresh_regions(
 /// rebuilt, leaving the rest presenting a stale composite on their next
 /// `Cached` frame — visible as the effect (notably the glass drop shadow)
 /// flickering between two versions while the slots rotate.
-pub(super) fn slot_material_changed(
-    slots: &mut Vec<Option<BackdropMaterialKey>>,
+pub(super) fn slot_material_changed<T: Clone + PartialEq>(
+    slots: &mut Vec<Option<T>>,
     slot: usize,
-    material: &BackdropMaterialKey,
+    material: &T,
 ) -> bool {
     if slots.len() <= slot {
         slots.resize_with(slot + 1, || None);
@@ -713,11 +1027,10 @@ pub(super) fn refresh_regions_covering_material_change(
     }
 }
 
-impl LauncherBackdrop {
-    pub(super) fn new(device: &flux::Device) -> Result<Self, flux::Error> {
+impl BackdropGraphExecutor {
+    pub(super) fn new(_device: &flux::Device) -> Result<Self, flux::Error> {
         Ok(Self {
-            blur: flux::BlurFilter::new(device)?,
-            glass: prism::BackdropLayerFilter::new(device)?,
+            operators: Vec::new(),
             captures: Vec::new(),
             source_slot_damage: Vec::new(),
             config: None,
@@ -726,6 +1039,36 @@ impl LauncherBackdrop {
             failed_session: false,
             unsupported: false,
         })
+    }
+
+    fn ensure_operators(
+        &mut self,
+        device: &flux::Device,
+        layers: &[aegis_shell::BackdropLayer],
+    ) -> Result<(), flux::Error> {
+        if self.operators.len() == layers.len()
+            && self
+                .operators
+                .iter()
+                .zip(layers)
+                .all(|(operator, layer)| operator.id == layer.id)
+        {
+            return Ok(());
+        }
+        let mut operators = Vec::with_capacity(layers.len());
+        for layer in layers {
+            operators.push(BackdropOperator {
+                id: layer.id,
+                blur: flux::BlurFilter::new(device)?,
+                glass: prism::BackdropLayerFilter::new(device)?,
+            });
+        }
+        self.operators = operators;
+        self.material.clear();
+        for capture in self.captures.iter_mut().flatten() {
+            capture.valid = false;
+        }
+        Ok(())
     }
 
     /// `extent` is the physical-pixel area the capture must cover (the blur
@@ -740,7 +1083,8 @@ impl LauncherBackdrop {
         surface: &flux::Surface,
         frame: &flux::Frame<'_>,
         config: BackdropCacheKey,
-        material: BackdropMaterialKey,
+        material: BackdropStackMaterialKey,
+        layers: &[aegis_shell::BackdropLayer],
         source_damage: &FrameDamage,
     ) -> BackdropPlan {
         if !active {
@@ -763,6 +1107,13 @@ impl LauncherBackdrop {
         if self.unsupported || self.failed_session || extent.0 == 0 || extent.1 == 0 {
             return BackdropPlan::Direct;
         }
+        if let Err(error) = self.ensure_operators(device, layers) {
+            log::warn!(
+                "backdrop: failed to allocate layer operators ({error}); using translucent fallback"
+            );
+            self.failed_session = true;
+            return BackdropPlan::Direct;
+        }
 
         let slot = frame.index() as usize;
         let material_changed = slot_material_changed(&mut self.material, slot, &material);
@@ -777,12 +1128,12 @@ impl LauncherBackdrop {
         }
         self.material[slot] = Some(material);
         let format = match surface.format() {
-            flux::Format::FLUX_FORMAT_RGBA8_UNORM | flux::Format::FLUX_FORMAT_BGRA8_UNORM => {
-                flux::Format::FLUX_FORMAT_RGBA8_UNORM
+            flux::Format::Rgba8Unorm | flux::Format::Bgra8Unorm => {
+                flux::Format::Rgba8Unorm
             }
             other => {
                 log::warn!(
-                    "launcher: realtime backdrop unavailable for surface format {other:?}; using translucent fallback"
+                    "backdrop: realtime graph unavailable for surface format {other:?}; using translucent fallback"
                 );
                 self.unsupported = true;
                 return BackdropPlan::Direct;
@@ -799,26 +1150,56 @@ impl LauncherBackdrop {
         if self.source_slot_damage.len() <= slot {
             self.source_slot_damage.resize(slot + 1, FrameDamage::Full);
         }
-        let target_stale = self.captures[slot]
-            .as_ref()
-            .is_none_or(|capture| capture.size != size || capture.format != format);
+        let mut resolved_needed = vec![false; layers.len()];
+        let positions: std::collections::HashMap<_, _> = layers
+            .iter()
+            .enumerate()
+            .map(|(index, layer)| (layer.id, index))
+            .collect();
+        for layer in layers {
+            if let aegis_shell::BackdropLayerSource::Layer(source) = layer.source
+                && let Some(index) = positions.get(&source)
+            {
+                resolved_needed[*index] = true;
+            }
+        }
+        let target_stale = self.captures[slot].as_ref().is_none_or(|capture| {
+            capture.size != size
+                || capture.format != format
+                || capture.layers.len() != layers.len()
+                || capture
+                    .layers
+                    .iter()
+                    .zip(&resolved_needed)
+                    .any(|(capture, needed)| capture.resolved.is_some() != *needed)
+        });
         if target_stale {
-            match (
-                flux::Image::render_target(device, size.0, size.1, format),
-                flux::Image::render_target(device, size.0, size.1, format),
-            ) {
-                (Ok(image), Ok(composite)) => {
-                    self.captures[slot] = Some(BackdropCapture {
-                        image,
-                        composite,
-                        size,
-                        format,
-                        valid: false,
+            let allocated = (|| -> Result<BackdropCapture, flux::Error> {
+                let image = flux::Image::render_target(device, size.0, size.1, format)?;
+                let mut layer_targets = Vec::with_capacity(layers.len());
+                for needed in &resolved_needed {
+                    layer_targets.push(BackdropLayerCapture {
+                        composite: flux::Image::render_target(device, size.0, size.1, format)?,
+                        resolved: if *needed {
+                            Some(flux::Image::render_target(device, size.0, size.1, format)?)
+                        } else {
+                            None
+                        },
                     });
                 }
-                (Err(error), _) | (_, Err(error)) => {
+                Ok(BackdropCapture {
+                    image,
+                    layers: layer_targets,
+                    size,
+                    format,
+                    valid: false,
+                })
+            })();
+            match allocated {
+                Ok(capture) => self.captures[slot] = Some(capture),
+                Err(error) => {
                     log::warn!(
-                        "launcher: failed to allocate realtime backdrop target ({error}); using translucent fallback"
+                        "backdrop: failed to allocate realtime graph targets ({error}); using translucent fallback"
                     );
                     self.failed_session = true;
                     return BackdropPlan::Direct;
@@ -880,7 +1261,7 @@ impl LauncherBackdrop {
         );
         if let Err(error) = result {
             log::warn!(
-                "launcher: failed to begin backdrop capture ({error}); using translucent fallback"
+                "backdrop: failed to begin graph capture ({error}); using translucent fallback"
             );
             self.failed_session = true;
             return false;
@@ -910,18 +1291,13 @@ impl LauncherBackdrop {
         &mut self,
         canvas: &flux::Canvas,
         frame: &flux::Frame<'_>,
-        sigma: f32,
-        blur_regions: &[flux::BlurRegion],
-        frost_regions: &[prism::BackdropFrost],
-        all_backdrop_regions: &[flux::BlurRegion],
-        glass_groups: &[prism::LiquidGlassGroup],
+        work_regions: &[flux::BlurRegion],
+        layers: &[BackdropLayerWork],
         glass_params: prism::LiquidGlassParams,
     ) -> bool {
         let slot = frame.index() as usize;
         if let Err(error) = canvas.end_target_checked() {
-            log::warn!(
-                "launcher: backdrop capture pass failed ({error}); using translucent fallback"
-            );
+            log::warn!("backdrop: graph capture pass failed ({error}); using translucent fallback");
             self.failed_session = true;
             if let Some(capture) = self.captures.get_mut(slot).and_then(Option::as_mut) {
                 capture.valid = false;
@@ -938,16 +1314,7 @@ impl LauncherBackdrop {
         if let Some(capture) = self.captures.get_mut(slot).and_then(Option::as_mut) {
             capture.valid = true;
         }
-        self.recompute_effects(
-            canvas,
-            frame,
-            sigma,
-            blur_regions,
-            frost_regions,
-            all_backdrop_regions,
-            glass_groups,
-            glass_params,
-        )
+        self.recompute_effects(canvas, frame, work_regions, layers, glass_params)
     }
 
     /// Rebuild this frame slot's effect composite from the still-valid
@@ -959,11 +1326,8 @@ impl LauncherBackdrop {
         &mut self,
         canvas: &flux::Canvas,
         frame: &flux::Frame<'_>,
-        sigma: f32,
-        blur_regions: &[flux::BlurRegion],
-        frost_regions: &[prism::BackdropFrost],
-        all_backdrop_regions: &[flux::BlurRegion],
-        glass_groups: &[prism::LiquidGlassGroup],
+        work_regions: &[flux::BlurRegion],
+        layers: &[BackdropLayerWork],
         glass_params: prism::LiquidGlassParams,
     ) -> bool {
         let slot = frame.index() as usize;
@@ -975,91 +1339,146 @@ impl LauncherBackdrop {
         // valid capture, and `finish_refresh` marks its just-sealed capture
         // valid before delegating here, so this guard can never fire on
         // either entry path; it exists only against future callers.
-        if !capture.valid {
+        if !capture.valid || layers.len() != self.operators.len() {
             return false;
         }
         let refreshed = (|| -> Result<(), flux::Error> {
-            let blurred = self
-                .blur
-                .apply_regions(frame, &capture.image, sigma, blur_regions)?;
-            // One layered dispatch composes the whole stack: the frost rects
-            // write the blurred backdrop first, then every glass body's lens
-            // samples *that* frosted image — the frost is what the glass
-            // refracts, so the materials nest instead of stacking as two
-            // independent views of the desktop. On failure the same filter
-            // degrades to a pure frost dispatch (glass dropped), preserving
-            // the historical fallback contract instead of leaving holes.
-            let layer = self.glass.apply(
-                frame,
-                &capture.image,
-                &blurred,
-                frost_regions,
-                glass_groups,
-                glass_params,
-            );
-            let layer = match layer {
-                Ok(image) => Some(image),
-                Err(error) => {
-                    log::warn!(
-                        "launcher: layered backdrop dispatch failed ({error}); using frost fallback"
-                    );
-                    None
-                }
-            };
+            let capture = self.captures[slot].as_mut().expect("capture checked above");
+            for (index, (operator, work)) in self.operators.iter_mut().zip(layers).enumerate() {
+                let (previous, current_and_later) = capture.layers.split_at_mut(index);
+                let current = &mut current_and_later[0];
+                let input = match work.source {
+                    Some(source) => previous
+                        .get(source)
+                        .and_then(|layer| layer.resolved.as_ref())
+                        .ok_or(flux::Error(
+                            flux::sys::flux_result::FLUX_ERROR_INVALID_ARGUMENT,
+                        ))?,
+                    None => &capture.image,
+                };
+                let material_regions = intersect_blur_regions(&work.regions, work_regions);
+                let resolve_regions = intersect_blur_regions(&work.resolve_regions, work_regions);
 
-            // Clear and rewrite only the disconnected padded input regions.
-            // Geometry/material changes allocate or invalidate the target, so
-            // every pixel that could contain an old effect is covered here.
-            for region in blur_regions {
-                canvas.begin_target_pass(
-                    frame,
-                    &capture.composite,
-                    flux::CanvasPassOptions {
-                        clear: Some(flux::rgba(0, 0, 0, 0)),
-                        antialias: flux::CanvasAntialias::None,
-                        render_area: Some(flux::CanvasRenderArea {
-                            x: region.x as i32,
-                            y: region.y as i32,
-                            width: region.width,
-                            height: region.height,
-                        }),
-                        skip_stencil: true,
-                    },
-                )?;
-                if let Some(image) = layer.as_ref() {
-                    // The layered dispatch already carries the frost inside
-                    // its persistent output; draw the composite in one blit.
-                    image.draw(
-                        canvas,
-                        0.0,
-                        0.0,
-                        capture.size.0 as f32,
-                        capture.size.1 as f32,
-                    );
-                } else {
-                    // Fallback path: plain clipped frost rects, no glass.
-                    // Every visible effect body is frosted (rectangular frost
-                    // regions plus each glass body's live bounds) so no
-                    // analytic body is left as a transparent hole.
-                    for frost in all_backdrop_regions {
-                        canvas.save();
-                        canvas.clip_rect(
-                            frost.x as f32,
-                            frost.y as f32,
-                            frost.width as f32,
-                            frost.height as f32,
-                        );
-                        blurred.draw(
-                            canvas,
+                // Persist a transparent material image for final SrcOver
+                // composition. Clearing the layer's stable material footprint
+                // removes stale pixels when a body's live geometry shrinks
+                // inside its declared capture envelope.
+                if !material_regions.is_empty() {
+                    let blurred =
+                        operator
+                            .blur
+                            .apply_regions(frame, input, work.sigma, &material_regions)?;
+                    let material = match operator.glass.apply(
+                        frame,
+                        input,
+                        &blurred,
+                        &work.frost,
+                        &work.glass,
+                        glass_params,
+                    ) {
+                        Ok(image) => Some(image),
+                        Err(error) => {
+                            log::warn!(
+                                "backdrop layer {:?} dispatch failed ({error}); using frost fallback",
+                                operator.id
+                            );
+                            None
+                        }
+                    };
+                    for region in &material_regions {
+                        canvas.begin_target_pass(
+                            frame,
+                            &current.composite,
+                            flux::CanvasPassOptions {
+                                clear: Some(flux::rgba(0, 0, 0, 0)),
+                                antialias: flux::CanvasAntialias::None,
+                                render_area: Some(flux::CanvasRenderArea {
+                                    x: region.x as i32,
+                                    y: region.y as i32,
+                                    width: region.width,
+                                    height: region.height,
+                                }),
+                                skip_stencil: true,
+                            },
+                        )?;
+                        if let Some(image) = material.as_ref() {
+                            image.draw(
+                                canvas,
+                                0.0,
+                                0.0,
+                                capture.size.0 as f32,
+                                capture.size.1 as f32,
+                            );
+                        } else {
+                            for frost in &work.fallback {
+                                canvas.save();
+                                canvas.clip_rect(
+                                    frost.x as f32,
+                                    frost.y as f32,
+                                    frost.width as f32,
+                                    frost.height as f32,
+                                );
+                                blurred.draw(
+                                    canvas,
+                                    0.0,
+                                    0.0,
+                                    capture.size.0 as f32,
+                                    capture.size.1 as f32,
+                                );
+                                canvas.restore();
+                            }
+                        }
+                        canvas.end_target_checked()?;
+                    }
+                }
+
+                // A resolved image exists only when a downstream graph edge
+                // samples this layer. Final-only layers need the transparent
+                // composite above but avoid one full-size persistent target.
+                if let Some(resolved) = current.resolved.as_ref() {
+                    for region in &resolve_regions {
+                        canvas.begin_target_pass(
+                            frame,
+                            resolved,
+                            flux::CanvasPassOptions {
+                                clear: Some(flux::rgba(0, 0, 0, 255)),
+                                antialias: flux::CanvasAntialias::None,
+                                render_area: Some(flux::CanvasRenderArea {
+                                    x: region.x as i32,
+                                    y: region.y as i32,
+                                    width: region.width,
+                                    height: region.height,
+                                }),
+                                skip_stencil: true,
+                            },
+                        )?;
+                        canvas.draw_image_opaque(
+                            input,
                             0.0,
                             0.0,
                             capture.size.0 as f32,
                             capture.size.1 as f32,
                         );
-                        canvas.restore();
+                        for material_region in &work.regions {
+                            canvas.save();
+                            canvas.clip_rect(
+                                material_region.x as f32,
+                                material_region.y as f32,
+                                material_region.width as f32,
+                                material_region.height as f32,
+                            );
+                            canvas.draw_image(
+                                &current.composite,
+                                0.0,
+                                0.0,
+                                capture.size.0 as f32,
+                                capture.size.1 as f32,
+                            );
+                            canvas.restore();
+                        }
+                        canvas.end_target_checked()?;
                     }
                 }
-                canvas.end_target_checked()?;
             }
             Ok(())
         })();
@@ -1072,7 +1491,7 @@ impl LauncherBackdrop {
             }
             Err(error) => {
                 log::warn!(
-                    "launcher: realtime backdrop dispatch failed ({error}); using translucent fallback"
+                    "backdrop: realtime graph dispatch failed ({error}); using translucent fallback"
                 );
                 self.failed_session = true;
                 if let Some(capture) = self.captures.get_mut(slot).and_then(Option::as_mut) {
@@ -1093,7 +1512,14 @@ impl LauncherBackdrop {
         frame: &flux::Frame<'_>,
         out: &mut [prism::BackdropStats],
     ) -> Result<usize, flux::Error> {
-        self.glass.stats(frame, out)
+        let mut written = 0;
+        for operator in &mut self.operators {
+            if written == out.len() {
+                break;
+            }
+            written += operator.glass.stats(frame, &mut out[written..])?;
+        }
+        Ok(written)
     }
 
     /// Draw this frame slot's persistent transparent effect image.
@@ -1118,22 +1544,24 @@ impl LauncherBackdrop {
         let Some(config) = self.config.as_ref() else {
             return false;
         };
-        for region in &config.capture_regions {
-            canvas.save();
-            canvas.clip_rect(
-                region.origin.0 as f32,
-                region.origin.1 as f32,
-                region.extent.0 as f32,
-                region.extent.1 as f32,
-            );
-            canvas.draw_image(
-                &capture.composite,
-                origin.0 as f32,
-                origin.1 as f32,
-                extent.0 as f32,
-                extent.1 as f32,
-            );
-            canvas.restore();
+        for (layer, regions) in capture.layers.iter().zip(&config.layer_regions) {
+            for region in regions {
+                canvas.save();
+                canvas.clip_rect(
+                    region.origin.0 as f32,
+                    region.origin.1 as f32,
+                    region.extent.0 as f32,
+                    region.extent.1 as f32,
+                );
+                canvas.draw_image(
+                    &layer.composite,
+                    origin.0 as f32,
+                    origin.1 as f32,
+                    extent.0 as f32,
+                    extent.1 as f32,
+                );
+                canvas.restore();
+            }
         }
         true
     }
@@ -1183,7 +1611,7 @@ impl LauncherBackdrop {
 /// samples that image and renders only the selector on top, so the screen
 /// keeps showing exactly the trigger frame until the user confirms or
 /// cancels. Images are indexed by frame slot for the same in-flight reason
-/// as [`LauncherBackdrop`]: a slot is rewritten only after `begin_frame`
+/// as [`BackdropGraphExecutor`]: a slot is rewritten only after `begin_frame`
 /// has waited its fence.
 ///
 /// Session flow: `ScreenshotFreeze::request_open` arms a session and
@@ -1320,8 +1748,8 @@ impl ScreenshotFreeze {
         surface_size: (u32, u32),
     ) -> bool {
         let format = match surface.format() {
-            flux::Format::FLUX_FORMAT_RGBA8_UNORM | flux::Format::FLUX_FORMAT_BGRA8_UNORM => {
-                flux::Format::FLUX_FORMAT_RGBA8_UNORM
+            flux::Format::Rgba8Unorm | flux::Format::Bgra8Unorm => {
+                flux::Format::Rgba8Unorm
             }
             other => {
                 log::warn!(
@@ -2000,7 +2428,7 @@ mod tests;
 /// boundary. `aegis-render` then composites the borrowed outputs beneath
 /// each window tree.
 ///
-/// Ownership mirrors `LauncherBackdrop`: one filter for the surface's frame
+/// Ownership mirrors `BackdropGraphExecutor`: one filter for the surface's frame
 /// stream, per-slot mask images, no transient-pool leases, no device-wide
 /// waits. The mask is re-rendered every frame a shadow is visible (the
 /// windows move), so no cache invalidation tracking is needed beyond the
@@ -2086,7 +2514,7 @@ impl WindowShadowRenderer {
                     device,
                     px_w,
                     px_h,
-                    flux::Format::FLUX_FORMAT_RGBA8_UNORM,
+                    flux::Format::Rgba8Unorm,
                 ) else {
                     continue;
                 };

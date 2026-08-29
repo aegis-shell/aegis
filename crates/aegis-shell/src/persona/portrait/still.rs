@@ -18,7 +18,7 @@ pub fn build(device: &Device, path: &Path) -> Result<Image, Error> {
         device,
         masked.width(),
         masked.height(),
-        Format::FLUX_FORMAT_RGBA8_UNORM,
+        Format::Rgba8Unorm,
         masked.as_raw(),
     )
     .map_err(Error::Flux)

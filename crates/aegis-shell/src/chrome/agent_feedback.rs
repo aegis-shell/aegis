@@ -470,7 +470,10 @@ fn render_pointer_feedback(
         f,
         &format!("aegis-agent-mask-{}", interaction_domain.0),
         rect,
-        design.colors.scrim.with_alpha(scaled_alpha(alpha, 6, 17)),
+        design
+            .colors
+            .modal_scrim
+            .with_alpha(scaled_alpha(alpha, 6, 17)),
         design
             .colors
             .application_border
@@ -622,7 +625,7 @@ fn render_background_activity(
                         &LayoutOpts {
                             width: 7.0,
                             height: 7.0,
-                            bg: design.colors.menu_heading.with_alpha(alpha),
+                            bg: design.colors.menu_text_heading.with_alpha(alpha),
                             radius: 3.5,
                             ..Default::default()
                         },
@@ -757,7 +760,7 @@ fn upload_sprite(device: &flux::Device, svg: &str, width: u32, height: u32) -> O
         device,
         width,
         height,
-        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+        flux::Format::Bgra8Unorm,
         &pixels,
     )
     .ok()
@@ -1003,7 +1006,7 @@ mod tests {
             pointer_glyph(&visual, position, Instant::now()),
             PointerGlyph::ClickMiddle
         );
-        let mut stale = visual.clone();
+        let mut stale = visual;
         stale.latest_at -= SCROLL_GLYPH_FOR;
         assert_eq!(
             pointer_glyph(&stale, position, Instant::now()),

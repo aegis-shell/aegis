@@ -13,3 +13,6 @@ aegis-design = { workspace = true }
 aegis-ui = { workspace = true }
 aegis-shell = { workspace = true }
 lens = { workspace = true }
+
+[lints]
+workspace = true

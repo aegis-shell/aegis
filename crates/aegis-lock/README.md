@@ -24,5 +24,6 @@ cargo run --locked -p aegis-lock --features dev-preview \
 
 Use only a development fake value: command arguments are not a safe place for
 an account password. See the contributor
-[Lock-Screen Testing](../../docs/dev/lock-screen-testing.md) workflow for
-visual states, agent captures, nested integration, and physical validation.
+[Surface Testing](../../docs/dev/surface-testing.md) workflow for
+command-panel test layers, visual states, agent captures, nested integration,
+and physical validation.

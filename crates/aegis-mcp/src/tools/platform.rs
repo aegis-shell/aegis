@@ -350,7 +350,7 @@ impl AegisPlatform {
             interaction_domain,
             SemanticObjectId::for_window(window),
             observation.token,
-            actions.clone(),
+            actions,
         )?;
         let deadline = Instant::now() + config.io_timeout;
         loop {

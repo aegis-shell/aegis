@@ -54,6 +54,8 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         1.0,
         false,
         &capture,
+        &[],
+        &[],
         None,
     );
     let sigma_changed = BackdropCacheKey::new(
@@ -64,6 +66,8 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         1.0,
         false,
         &capture,
+        &[],
+        &[],
         None,
     );
     assert_ne!(base, sigma_changed);
@@ -141,6 +145,8 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
         1.0,
         false,
         &capture,
+        &[],
+        &[],
         None,
     );
     assert_eq!(base, capture_with_glass);
@@ -270,6 +276,100 @@ fn capture_regions_merge_overlapping_blur_footprints_transitively() {
 }
 
 #[test]
+fn backdrop_graph_accumulates_sampling_radius_across_three_layers() {
+    use aegis_shell::{BackdropLayer, BackdropLayerId, BackdropLayerSource};
+
+    let cover = BackdropLayer::new(BackdropLayerId(1), BackdropLayerSource::Scene, 4.0)
+        .with_frost(vec![region(50.0, 50.0, 20.0, 20.0)]);
+    let glass = BackdropLayer::new(
+        BackdropLayerId(2),
+        BackdropLayerSource::Layer(BackdropLayerId(1)),
+        3.0,
+    )
+    .with_frost(vec![region(50.0, 50.0, 20.0, 20.0)]);
+    let glass_again = BackdropLayer::new(
+        BackdropLayerId(3),
+        BackdropLayerSource::Layer(BackdropLayerId(2)),
+        2.0,
+    )
+    .with_frost(vec![region(50.0, 50.0, 20.0, 20.0)]);
+
+    let plan =
+        plan_backdrop_graph(&[glass_again, cover, glass], (200, 200), (200, 200), 1.0).unwrap();
+    assert_eq!(plan.order, vec![1, 2, 0]);
+    assert_eq!(plan.sources, vec![None, Some(0), Some(1)]);
+    assert_eq!(
+        plan.layer_regions,
+        vec![
+            vec![BackdropCaptureRegion {
+                origin: (38, 38),
+                extent: (44, 44),
+            }],
+            vec![BackdropCaptureRegion {
+                origin: (41, 41),
+                extent: (38, 38),
+            }],
+            vec![BackdropCaptureRegion {
+                origin: (44, 44),
+                extent: (32, 32),
+            }],
+        ]
+    );
+    assert_eq!(
+        plan.resolve_regions,
+        vec![
+            vec![BackdropCaptureRegion {
+                origin: (35, 35),
+                extent: (50, 50),
+            }],
+            vec![BackdropCaptureRegion {
+                origin: (44, 44),
+                extent: (32, 32),
+            }],
+            vec![BackdropCaptureRegion {
+                origin: (50, 50),
+                extent: (20, 20),
+            }],
+        ]
+    );
+    assert_eq!(
+        plan.capture_regions,
+        vec![BackdropCaptureRegion {
+            // 3σ × (4 + 3 + 2) accumulated along the dependency path.
+            origin: (23, 23),
+            extent: (74, 74),
+        }]
+    );
+}
+
+#[test]
+fn backdrop_graph_rejects_missing_sources_and_cycles() {
+    use aegis_shell::{BackdropLayer, BackdropLayerId, BackdropLayerSource};
+
+    let missing = BackdropLayer::new(
+        BackdropLayerId(1),
+        BackdropLayerSource::Layer(BackdropLayerId(9)),
+        4.0,
+    )
+    .with_frost(vec![region(10.0, 10.0, 20.0, 20.0)]);
+    assert!(plan_backdrop_graph(&[missing], (100, 100), (100, 100), 1.0).is_err());
+
+    let a = BackdropLayer::new(
+        BackdropLayerId(1),
+        BackdropLayerSource::Layer(BackdropLayerId(2)),
+        4.0,
+    )
+    .with_frost(vec![region(10.0, 10.0, 20.0, 20.0)]);
+    let b = BackdropLayer::new(
+        BackdropLayerId(2),
+        BackdropLayerSource::Layer(BackdropLayerId(1)),
+        4.0,
+    )
+    .with_frost(vec![region(10.0, 10.0, 20.0, 20.0)]);
+    assert!(plan_backdrop_graph(&[a, b], (100, 100), (100, 100), 1.0).is_err());
+}
+
+#[test]
 fn capture_regions_map_outward_into_downsampled_target() {
     let mapped = blur_regions_in_capture(
         &[BackdropCaptureRegion {
@@ -364,7 +464,7 @@ fn a_material_change_widens_a_partial_refresh_to_every_capture_region() {
             extent: (1920, 80),
         },
     ];
-    let partial = vec![full[1].clone()];
+    let partial = vec![full[1]];
 
     // Without a material change the source-damage plan passes through.
     assert_eq!(
@@ -486,7 +586,7 @@ fn opaque_frame_fill_replaces_undefined_and_previous_contents() {
             flux::rgba(expected[0], expected[1], expected[2], expected[3]),
         )
         .unwrap();
-        canvas.end_checked().unwrap();
+        canvas.end_frame_checked().unwrap();
         frame.submit().unwrap().present().unwrap();
 
         let mut pixels = vec![0; size.0 as usize * size.1 as usize * 4];
@@ -517,7 +617,7 @@ fn damaged_base_and_stencil_overlay_preserve_pixels_outside_the_scissor() {
 
     let frame = surface.begin_frame().unwrap();
     begin_opaque_frame(&canvas, &frame, flux::rgba(200, 30, 20, 255)).unwrap();
-    canvas.end_checked().unwrap();
+    canvas.end_frame_checked().unwrap();
     frame.submit().unwrap().present().unwrap();
 
     let frame = surface.begin_frame().unwrap();
@@ -535,7 +635,7 @@ fn damaged_base_and_stencil_overlay_preserve_pixels_outside_the_scissor() {
     // Flux rejects it from a no-stencil pass, so successful checked end
     // proves the overlay really has stencil rather than merely being a
     // second no-stencil LOAD pass.
-    canvas.end_checked().unwrap();
+    canvas.end_frame_checked().unwrap();
     begin_stencil_frame_overlay(&canvas, &frame, frame_damage_render_area(&repaint)).unwrap();
     let arena = flux::Arena::with_capacity(4096).unwrap();
     let path = flux::Path::new(&arena).unwrap();
@@ -545,7 +645,7 @@ fn damaged_base_and_stencil_overlay_preserve_pixels_outside_the_scissor() {
         .line_to(15.0, 8.0)
         .close();
     canvas.fill_path(&path, &flux::Paint::solid(flux::rgba(20, 220, 70, 255)));
-    canvas.end_checked().unwrap();
+    canvas.end_frame_checked().unwrap();
     frame.submit().unwrap().present().unwrap();
 
     let mut pixels = vec![0; size.0 as usize * size.1 as usize * 4];

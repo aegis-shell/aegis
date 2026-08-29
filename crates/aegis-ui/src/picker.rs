@@ -26,7 +26,7 @@ pub fn picker_row_layout(is_selected: bool, is_hovered: bool, design: &Design) -
     let bg = if is_selected {
         design.colors.application_accent
     } else if is_hovered {
-        design.colors.application_hover
+        design.colors.application_surface_hover
     } else {
         Color::TRANSPARENT
     };

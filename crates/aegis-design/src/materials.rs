@@ -103,33 +103,12 @@ pub fn card(design: &Design) -> LayoutOpts {
     }
 }
 
-/// The frosted white floating panel of the SAO command panel (ADR-0080).
-///
-/// Compositor backdrop blur supplies the frost behind it; this layer is the
-/// white tint, edge, and corner. Callers add geometry through struct update
-/// syntax.
+/// The opaque elevated surface of the command panel (ADR-0080).
 #[must_use]
-pub fn sao_panel(sao: &crate::tokens::Sao) -> LayoutOpts {
+pub fn hud_panel(colors: &crate::CommandPanelColors) -> LayoutOpts {
     LayoutOpts {
-        bg: sao.surface,
-        border: sao.border,
-        border_width: 1.0,
-        radius: 16.0,
-        pad: 0.0,
-        ..surface_layout()
-    }
-}
-
-/// The dark glass floating panel of the VR/AR HUD command panel (ADR-0080).
-///
-/// Compositor backdrop blur supplies the frost behind it; this layer is the
-/// deep blue-black tint, the low-alpha cyan edge, and the corner. Callers
-/// add geometry through struct update syntax.
-#[must_use]
-pub fn hud_panel(hud: &crate::tokens::Hud) -> LayoutOpts {
-    LayoutOpts {
-        bg: hud.surface,
-        border: hud.border,
+        bg: colors.surface,
+        border: colors.border,
         border_width: 1.0,
         radius: 16.0,
         pad: 0.0,
@@ -184,10 +163,11 @@ mod tests {
     #[test]
     fn popover_material_preserves_the_existing_glass_values() {
         let material = popover(&Design::dark());
+        let colors = Design::dark().colors;
         // The surface stays translucent for the compositor's backdrop blur,
         // but opaque enough to read where blur is unavailable.
-        assert_eq!(material.bg, Color::rgba(255, 255, 255, 110));
-        assert_eq!(material.border, Color::rgba(255, 255, 255, 72));
+        assert_eq!(material.bg, colors.popover_surface);
+        assert_eq!(material.border, colors.popover_border);
         assert_eq!(material.border_width, 1.0);
         assert_eq!(material.radius, 12.0);
         assert_eq!(material.pad, 0.0);
@@ -198,7 +178,7 @@ mod tests {
         let dark = Design::dark();
         let material = glass_panel(&dark);
         assert_eq!(material.bg, dark.colors.glass_surface);
-        assert_eq!(material.border, Color::rgba(255, 255, 255, 0));
+        assert_eq!(material.border, dark.colors.glass_border);
         assert_eq!(material.border_width, 0.0);
         assert_eq!(material.radius, 18.0);
         assert_eq!(material.cross, Align::Center);
@@ -218,33 +198,28 @@ mod tests {
 
     #[test]
     fn card_material_leaves_component_geometry_unset() {
-        let material = card(&Design::dark());
-        assert_eq!(material.bg, Color::rgba(255, 255, 255, 14));
+        let design = Design::dark();
+        let material = card(&design);
+        assert_eq!(material.bg, design.colors.card_surface);
         assert_eq!(material.radius, 16.0);
         assert_eq!(material.width, 0.0);
         assert_eq!(material.min_height, 0.0);
     }
 
     #[test]
-    fn sao_panel_material_uses_the_white_frosted_tokens() {
-        let sao = crate::tokens::Sao::classic();
-        let material = sao_panel(&sao);
-        assert_eq!(material.bg, sao.surface);
-        assert_eq!(material.border, sao.border);
-        assert_eq!(material.border_width, 1.0);
-        assert_eq!(material.radius, 16.0);
-        assert_eq!(material.pad, 0.0);
-    }
-
-    #[test]
-    fn hud_panel_material_uses_the_dark_glass_tokens() {
-        let hud = crate::tokens::Hud::classic();
-        let material = hud_panel(&hud);
-        assert_eq!(material.bg, hud.surface);
-        assert_eq!(material.border, hud.border);
-        assert_eq!(material.border_width, 1.0);
-        assert_eq!(material.radius, 16.0);
-        assert_eq!(material.pad, 0.0);
+    fn hud_panel_material_is_opaque_in_both_schemes() {
+        for colors in [
+            crate::CommandPanelColors::dark(),
+            crate::CommandPanelColors::light(),
+        ] {
+            let material = hud_panel(&colors);
+            assert_eq!(material.bg, colors.surface);
+            assert_eq!(material.border, colors.border);
+            assert_eq!(material.border_width, 1.0);
+            assert_eq!(material.radius, 16.0);
+            assert_eq!(material.pad, 0.0);
+            assert_eq!(material.bg.components().3, 255);
+        }
     }
 
     #[test]
@@ -265,10 +240,11 @@ mod tests {
         assert_eq!(material.height, 12.0);
         assert_eq!(material.bg, Color::TRANSPARENT);
 
-        let filled = sized_fill(8.0, 8.0, Color::rgba(255, 255, 255, 22), 4.0);
+        let fill = Design::dark().colors.menu_surface_hover;
+        let filled = sized_fill(8.0, 8.0, fill, 4.0);
         assert_eq!(filled.width, 8.0);
         assert_eq!(filled.height, 8.0);
-        assert_eq!(filled.bg, Color::rgba(255, 255, 255, 22));
+        assert_eq!(filled.bg, fill);
         assert_eq!(filled.radius, 4.0);
     }
 }

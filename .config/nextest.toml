@@ -1,0 +1,28 @@
+# .config/nextest.toml
+# Nextest execution and scheduling configuration for Aegis workspace.
+
+[profile.default]
+# Kill hung tests after 30s to prevent infinite deadlocks in local test runs
+slow-timeout = { period = "30s", terminate-after = 1 }
+retries = 0
+
+[profile.ci]
+# Generous timeout on CI runners with retries on transient scheduler jitter
+slow-timeout = { period = "60s", terminate-after = 1 }
+retries = 1
+failure-output = "immediate-final"
+
+[test-groups]
+# Single-thread execution group for tests that bind exclusive hardware/system resources
+# (e.g. DRM devices, KMS leases, mock IPC domain sockets, PAM authentication sessions)
+exclusive-system-tests = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(aegis-backend) or package(aegis-ipc)'
+test-group = 'exclusive-system-tests'
+
+# Prioritize heavy/long-running compositor and renderer test suites first
+# to maximize multi-core worker pool utilization and minimize the tail latency.
+[[profile.default.overrides]]
+filter = 'package(aegis-compositor) or package(aegis-render) or package(aegis-shell)'
+priority = 100

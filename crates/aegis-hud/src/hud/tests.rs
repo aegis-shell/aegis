@@ -370,14 +370,14 @@ fn workspace_indicator_emits_visible_pixels_above_its_glass_body() {
 
     let frame = surface.begin_frame().unwrap();
     canvas
-        .begin(&frame, Some(flux::rgba(0, 0, 0, 255)))
+        .begin_frame(Some(&frame), Some(flux::rgba(0, 0, 0, 255)))
         .unwrap();
     unsafe {
         shell
             .render(canvas.as_raw().cast(), &input)
             .expect("HUD must render into the offscreen canvas");
     }
-    canvas.end_checked().unwrap();
+    canvas.end_frame_checked().unwrap();
     frame.submit().unwrap().present().unwrap();
 
     let mut pixels = vec![0; WIDTH * HEIGHT * 4];
@@ -481,4 +481,114 @@ fn left_chip_grows_to_accommodate_active_recording_streams() {
         layout_multi.chips[LEFT].w - layout_inactive.chips[LEFT].w,
         recording_cell_width(2) + CELL_GAP
     );
+}
+
+#[test]
+fn volume_icon_tiers_follow_the_reported_level() {
+    assert_eq!(
+        volume_icon_name(Some(0), false),
+        "audio-volume-muted-symbolic"
+    );
+    assert_eq!(
+        volume_icon_name(Some(80), true),
+        "audio-volume-muted-symbolic"
+    );
+    assert_eq!(
+        volume_icon_name(Some(20), false),
+        "audio-volume-low-symbolic"
+    );
+    assert_eq!(
+        volume_icon_name(Some(50), false),
+        "audio-volume-medium-symbolic"
+    );
+    assert_eq!(
+        volume_icon_name(Some(90), false),
+        "audio-volume-high-symbolic"
+    );
+    // No audio service: both helpers must degrade coherently.
+    assert_eq!(volume_icon_name(None, false), "audio-volume-muted-symbolic");
+    assert_eq!(volume_icon(None, false), Icon::VolumeMuted);
+}
+
+#[test]
+fn volume_label_names_the_level_or_the_mute() {
+    let en = Localizer::new("en_US.UTF-8");
+    assert_eq!(volume_label(Some(42), false, &en).as_deref(), Some("42%"));
+    assert_eq!(volume_label(Some(42), true, &en).as_deref(), Some("Muted"));
+    // No sink answered: the cell is absent, not a fabricated 0%.
+    assert_eq!(volume_label(None, false, &en), None);
+}
+
+#[test]
+fn bluetooth_label_names_the_radio_state() {
+    let zh = Localizer::new("zh_CN.UTF-8");
+    assert_eq!(bluetooth_label(true, &zh), "开");
+    assert_eq!(bluetooth_label(false, &zh), "关");
+    let en = Localizer::new("en_US.UTF-8");
+    assert_eq!(bluetooth_label(false, &en), "Off");
+}
+
+#[test]
+fn wifi_label_requires_a_wireless_link_with_an_association() {
+    let mut status = SystemStatus::default();
+    assert_eq!(wifi_label(&status), None);
+
+    // An SSID without a live wireless link is stale, not current.
+    status.wifi_ssid = Some("Homelab-5G".into());
+    assert_eq!(wifi_label(&status), None);
+
+    status.network = NetworkState::Wifi;
+    assert_eq!(wifi_label(&status), Some("Homelab-5G"));
+
+    // An empty answer is a known-absent association, not a blank label.
+    status.wifi_ssid = Some(String::new());
+    assert_eq!(wifi_label(&status), None);
+}
+
+#[test]
+fn label_width_hint_separates_wide_and_proportional_text() {
+    // Latin proportional text is estimated below one em per scalar.
+    assert!(label_width_hint("Homelab-5G", 11.0) < 10.0 * 11.0);
+    // Full-width CJK advances a full em per scalar.
+    assert_eq!(label_width_hint("蓝牙", 11.0), 22.0);
+    // The estimate never goes negative or empty.
+    assert_eq!(label_width_hint("", 11.0), 0.0);
+}
+
+#[test]
+fn icon_label_cells_cap_their_label_budget() {
+    let footnote = Design::dark().typography.footnote;
+    // A short label fits its estimate inside the cap.
+    let short = icon_label_cell_w("42%", footnote);
+    assert!(short > CELL_ICON && short < CELL_ICON + MAX_STATUS_LABEL_W);
+    // An unbounded SSID cannot push the cell past the cap.
+    let unbounded = icon_label_cell_w(&"A".repeat(400), footnote);
+    assert_eq!(unbounded, CELL_ICON + STATUS_LABEL_GAP + MAX_STATUS_LABEL_W);
+}
+
+#[test]
+fn left_chip_grows_for_each_labeled_status_cell() {
+    let mut bar = Hud::new();
+    let workspaces = workspaces_empty();
+    let baseline = bar.chip_layout((1920.0, 1080.0), &workspaces, 0, 0, 0);
+    let footnote = Design::dark().typography.footnote;
+
+    // Wi-Fi association: the bare network cell becomes an icon+SSID cell.
+    bar.status.network = NetworkState::Wifi;
+    bar.status.wifi_ssid = Some("Homelab-5G".into());
+    let with_ssid = bar.chip_layout((1920.0, 1080.0), &workspaces, 0, 0, 0);
+    let ssid_growth = icon_label_cell_w("Homelab-5G", footnote) - CELL_ICON;
+    assert!((with_ssid.chips[LEFT].w - baseline.chips[LEFT].w - ssid_growth).abs() < 0.01);
+
+    // Bluetooth: a new icon+on/off cell appears beside the network cell.
+    bar.status.bluetooth_enabled = Some(true);
+    let with_bt = bar.chip_layout((1920.0, 1080.0), &workspaces, 0, 0, 0);
+    let bt_growth = icon_label_cell_w(&bluetooth_label(true, &bar.i18n), footnote) + CELL_GAP;
+    assert!((with_bt.chips[LEFT].w - with_ssid.chips[LEFT].w - bt_growth).abs() < 0.01);
+
+    // Speaker: a whole new cell appears with the level beside the glyph.
+    bar.status.volume = Some(42);
+    let with_volume = bar.chip_layout((1920.0, 1080.0), &workspaces, 0, 0, 0);
+    let vol_growth = icon_label_cell_w("42%", footnote) + CELL_GAP;
+    assert!((with_volume.chips[LEFT].w - with_bt.chips[LEFT].w - vol_growth).abs() < 0.01);
 }

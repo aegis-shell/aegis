@@ -31,7 +31,7 @@ fn toggle_opens_and_closes_the_panel() {
     assert!(panel.exclusive_presentation_active());
     assert!(panel.requires_composition());
     assert!(!panel.anim_pending());
-    assert_eq!(panel.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
+    assert_eq!(panel.backdrop_blur_sigma(), 0.0);
 
     panel.toggle_command_panel(&mut out);
     assert!(!panel.open);
@@ -143,9 +143,18 @@ fn a_fullscreen_window_closes_the_panel() {
 #[test]
 fn cluster_bounds_stay_inside_small_displays() {
     for display in [(320.0, 480.0), (800.0, 600.0), (1920.0, 1080.0)] {
-        let (profile, main, notifications, network, work_mode, power) =
+        let (profile, main, notifications, clock, tray, media, work_mode, power) =
             CommandPanel::cluster_bounds(display);
-        for rect in [profile, main, notifications, network, work_mode, power] {
+        for rect in [
+            profile,
+            main,
+            notifications,
+            clock,
+            tray,
+            media,
+            work_mode,
+            power,
+        ] {
             assert!(rect.x >= 0.0 && rect.y >= 0.0);
             assert!(rect.x + rect.w <= display.0 + 0.01);
             assert!(rect.y + rect.h <= display.1 + 0.01);
@@ -157,7 +166,7 @@ fn cluster_bounds_stay_inside_small_displays() {
 
 #[test]
 fn full_size_displays_get_the_design_geometry() {
-    let (profile, main, notifications, network, work_mode, power) =
+    let (profile, main, notifications, clock, tray, media, work_mode, power) =
         CommandPanel::cluster_bounds((1920.0, 1080.0));
     // Profile is compact in top-left
     assert_eq!(profile.w, 300.0);
@@ -171,89 +180,39 @@ fn full_size_displays_get_the_design_geometry() {
     assert_eq!(notifications.x, 1920.0 - 48.0 - 260.0);
     assert_eq!(notifications.y, 37.8);
 
-    // The network monitor sits at the right-middle anchor, below the
-    // notification stream and sharing its right edge.
-    assert_eq!(network.w, 300.0);
-    assert_eq!(network.h, 300.0);
-    assert_eq!(network.x, 1920.0 - 48.0 - 300.0);
-    assert_eq!(network.y, notifications.y + notifications.h + PANEL_GAP);
+    // The clock sits at top-center, clear of both top corners.
+    assert!(clock.x > profile.x + profile.w);
+    assert!(clock.x + clock.w < notifications.x);
+    assert_eq!(clock.y, profile.y);
 
-    // Work Mode Quick Switcher panel sits below network monitor.
-    assert_eq!(work_mode.w, 300.0);
-    assert_eq!(work_mode.h, 110.0);
-    assert_eq!(work_mode.x, 1920.0 - 48.0 - 300.0);
-    assert_eq!(work_mode.y, network.y + network.h + PANEL_GAP);
+    // The tray column hugs the left-middle anchor.
+    assert_eq!(tray.x, 48.0);
+    assert!(tray.y > notifications.y);
+    assert!(tray.h < 1080.0 - 37.8 * 2.0);
 
-    // Power & Session panel sits below work mode panel.
-    assert_eq!(power.w, 300.0);
-    assert_eq!(power.h, 116.0);
-    assert_eq!(power.x, 1920.0 - 48.0 - 300.0);
-    assert_eq!(power.y, work_mode.y + work_mode.h + PANEL_GAP);
+    // The MPRIS card owns the left-bottom anchor and stays clear of the
+    // centered main surface.
+    assert_eq!(media.x, profile.x);
+    assert_eq!(media.y + media.h, 1080.0 - 37.8);
+    assert!(media.x + media.w + PANEL_GAP <= main.x);
 
-    // Main Split Control Panel is centered on screen and clear of the
-    // network column.
-    assert_eq!(main.w, 720.0);
-    assert_eq!(main.h, 460.0);
-    assert_eq!(main.x, (1920.0 - 720.0) * 0.5);
-    assert_eq!(main.y, (1080.0 - 460.0) * 0.5);
-    assert!(main.x + main.w <= network.x - PANEL_GAP);
-}
+    // The right-bottom band is horizontal and pinned into the corner:
+    // power/session flush to the right margin, work mode to its left, both
+    // flush to the bottom margin and sharing one height.
+    let margin_y = 37.8;
+    assert_eq!(power.x + power.w, 1920.0 - 48.0);
+    assert_eq!(power.y + power.h, 1080.0 - margin_y);
+    assert_eq!(work_mode.x + work_mode.w + PANEL_GAP, power.x);
+    assert_eq!(work_mode.y + work_mode.h, power.y + power.h);
+    assert_eq!(work_mode.h, power.h);
+    assert!(work_mode.y > notifications.y + notifications.h);
 
-#[test]
-fn history_evicts_the_oldest_sample_past_its_cap() {
-    let mut history = History::new(4);
-    for value in [10.0, 20.0, 30.0, 40.0] {
-        history.push(value);
-    }
-    assert_eq!(history.len(), 4);
-    history.push(50.0);
-    history.push(60.0);
-    assert_eq!(history.len(), 4);
-    assert_eq!(history.newest(), Some(60.0));
-    let samples: Vec<f32> = history.samples().collect();
-    assert_eq!(samples, vec![30.0, 40.0, 50.0, 60.0]);
-}
-
-#[test]
-fn resource_stats_feed_the_sparkline_histories() {
-    let mut panel = CommandPanel::without_sources();
-    let mut stats = ResourceStats {
-        cpu_percent: 42.0,
-        gpu_percent: Some(17.0),
-        mem_used_bytes: 8 << 30,
-        mem_total_bytes: 16 << 30,
-        ..ResourceStats::default()
-    };
-    panel.update_resource_stats(&stats);
-    assert_eq!(panel.cpu_history.newest(), Some(42.0));
-    assert_eq!(panel.gpu_history.newest(), Some(17.0));
-    assert_eq!(panel.ram_history.newest(), Some(50.0));
-
-    // A vanished GPU probe must not push stale samples.
-    stats.gpu_percent = None;
-    stats.cpu_percent = 5.0;
-    panel.update_resource_stats(&stats);
-    assert_eq!(panel.cpu_history.len(), 2);
-    assert_eq!(panel.gpu_history.len(), 1);
-    assert_eq!(panel.stats.cpu_percent, 5.0);
-}
-
-#[test]
-fn format_rate_picks_si_units_and_precision() {
-    assert_eq!(format_rate(0.0), "0B");
-    assert_eq!(format_rate(512.0), "512B");
-    assert_eq!(format_rate(340.0 * 1024.0), "340K");
-    assert_eq!(format_rate(1.25 * 1024.0 * 1024.0), "1.2M");
-    assert_eq!(format_rate(9.6 * 1024.0), "9.6K");
-    assert_eq!(format_rate(64.0 * 1024.0 * 1024.0), "64M");
-    assert_eq!(format_rate(2.0 * 1024.0 * 1024.0 * 1024.0), "2.0G");
-}
-
-#[test]
-fn format_gib_pair_renders_used_over_total_in_gib() {
-    assert_eq!(format_gib_pair(0, 0), "0.0/0.0G");
-    let gib = 1u64 << 30;
-    assert_eq!(format_gib_pair(gib * 64 / 10, gib * 156 / 10), "6.4/15.6G");
+    // The main surface and clock share the screen's true centre axis. The
+    // bottom band does not squeeze a panel that sits well above it.
+    assert_eq!(main.w, MAIN_W);
+    assert_eq!(main.h, MAIN_H);
+    assert_eq!(main.x + main.w * 0.5, 1920.0 * 0.5);
+    assert_eq!(clock.x + clock.w * 0.5, main.x + main.w * 0.5);
 }
 
 #[test]
@@ -267,6 +226,13 @@ fn profile_resolves_for_the_current_process_user() {
 }
 
 #[test]
+fn clock_strings_render_a_time_and_a_date() {
+    let (time, date) = crate::presentation::clock_strings();
+    assert!(time.contains(':'), "wall-clock time renders as HH:MM");
+    assert!(!date.is_empty(), "the date line renders");
+}
+
+#[test]
 fn stagger_delays_the_content_panel_behind_the_menu() {
     assert_eq!(stagger(0.0, CONTENT_STAGGER), 0.0);
     assert_eq!(stagger(CONTENT_STAGGER, CONTENT_STAGGER), 0.0);
@@ -275,31 +241,7 @@ fn stagger_delays_the_content_panel_behind_the_menu() {
 }
 
 #[test]
-fn network_identity_names_the_interface_and_wifi_ssid() {
-    let i18n = Localizer::new("en-US");
-    let mut status = SystemStatus::default();
-
-    // Offline: no interface to name.
-    assert_eq!(network_identity(&status, &i18n), "Offline");
-
-    // Wired: the interface alone.
-    status.network = NetworkState::Wired;
-    status.network_interface = "enp3s0".into();
-    assert_eq!(network_identity(&status, &i18n), "enp3s0");
-
-    // Wi-Fi: the interface plus the SSID once the forked probe answers.
-    status.network = NetworkState::Wifi;
-    status.network_interface = "wlan0".into();
-    status.wifi_ssid = Some("Homelab-5G".into());
-    assert_eq!(network_identity(&status, &i18n), "wlan0 · Homelab-5G");
-
-    // Wi-Fi before the probe answers: fall back to the interface.
-    status.wifi_ssid = None;
-    assert_eq!(network_identity(&status, &i18n), "wlan0");
-}
-
-#[test]
-fn command_panel_emits_liquid_glass_regions_when_open() {
+fn command_panel_never_requests_backdrop_effects() {
     let mut panel = CommandPanel::without_sources();
     let display = (1920.0, 1080.0);
     let workspaces = WorkspaceSnapshot {
@@ -307,29 +249,41 @@ fn command_panel_emits_liquid_glass_regions_when_open() {
     };
     let mut out = ChromeEvents::default();
 
-    // Inactive panel returns no liquid glass regions
+    // No hidden-state effect declarations.
     assert!(
         panel
             .liquid_glass_regions(display, &[], &workspaces)
             .is_empty()
     );
+    assert!(panel.backdrop_regions(display, &[], &workspaces).is_empty());
 
-    // Opened panel returns physical liquid glass bodies (notifications, network, work mode, power, capsule tabs, view)
+    // Opening paints solid surfaces through Lens and does not activate the
+    // compositor's capture, blur, or liquid-glass paths.
     panel.toggle_command_panel(&mut out);
     panel.reveal = 1.0;
-    let regions = panel.liquid_glass_regions(display, &[], &workspaces);
-    assert!(regions.len() >= 6);
-    assert_eq!(regions[0].opacity, 1.0); // Notifications
-    assert_eq!(regions[1].opacity, 1.0); // Network monitor (right-middle)
-    assert_eq!(regions[1].corner_radius, panel.design.radii.glass_panel);
-    assert_eq!(regions[2].opacity, 1.0); // Work Mode quick switcher (right-bottom)
-    assert_eq!(regions[2].corner_radius, panel.design.radii.glass_panel);
-    assert_eq!(regions[3].opacity, 1.0); // Power & Session actions (right-bottom)
-    assert_eq!(regions[3].corner_radius, panel.design.radii.glass_panel);
-    // Each capsule has 100% semicircle ends (corner_radius == height * 0.5)
-    assert_eq!(regions[4].corner_radius, 22.0); // First capsule tab
-    let last = regions.last().unwrap();
-    assert_eq!(last.opacity, 1.0); // Right Content View
+    assert_eq!(panel.backdrop_blur_sigma(), 0.0);
+    assert!(panel.backdrop_regions(display, &[], &workspaces).is_empty());
+    assert!(
+        panel
+            .liquid_glass_regions(display, &[], &workspaces)
+            .is_empty()
+    );
+}
+
+#[test]
+fn command_panel_palette_tracks_the_live_appearance() {
+    let mut panel = CommandPanel::without_sources();
+    let dark = panel.panel_colors();
+    assert!(!dark.is_light());
+
+    panel.design = Design::light();
+    let light = panel.panel_colors();
+    assert!(light.is_light());
+    assert_ne!(light.background, dark.background);
+    assert_ne!(light.surface, dark.surface);
+    assert_ne!(light.text, dark.text);
+    assert_eq!(light.background.components().3, 255);
+    assert_eq!(light.surface.components().3, 255);
 }
 
 #[test]
@@ -376,7 +330,7 @@ fn projected_modes_never_blank_an_unlocked_session() {
 #[test]
 fn work_mode_and_power_session_panels_render_within_cluster() {
     let display = (1920.0, 1080.0);
-    let (_profile, _main, notifications, network, work_mode, power) =
+    let (_profile, _main, notifications, _clock, _tray, _media, work_mode, power) =
         CommandPanel::cluster_bounds(display);
 
     assert!(work_mode.w > 0.0);
@@ -384,12 +338,47 @@ fn work_mode_and_power_session_panels_render_within_cluster() {
     assert!(power.w > 0.0);
     assert!(power.h > 0.0);
 
-    // Verify right column vertical stacking order: Notifications -> Network -> Work Mode -> Power
-    assert!(notifications.y < network.y);
-    assert!(network.y < work_mode.y);
-    assert!(work_mode.y < power.y);
-    assert_eq!(network.x, work_mode.x);
-    assert_eq!(work_mode.x, power.x);
-    assert_eq!(network.w, work_mode.w);
-    assert_eq!(work_mode.w, power.w);
+    // The right-bottom band is one horizontal row sharing a height, clear
+    // below the notification stream.
+    assert!(work_mode.y > notifications.y + notifications.h);
+    assert_eq!(work_mode.y, power.y);
+    assert_eq!(work_mode.h, power.h);
+    assert!(power.x > work_mode.x + work_mode.w);
+}
+
+#[test]
+fn request_system_confirm_dedupes_while_one_is_pending() {
+    let mut panel = CommandPanel::without_sources();
+    let mut out = ChromeEvents::default();
+
+    // The first destructive request latches and leaves through the events.
+    panel.request_system_confirm(SystemAction::PowerOff, &mut out);
+    assert_eq!(panel.power_pending_confirm, Some(SystemAction::PowerOff));
+    assert_eq!(out.system_actions.len(), 1);
+
+    // A second request while the consent dialog is still resolving is
+    // dropped, not stacked.
+    panel.request_system_confirm(SystemAction::Reboot, &mut out);
+    assert_eq!(out.system_actions.len(), 1);
+    assert_eq!(panel.power_pending_confirm, Some(SystemAction::PowerOff));
+
+    // Closing the panel clears the latch so a reopen accepts a new action.
+    panel.close();
+    assert_eq!(panel.power_pending_confirm, None);
+}
+
+#[test]
+fn scrollbar_reveals_fade_out_after_wheel_activity_stops() {
+    let mut panel = CommandPanel::without_sources();
+    panel.notif_scrollbar_reveal = 1.0;
+    panel.tray_scrollbar_reveal = 1.0;
+
+    // A handful of 60fps frames of decay settles both reveals to zero.
+    for _ in 0..120 {
+        panel.advance(1.0 / 60.0);
+    }
+    assert_eq!(panel.notif_scrollbar_reveal, 0.0);
+    assert_eq!(panel.tray_scrollbar_reveal, 0.0);
+    // And with nothing moving, no interaction animation stays pending.
+    assert!(!panel.interaction_anim_pending());
 }

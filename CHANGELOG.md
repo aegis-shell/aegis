@@ -7,6 +7,59 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- The screenshot region selector and portal window/output pickers no
+  longer render as liquid-glass bodies. A selection is a capture marker,
+  not a surface: the framed content stays pixel-exact — no backdrop blur,
+  no refraction — inside a square-cornered border, and the dimmed scrim
+  hole now matches the captured rect exactly instead of previewing
+  rounded corners that the PNG keeps. Dragging no longer submits backdrop
+  capture or analytic-glass work; only the pixel-picking loupe keeps its
+  glass lens, and the status pills keep their floating-chrome glass.
+- The HUD's status chip now names what it shows instead of glyph-only
+  hints: the network cell carries the associated Wi-Fi network's SSID
+  (ellipsized at a fixed budget, so long names cannot push the chip),
+  Bluetooth carries its localized on/off word beside the glyph, and a new
+  speaker cell carries the default sink's level — or the localized
+  "Muted" word — with tiered volume icons matching the command panel. The
+  audio cell appears only when an audio service answered; it is absent
+  rather than a fabricated `0%`.
+- The Wi-Fi SSID probe is now daemon-neutral: `iwgetid -r` remains the
+  first choice, with `iw dev <if> link` as a fallback where
+  wireless-tools is absent, so iwd, wpa_supplicant, and NetworkManager
+  stations all resolve the same answer without caring which service owns
+  the radio.
+- The command panel now paints an opaque, scheme-adaptive canvas and solid
+  elevated surfaces instead of stacking liquid glass over a full-screen
+  blurred backdrop. Its layout and controls are unchanged, while opening the
+  panel no longer submits backdrop capture, blur, or analytic-glass work. The
+  new semantic palette follows the desktop appearance with Apple-style
+  grouped grays, white or elevated-gray surfaces, quiet separators, and
+  system-blue interaction states.
+- Removed the retired inspiration-specific command-panel palette from
+  `aegis-design`, including its token type, theme builders, painted material,
+  and tests. The design API now exposes only semantic product roles used by
+  current components ([ADR-0144](docs/adr/0144-product-semantic-design-vocabulary.md)).
+- Offscreen backdrops now use an explicit Optics composition DAG instead of
+  one hard-coded global frost/glass stack. Chrome may declare a layer that
+  samples the scene or another stable layer id, enabling cover blur → glass
+  → glass and branched cumulative effects. The planner validates cycles,
+  accumulates sampling ROI through every edge, keeps disconnected regions
+  separate, and allocates resolved intermediates only for layers with
+  downstream consumers. Existing flat backdrop declarations remain fused
+  into a compatibility root layer ([ADR-0143](docs/adr/0143-explicit-offscreen-composition-dag.md)).
+- Aligned with the post-v0.0.28 Optics Rust binding surface ahead of the
+  next tagged release: `flux::Format` variants renamed from C-style
+  constants to idiomatic Rust (`Bgra8Unorm`, `Rgba8Unorm`, `Rgb10a2Unorm`,
+  `D32Sfloat`, …), the canvas pass bracket unified into
+  `begin_frame(Some(&frame), clear)` / `end_frame_checked()` (the frame-less
+  CPU form is `begin_cpu`), and dma-buf imports now take `OwnedFd`s by value
+  so ownership is enforced by the type system — the renderer and capture
+  stream no longer hand-orchestrate `dup`/`close`/
+  `mem::forget` on import error paths. Local Optics mode tracks this
+  interface; the canonical tag bump lands with the next Optics release.
+
 ## [0.0.49] - 2026-08-25
 
 ### Changed

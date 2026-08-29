@@ -62,7 +62,7 @@ fn exact_resource_grant_requests_round_trip_without_ambient_fields() {
         },
         Request::ConsumeResourceGrant {
             id: ResourceGrantId("opaque-handle".into()),
-            resource: resource.clone(),
+            resource,
         },
         Request::RevokeResourceGrant {
             id: ResourceGrantId("opaque-handle".into()),
@@ -1171,7 +1171,7 @@ fn stream_target_output_selector_is_backward_compatible() {
     // serde-skip rule only fires for the selector-less default.
     let req = Request::StreamOutputStart {
         max_fps: None,
-        target: selected.clone(),
+        target: selected,
         dmabuf: None,
         cursor: None,
     };

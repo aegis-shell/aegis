@@ -10,6 +10,9 @@ composites the surface tree into the current output frame.
 - Draw mapped surfaces in compositor z-order.
 - Cache textures by surface generation and release unused GPU resources.
 - Create the flux device configuration required by the compositor.
+- Re-export Optics' composition-DAG planner at the renderer boundary for
+  explicit offscreen dependencies, ROI/damage propagation, and target
+  lifetime planning.
 
 ## Boundaries
 

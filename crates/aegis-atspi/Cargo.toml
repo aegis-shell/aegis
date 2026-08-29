@@ -19,3 +19,6 @@ serde_json.workspace = true
 log.workspace = true
 aegis-logging.workspace = true
 zbus.workspace = true
+
+[lints]
+workspace = true

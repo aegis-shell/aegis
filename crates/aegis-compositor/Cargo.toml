@@ -27,3 +27,6 @@ tempfile = "3"
 
 [package.metadata.cargo-machete]
 ignored = ["pkg-config"]
+
+[lints]
+workspace = true
