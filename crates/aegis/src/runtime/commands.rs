@@ -166,7 +166,6 @@ pub(super) fn apply_command(
         Command::MoveToWorkspace { window, workspace } => {
             server.move_to_workspace(*window, *workspace)
         }
-        Command::ToggleTiling => server.set_tiling(!server.tiling()),
         Command::Notify {
             summary,
             body,
@@ -559,10 +558,15 @@ mod tests {
                 None,
                 None,
                 vec![
-                    aegis_ipc::Command::ToggleTiling,
                     aegis_ipc::Command::Notify {
-                        summary: "s".into(),
-                        body: "b".into(),
+                        summary: "s1".into(),
+                        body: "b1".into(),
+                        app_id: None,
+                        external_id: None,
+                    },
+                    aegis_ipc::Command::Notify {
+                        summary: "s2".into(),
+                        body: "b2".into(),
                         app_id: None,
                         external_id: None,
                     },
@@ -584,7 +588,11 @@ mod tests {
                 (2, &aegis_ipc::Effect::Applied)
             ]
         );
-        assert!(fixture.server.tiling(), "the first op applied");
+        assert_eq!(
+            fixture.notifications.lock().unwrap().len(),
+            2,
+            "both ops applied"
+        );
         assert_eq!(fixture.journal.lock().unwrap().latest_seq(), 2);
     }
 
@@ -592,7 +600,16 @@ mod tests {
     fn transact_batch_precondition_conflicts_apply_nothing() {
         let mut fixture = Fixture::new();
         let result = fixture
-            .transact(None, None, vec![aegis_ipc::Command::ToggleTiling])
+            .transact(
+                None,
+                None,
+                vec![aegis_ipc::Command::Notify {
+                    summary: "n1".into(),
+                    body: "b1".into(),
+                    app_id: None,
+                    external_id: None,
+                }],
+            )
             .expect("first batch");
         let aegis_ipc::TransactResult::Committed { receipt } = result else {
             panic!("expected commit, got {result:?}");
@@ -600,7 +617,16 @@ mod tests {
         assert_eq!(receipt.after_seq, 1);
 
         let result = fixture
-            .transact(Some(0), None, vec![aegis_ipc::Command::ToggleTiling])
+            .transact(
+                Some(0),
+                None,
+                vec![aegis_ipc::Command::Notify {
+                    summary: "n2".into(),
+                    body: "b2".into(),
+                    app_id: None,
+                    external_id: None,
+                }],
+            )
             .expect("conflicting batch");
         assert_eq!(
             result,
@@ -610,8 +636,9 @@ mod tests {
                 actual: 1,
             }
         );
-        assert!(
-            fixture.server.tiling(),
+        assert_eq!(
+            fixture.notifications.lock().unwrap().len(),
+            1,
             "a conflicting batch applies nothing further"
         );
         assert_eq!(
@@ -625,7 +652,12 @@ mod tests {
             .transact(
                 None,
                 Some(revision + 1),
-                vec![aegis_ipc::Command::ToggleTiling],
+                vec![aegis_ipc::Command::Notify {
+                    summary: "n3".into(),
+                    body: "b3".into(),
+                    app_id: None,
+                    external_id: None,
+                }],
             )
             .expect("revision-conflicting batch");
         assert_eq!(
@@ -641,12 +673,22 @@ mod tests {
             .transact(
                 Some(1),
                 Some(revision),
-                vec![aegis_ipc::Command::ToggleTiling],
+                vec![aegis_ipc::Command::Notify {
+                    summary: "n4".into(),
+                    body: "b4".into(),
+                    app_id: None,
+                    external_id: None,
+                }],
             )
             .expect("batch at the fresh cursors");
         assert!(
             matches!(result, aegis_ipc::TransactResult::Committed { .. }),
             "the batch commits when every precondition holds: {result:?}"
+        );
+        assert_eq!(
+            fixture.notifications.lock().unwrap().len(),
+            2,
+            "the fresh batch applied"
         );
     }
 
@@ -658,7 +700,12 @@ mod tests {
                 None,
                 None,
                 vec![
-                    aegis_ipc::Command::ToggleTiling,
+                    aegis_ipc::Command::Notify {
+                        summary: "s1".into(),
+                        body: "b1".into(),
+                        app_id: None,
+                        external_id: None,
+                    },
                     // The window does not exist: the physical-seat authority
                     // check refuses this op while the batch continues.
                     aegis_ipc::Command::Focus {
@@ -666,8 +713,8 @@ mod tests {
                         reveal: true,
                     },
                     aegis_ipc::Command::Notify {
-                        summary: "s".into(),
-                        body: "b".into(),
+                        summary: "s2".into(),
+                        body: "b2".into(),
                         app_id: None,
                         external_id: None,
                     },

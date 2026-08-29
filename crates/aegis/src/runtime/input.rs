@@ -491,19 +491,6 @@ impl CompositorRuntime {
                     origin,
                 );
             }
-            Action::ToggleTiling => {
-                let cmd = aegis_ipc::Command::ToggleTiling;
-                apply_command_and_journal(
-                    &mut self.server,
-                    &self.notif_queue,
-                    &mut self.quit_requested,
-                    cmd,
-                    &self.ipc,
-                    &self.journal,
-                    ts,
-                    origin,
-                );
-            }
             Action::ToggleFullscreen => {
                 // The compositor-side counterpart of the client's
                 // `xdg_toplevel.set_fullscreen`: flip the focused window's

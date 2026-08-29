@@ -38,8 +38,6 @@ pub enum Action {
     WorkspaceNext,
     /// Switch to the previous workspace on the focused output.
     WorkspacePrev,
-    /// Toggle the current workspace between tiled and floating (ADR-0024).
-    ToggleTiling,
     /// Toggle the focused toplevel between fullscreen and its prior state.
     ///
     /// The compositor-side counterpart of the client's
@@ -111,7 +109,6 @@ impl Keymap {
                 kb(Mods::SUPER, 0x71, Action::CloseFocused),   /* 'q' */
                 kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
                 kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
-                kb(Mods::SUPER, 0x74, Action::ToggleTiling),   /* 't' */
                 kb(Mods::SUPER, 0xffc8, Action::ToggleFullscreen), /* F11 */
                 kb(Mods::SUPER, b'l' as u32, Action::Lock),
                 kb(Mods::NONE, XKB_KEY_Print, Action::Screenshot), /* Print Screen */
@@ -204,7 +201,6 @@ pub fn action_from_name(s: &str) -> Option<Action> {
         "prev" | "previous" | "cycleback" => Action::CycleFocusBack,
         "workspace_next" | "next_workspace" | "ws_next" => Action::WorkspaceNext,
         "workspace_prev" | "prev_workspace" | "ws_prev" => Action::WorkspacePrev,
-        "tiling" | "toggle_tiling" => Action::ToggleTiling,
         "fullscreen" | "toggle_fullscreen" | "togglefullscreen" => Action::ToggleFullscreen,
         "screenshot" | "snapshot" | "prtsc" => Action::Screenshot,
         "lock" | "lockscreen" | "lock_screen" => Action::Lock,

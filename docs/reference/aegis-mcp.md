@@ -173,7 +173,6 @@ tool prompts for a runtime grant (once / session / always).
 | `switch_workspace` | `control` / `SwitchWorkspace` | Queue an adjacent switch. |
 | `switch_workspace_to` | `control` / `SwitchWorkspaceTo` | Queue a switch by id. |
 | `set_window_geometry` | `control` / `SetWindowGeometry` | Queue a floating logical rectangle. |
-| `toggle_tiling` | `control` / `ToggleTiling` | Queue a layout toggle. |
 | `toggle_overview` | `control` / `ToggleOverview` | Queue the overview. |
 | `post_notification` | `control` / `Notify` | Queue an agent notification. |
 | `interaction_domain_status` | `query` / `ObserveInteractionDomains` | Inspect the bridge-managed Interaction Domain without creating it. |

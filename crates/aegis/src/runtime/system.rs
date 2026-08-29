@@ -82,10 +82,6 @@ pub(super) fn apply_system_action(
             notifications.lock().unwrap().set_do_not_disturb(enabled);
             status.do_not_disturb = enabled;
         }
-        SystemAction::SetTiling { enabled } => {
-            server.set_tiling(enabled);
-            status.tiled = enabled;
-        }
         SystemAction::SetOutputPower { powered } => {
             host.set_outputs_powered(powered)?;
         }

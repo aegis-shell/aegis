@@ -202,8 +202,6 @@ pub enum WorkspaceCmd {
     Switch { target: WorkspaceTarget },
     /// Move a window to a workspace id.
     MoveWindow { window: u64, workspace: u64 },
-    /// Set or toggle the current workspace layout.
-    Layout { state: LayoutState },
 }
 
 /// Commands grouped under `aegis notification`. With no command, active
@@ -409,14 +407,6 @@ impl FromStr for WorkspaceTarget {
             }),
         }
     }
-}
-
-/// Requested layout state for the current workspace.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum LayoutState {
-    Toggle,
-    Tiled,
-    Floating,
 }
 
 /// Explicit boolean state accepted by live-system controls.

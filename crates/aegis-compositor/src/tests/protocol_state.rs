@@ -482,11 +482,10 @@ fn layout_role_resolution_prefers_rule_then_transient_then_workspace() {
         resolve_layout_role(true, false, Some(LayoutRole::Floating)),
         LayoutRole::Floating
     );
-    // No rule: a transient (dialog) floats even on a tiled workspace.
+    // No rule: defaults to Floating.
     assert_eq!(resolve_layout_role(true, true, None), LayoutRole::Floating);
     assert_eq!(resolve_layout_role(false, true, None), LayoutRole::Floating);
-    // No rule, not transient: the workspace's tiled flag decides.
-    assert_eq!(resolve_layout_role(true, false, None), LayoutRole::Tiled);
+    assert_eq!(resolve_layout_role(true, false, None), LayoutRole::Floating);
     assert_eq!(
         resolve_layout_role(false, false, None),
         LayoutRole::Floating

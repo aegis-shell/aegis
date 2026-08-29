@@ -25,6 +25,7 @@ pub mod semantic;
 pub mod settings;
 pub mod system;
 pub mod transition;
+pub mod uip;
 pub mod window;
 pub mod window_rule;
 pub mod window_switcher;

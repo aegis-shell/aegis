@@ -17,7 +17,6 @@ application does not also receive the shortcut.
 | `Super+Shift+Tab` | Focus the previous toplevel and show the live switcher while `Super` remains held |
 | `Super+Right` | Switch to the next workspace |
 | `Super+Left` | Switch to the previous workspace |
-| `Super+T` | Toggle tiling on the current workspace |
 | `Super+F11` | Toggle the focused toplevel between fullscreen and its prior state |
 | `Super+L` | Lock the session |
 | `Print` | Open the interactive screenshot region selector |

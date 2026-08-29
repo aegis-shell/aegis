@@ -1526,12 +1526,8 @@ impl CompositorRuntime {
                     }
                 }
                 let do_not_disturb = self.notif_queue.lock().unwrap().do_not_disturb();
-                let tiled = self.server.tiling();
-                if self.system_status.do_not_disturb != do_not_disturb
-                    || self.system_status.tiled != tiled
-                {
+                if self.system_status.do_not_disturb != do_not_disturb {
                     self.system_status.do_not_disturb = do_not_disturb;
-                    self.system_status.tiled = tiled;
                     publish_system_status_parts(
                         &self.system_status,
                         &mut self.shell,

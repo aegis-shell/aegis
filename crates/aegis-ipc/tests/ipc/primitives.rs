@@ -158,7 +158,13 @@ fn transact_precondition_conflict_applies_nothing() {
     .expect("connect");
 
     let result = client
-        .transact(None, None, vec![aegis_ipc::TransactOp::ToggleTiling])
+        .transact(
+            None,
+            None,
+            vec![aegis_ipc::TransactOp::SwitchWorkspace {
+                dir: aegis_model::workspace::Switch::Next,
+            }],
+        )
         .expect("first transact");
     let aegis_ipc::TransactResult::Committed { receipt } = result else {
         panic!("expected commit, got {result:?}");
@@ -403,7 +409,13 @@ fn transact_interaction_domain_revision_precondition() {
 
     // The test handler's Interaction Domain snapshot carries revision 4.
     let result = client
-        .transact(None, Some(3), vec![aegis_ipc::TransactOp::ToggleTiling])
+        .transact(
+            None,
+            Some(3),
+            vec![aegis_ipc::TransactOp::SwitchWorkspace {
+                dir: aegis_model::workspace::Switch::Next,
+            }],
+        )
         .expect("conflicting transact");
     assert_eq!(
         result,
@@ -416,7 +428,13 @@ fn transact_interaction_domain_revision_precondition() {
     assert!(handler.commands.lock().unwrap().is_empty());
 
     let result = client
-        .transact(None, Some(4), vec![aegis_ipc::TransactOp::ToggleTiling])
+        .transact(
+            None,
+            Some(4),
+            vec![aegis_ipc::TransactOp::SwitchWorkspace {
+                dir: aegis_model::workspace::Switch::Next,
+            }],
+        )
         .expect("transact at the observed revision");
     assert!(
         matches!(result, aegis_ipc::TransactResult::Committed { .. }),

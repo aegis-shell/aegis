@@ -581,7 +581,6 @@ impl CompositorRuntime {
         }
         while let Ok(mut detected) = self.status_rx.try_recv() {
             detected.do_not_disturb = self.notif_queue.lock().unwrap().do_not_disturb();
-            detected.tiled = self.server.tiling();
             detected.idle_inhibited = self.system_status.idle_inhibited;
             // Compositor-owned like `idle_inhibited`: the session power mode
             // (ADR-0140) must survive a host status sample.

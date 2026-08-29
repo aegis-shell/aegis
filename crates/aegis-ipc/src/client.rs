@@ -464,11 +464,6 @@ impl Client {
         self.command(Command::SwitchWorkspaceTo { id })
     }
 
-    /// Toggle the current workspace between tiled and floating (ADR-0024).
-    pub fn toggle_tiling(&mut self) -> io::Result<()> {
-        self.command(Command::ToggleTiling)
-    }
-
     /// Set a floating toplevel's geometry in compositor logical coordinates.
     pub fn set_window_geometry(
         &mut self,

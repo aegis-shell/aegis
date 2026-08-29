@@ -540,8 +540,6 @@ pub enum Command {
         window: WindowId,
         workspace: WorkspaceId,
     },
-    /// Toggle the current workspace between tiled and floating (ADR-0024). `control`.
-    ToggleTiling,
     /// Apply one immediate live-system control. `control`.
     System { action: SystemAction },
     /// Post a notification (M9, delivered over the IPC). `control`.
@@ -730,7 +728,6 @@ impl Command {
             Command::SwitchWorkspace { .. } => ActorCapability::SwitchWorkspace,
             Command::SwitchWorkspaceTo { .. } => ActorCapability::SwitchWorkspaceTo,
             Command::MoveToWorkspace { .. } => ActorCapability::MoveToWorkspace,
-            Command::ToggleTiling => ActorCapability::ToggleTiling,
             Command::System { .. } => ActorCapability::SystemControl,
             Command::Notify { .. } => ActorCapability::Notify,
             Command::DismissNotification { .. } => ActorCapability::DismissNotification,
@@ -739,7 +736,7 @@ impl Command {
             } => ActorCapability::ScreenshotRegion,
             Command::Screenshot { region: None, .. } => ActorCapability::Screenshot,
             Command::ToggleOverview => ActorCapability::ToggleOverview,
-            Command::Quit => ActorCapability::ToggleTiling, // unreachable: scope skips session cmds
+            Command::Quit => ActorCapability::SystemControl, // unreachable: scope skips session cmds
         }
     }
 }
@@ -793,7 +790,6 @@ pub enum TransactOp {
         window: WindowId,
         workspace: WorkspaceId,
     },
-    ToggleTiling,
     Notify {
         summary: String,
         body: String,
@@ -840,7 +836,6 @@ impl TransactOp {
                 window: *window,
                 workspace: *workspace,
             },
-            Self::ToggleTiling => Command::ToggleTiling,
             Self::Notify {
                 summary,
                 body,
@@ -889,7 +884,6 @@ impl TransactOp {
                 window: *window,
                 workspace: *workspace,
             },
-            Command::ToggleTiling => Self::ToggleTiling,
             Command::Notify {
                 summary,
                 body,

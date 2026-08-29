@@ -483,8 +483,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Seed the tiling layout params (ADR-0024) and the focused output's
     // geometry (ADR-0028) from the config and the initial host size.
     if let Some(c) = config.as_ref() {
-        server.set_layout_params(c.layout.clone().into());
-        server.set_tiling_default(c.layout.default_tiled);
         server.set_remember_window_positions(c.layout.remember_window_positions);
         server.set_decoration_policy(c.ui.window_decorations);
         server.set_output_policies(c.output_policies());
@@ -556,7 +554,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     const FORKED_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
     let mut system_status = aegis_shell::detect_system_status();
     system_status.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
-    system_status.tiled = server.tiling();
     system_status.input = input_status;
     system_status.display = aegis_shell::DisplayStatus {
         configurable: host.name() == "drm",

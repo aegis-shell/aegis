@@ -376,8 +376,6 @@ pub(super) fn reload_config(
                 .unwrap_or_default(),
         );
         if let Some(c) = config.as_ref() {
-            server.set_layout_params(c.layout.clone().into());
-            server.set_tiling_default(c.layout.default_tiled);
             server.set_remember_window_positions(c.layout.remember_window_positions);
             server.set_minimize_animation(c.dock.minimize_animation);
             shell.set_reduced_motion(preferences.reduced_motion);
@@ -388,8 +386,6 @@ pub(super) fn reload_config(
             server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
             server.set_keyboard_repeat(c.input.keyboard);
         } else {
-            server.set_layout_params(aegis_model::layout::LayoutParams::default());
-            server.set_tiling_default(false);
             server.set_remember_window_positions(true);
             server.set_minimize_animation(aegis_model::dock::MinimizeAnimationStyle::default());
             shell.set_reduced_motion(preferences.reduced_motion);
@@ -680,7 +676,6 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
                     aegis_ipc::ActorCapability::SwitchWorkspace,
                     aegis_ipc::ActorCapability::SwitchWorkspaceTo,
                     aegis_ipc::ActorCapability::MoveToWorkspace,
-                    aegis_ipc::ActorCapability::ToggleTiling,
                     aegis_ipc::ActorCapability::SystemControl,
                     aegis_ipc::ActorCapability::Notify,
                     aegis_ipc::ActorCapability::DismissNotification,

@@ -589,7 +589,6 @@ impl CompositorRuntime {
             || self.damage.chrome_dirty
             // The fanout pushes these into chrome when they drift.
             || self.system_status.do_not_disturb != do_not_disturb
-            || self.system_status.tiled != self.server.tiling()
             // The status-bar clock is read from wall time at render; force a
             // frame after each minute rollover.
             || self.damage.last_present_minute != Some(wall_clock_minute());

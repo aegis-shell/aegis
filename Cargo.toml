@@ -138,6 +138,8 @@ aegis-ipc = { path = "crates/aegis-ipc" }
 aegis-ipc-client = { path = "crates/aegis-ipc-client" }
 # Domain-oriented native command implementation used by the `aegis` binary.
 aegis-commands = { path = "crates/aegis-commands" }
+# Remote interaction gateway for the Universal Interaction Protocol (UIP).
+aegis-remote = { path = "crates/aegis-remote" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
 aegis-desktop-entries = { path = "crates/aegis-desktop-entries" }
 aegis-launcher = { path = "crates/aegis-launcher" }

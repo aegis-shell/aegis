@@ -9,7 +9,7 @@ mod cli;
 mod error;
 
 pub use cli::{
-    AuditCmd, Cli, Command, ConfigCmd, DisplayCmd, InteractionDomainCmd, JournalCmd, LayoutState,
+    AuditCmd, Cli, Command, ConfigCmd, DisplayCmd, InteractionDomainCmd, JournalCmd,
     NotificationCmd, OnOff, PermissionsCmd, Region, SystemCmd, WindowCmd, WorkspaceCmd,
     WorkspaceTarget,
 };
@@ -551,27 +551,6 @@ fn dispatch_workspace(
                 .map_err(io_err)?;
             Ok(receipt(
                 format!("moved window {window} to workspace {workspace}"),
-                json,
-            ))
-        }
-        WorkspaceCmd::Layout {
-            state: LayoutState::Toggle,
-        } => {
-            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            client.toggle_tiling().map_err(io_err)?;
-            Ok(receipt("toggled workspace layout", json))
-        }
-        WorkspaceCmd::Layout { state } => {
-            let enabled = matches!(state, LayoutState::Tiled);
-            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            client
-                .apply_system_action(aegis_ipc::SystemAction::SetTiling { enabled })
-                .map_err(io_err)?;
-            Ok(receipt(
-                format!(
-                    "workspace layout changed to {}",
-                    if enabled { "tiled" } else { "floating" }
-                ),
                 json,
             ))
         }
@@ -1371,12 +1350,11 @@ fn format_system_status(status: &aegis_ipc::SystemStatus) -> String {
     format!(
         "audio: {volume} ({})\nnetwork: {network}; wifi: {}; bluetooth: {}\n\
          battery: {battery}; brightness: {brightness}\n\
-         do not disturb: {}; layout: {}",
+         do not disturb: {}",
         if status.muted { "muted" } else { "unmuted" },
         format_optional_switch(status.wifi_enabled),
         format_optional_switch(status.bluetooth_enabled),
         if status.do_not_disturb { "on" } else { "off" },
-        if status.tiled { "tiled" } else { "floating" },
     )
 }
 

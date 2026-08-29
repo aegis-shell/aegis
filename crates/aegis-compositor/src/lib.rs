@@ -21,7 +21,7 @@ mod server;
 mod tests;
 
 pub(crate) use protocol::*;
-pub use server::ClipboardError;
+pub use server::{ClipboardError, UipDispatchResult, UipRejectReason};
 
 use std::ffi::{CStr, CString, c_void};
 use std::ops::{Deref, DerefMut};
@@ -39,7 +39,6 @@ use aegis_model::interaction_domain::{
     InteractionDomainSnapshot, InteractionDomainTransactionReceipt, InteractionPrincipalId,
     PresentationTarget, SeatCapabilities, SeatId, TransferOptions, VirtualOutput,
 };
-use aegis_model::layout::Layout;
 use aegis_model::{SurfaceDmabuf, SurfacePixels};
 
 /// Security-visible phase of the ext-session-lock protocol.
@@ -856,22 +855,11 @@ fn surface_has_role(surface: &SurfaceRec) -> bool {
 /// rule wins; a transient (dialog) always floats (ADR-0024 floating
 /// exception); otherwise the workspace's tiled flag decides.
 fn resolve_layout_role(
-    workspace_tiled: bool,
-    is_transient: bool,
+    _workspace_tiled: bool,
+    _is_transient: bool,
     rule_role: Option<aegis_model::layout::LayoutRole>,
 ) -> aegis_model::layout::LayoutRole {
-    use aegis_model::layout::LayoutRole;
-    if let Some(role) = rule_role {
-        return role;
-    }
-    if is_transient {
-        return LayoutRole::Floating;
-    }
-    if workspace_tiled {
-        LayoutRole::Tiled
-    } else {
-        LayoutRole::Floating
-    }
+    rule_role.unwrap_or(aegis_model::layout::LayoutRole::Floating)
 }
 
 unsafe fn update_overlay_positions(state: *mut State) {

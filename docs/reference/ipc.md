@@ -249,7 +249,6 @@ or independently signed anchors to a separately administered system.
 | `SwitchWorkspace { dir }` | `control` | `SwitchWorkspace` | Focused output |
 | `SwitchWorkspaceTo { id }` | `control` | `SwitchWorkspaceTo` | Workspace |
 | `MoveToWorkspace { window, workspace }` | `control` | `MoveToWorkspace` | Window and workspace |
-| `ToggleTiling` | `control` | `ToggleTiling` | Current workspace |
 | `System { action }` | `control` | `SystemControl` | Live host or compositor-owned session state |
 | `ToggleOverview` | `control` | `ToggleOverview` | — |
 | `Notify { summary, body, app_id, external_id }` | `control` | `Notify` | — |

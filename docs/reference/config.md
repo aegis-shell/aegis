@@ -831,7 +831,6 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | `prev` | `previous`, `cycleback` | Move focus to the previous toplevel; while `Super` remains held, show the live preview strip |
 | `workspace_next` | `next_workspace`, `ws_next` | Switch to the next workspace |
 | `workspace_prev` | `prev_workspace`, `ws_prev` | Switch to the previous workspace |
-| `tiling` | `toggle_tiling` | Toggle tiling on the current workspace |
 | `fullscreen` | `toggle_fullscreen`, `togglefullscreen` | Toggle the focused toplevel between fullscreen and its prior state |
 | `screenshot` | `snapshot`, `prtsc` | Open the interactive screenshot region selector |
 | `lock` | `lockscreen`, `lock_screen` | Secure the session with the first-party lock screen |
@@ -856,7 +855,6 @@ configured:
 | `Super+Q` | `close` |
 | `Super+Right` | `workspace_next` |
 | `Super+Left` | `workspace_prev` |
-| `Super+T` | `tiling` |
 | `Super+F11` | `fullscreen` |
 | `Super+L` | `lock` |
 | `Print` | `screenshot` |

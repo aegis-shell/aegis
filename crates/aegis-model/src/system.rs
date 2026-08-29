@@ -93,8 +93,6 @@ pub struct SystemStatus {
     /// Backlight level in percent, or `None` without a controllable backlight.
     pub brightness: Option<u8>,
     pub do_not_disturb: bool,
-    /// Layout mode for the current workspace.
-    pub tiled: bool,
     /// Included so one host probe can feed both status and settings surfaces.
     pub input: InputStatus,
     /// Included so one host snapshot can feed both status and settings surfaces.
@@ -188,9 +186,6 @@ pub enum SystemAction {
         enabled: bool,
     },
     SetDoNotDisturb {
-        enabled: bool,
-    },
-    SetTiling {
         enabled: bool,
     },
     /// Enable or disable physical scanout without changing the output

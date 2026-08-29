@@ -158,7 +158,6 @@ fn catalog_ops() -> Vec<ActorCapability> {
         ActorCapability::SwitchWorkspace,
         ActorCapability::SwitchWorkspaceTo,
         ActorCapability::SetWindowGeometry,
-        ActorCapability::ToggleTiling,
         ActorCapability::ToggleOverview,
         ActorCapability::Notify,
         ActorCapability::CreateInteractionDomain,
@@ -186,7 +185,6 @@ enum ToolKind {
     SwitchWorkspace,
     SwitchWorkspaceTo,
     SetWindowGeometry,
-    ToggleTiling,
     ToggleOverview,
     PostNotification,
     InteractionDomainStatus,
@@ -202,7 +200,7 @@ enum ToolKind {
 }
 
 impl ToolKind {
-    const ALL: [Self; 24] = [
+    const ALL: [Self; 23] = [
         Self::DesktopSnapshot,
         Self::DesktopJournal,
         Self::AppsList,
@@ -214,7 +212,6 @@ impl ToolKind {
         Self::SwitchWorkspace,
         Self::SwitchWorkspaceTo,
         Self::SetWindowGeometry,
-        Self::ToggleTiling,
         Self::ToggleOverview,
         Self::PostNotification,
         Self::InteractionDomainStatus,
@@ -283,7 +280,6 @@ impl ToolKind {
                 grant.capabilities.control,
                 ActorCapability::SetWindowGeometry,
             ),
-            Self::ToggleTiling => (grant.capabilities.control, ActorCapability::ToggleTiling),
             Self::ToggleOverview => (grant.capabilities.control, ActorCapability::ToggleOverview),
             Self::PostNotification => (grant.capabilities.control, ActorCapability::Notify),
             Self::InteractionDomainEnsure => (
@@ -426,13 +422,6 @@ impl ToolKind {
                 "set_window_geometry",
                 "Set floating-window geometry in compositor logical coordinates and return the commit receipt.",
                 json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"x":{"type":"integer"},"y":{"type":"integer"},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["window_id","x","y","width","height"],"additionalProperties":false}),
-                false,
-                false,
-            ),
-            Self::ToggleTiling => definition(
-                "toggle_tiling",
-                "Toggle the current workspace between tiled and floating layout.",
-                empty(),
                 false,
                 false,
             ),
@@ -1166,7 +1155,7 @@ mod tests {
         assert!(names.contains(&"window_capture"));
         assert!(names.contains(&"apps_list"));
         assert!(names.contains(&"launch_app"));
-        assert_eq!(names.len(), 24);
+        assert_eq!(names.len(), 23);
     }
 
     #[test]

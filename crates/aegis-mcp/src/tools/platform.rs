@@ -586,10 +586,6 @@ impl AegisPlatform {
                     "set_window_geometry",
                 )
             }
-            ToolKind::ToggleTiling => {
-                parse::<NoArgs>(arguments)?;
-                self.command(Command::ToggleTiling, "toggle_tiling")
-            }
             ToolKind::ToggleOverview => {
                 parse::<NoArgs>(arguments)?;
                 self.command(Command::ToggleOverview, "toggle_overview")

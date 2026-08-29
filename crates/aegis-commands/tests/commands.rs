@@ -97,7 +97,6 @@ impl Handler for CtlHandler {
             bluetooth_enabled: Some(false),
             brightness: Some(73),
             do_not_disturb: true,
-            tiled: false,
             ..aegis_ipc::SystemStatus::default()
         }
     }
@@ -750,25 +749,6 @@ fn notification_dismiss_sends_dismiss_notification() {
             .any(|c| matches!(c, Command::DismissNotification { id: 7 })),
         "{:?}",
         h.commands
-    );
-}
-
-#[test]
-fn workspace_layout_toggle_sends_toggle() {
-    let path = scratch();
-    let h = Arc::new(CtlHandler::new());
-    let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    aegis_commands::run(
-        &path,
-        &["workspace".into(), "layout".into(), "toggle".into()],
-    )
-    .unwrap();
-    assert!(
-        h.commands
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|c| matches!(c, Command::ToggleTiling)),
     );
 }
 

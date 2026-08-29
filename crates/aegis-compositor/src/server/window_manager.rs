@@ -220,57 +220,16 @@ impl Server {
         self.state.outputs_revision
     }
 
-    /// Whether the current workspace is in tiled mode (ADR-0024).
+    /// Whether the current workspace is in tiled mode.
     pub fn tiling(&self) -> bool {
-        self.state
-            .workspaces
-            .current_workspace_tiled(self.state.output)
+        false
     }
 
-    /// Toggle the current workspace between tiled and floating (ADR-0024).
-    /// On, the workspace's windows are marked `Tiled` and laid out next
-    /// `apply_tiling`; off, they revert to `Floating` and keep their current
-    /// geometry. Layout targets are cleared so the next apply reconfigures.
-    pub fn set_tiling(&mut self, on: bool) {
-        if let Some(wid) = self.state.workspaces.current_workspace(self.state.output) {
-            self.state.workspaces.set_tiled(wid, on);
-        }
-        let role = if on {
-            aegis_model::layout::LayoutRole::Tiled
-        } else {
-            aegis_model::layout::LayoutRole::Floating
-        };
-        for id in self.state.workspaces.visible_toplevels() {
-            let rec = self.find_surface_by_window_id(id);
-            if rec.is_null() {
-                continue;
-            }
-            unsafe {
-                // Transient dialogs (xdg_toplevel.set_parent) stay floating
-                // (ADR-0024 floating exception); the sweep skips them.
-                if on && (*rec).window.parent.is_some() {
-                    log::debug!(
-                        "[server] tiling sweep skips transient {:?}",
-                        (*rec).window.id
-                    );
-                    continue;
-                }
-                (*rec).window.layout_role = role;
-                (*rec).layout_target = None;
-            }
-        }
-        log::info!(
-            "[server] workspace tiling {}",
-            if on { "on" } else { "off" }
-        );
-    }
+    /// Set tiling state (no-op: Aegis is purely floating).
+    pub fn set_tiling(&mut self, _on: bool) {}
 
-    /// Set whether newly created workspaces start in tiled mode (ADR-0024),
-    /// from the config's `[layout] default_tiled`. Existing workspaces keep
-    /// their own flag. Called at startup and on config reload.
-    pub fn set_tiling_default(&mut self, on: bool) {
-        self.state.workspaces.set_default_tiled(on);
-    }
+    /// Set default tiling state (no-op: Aegis is purely floating).
+    pub fn set_tiling_default(&mut self, _on: bool) {}
 
     /// Replace the window rules (ADR-0026). Called at startup and on config
     /// reload. Rules apply to windows mapped after they are set.
@@ -880,63 +839,6 @@ impl Server {
                             flushed = true;
                         }
                     }
-                }
-            }
-        }
-
-        if !self
-            .state
-            .workspaces
-            .current_workspace_tiled(self.state.output)
-        {
-            return;
-        }
-        let tiled_ids: Vec<aegis_model::window::WindowId> = self
-            .state
-            .workspaces
-            .visible_toplevels()
-            .into_iter()
-            .filter(|id| {
-                let rec = self.find_surface_by_window_id(*id);
-                !rec.is_null()
-                    && unsafe {
-                        let r = &(*rec).window;
-                        r.layout_role == aegis_model::layout::LayoutRole::Tiled
-                            && !r.state.maximized
-                            && !r.state.fullscreen
-                    }
-            })
-            .collect();
-        let rects = aegis_model::layout::MasterStack.layout(
-            work_area,
-            tiled_ids.len(),
-            &self.state.layout_params,
-        );
-        for (id, rect) in tiled_ids.iter().zip(rects.iter()) {
-            let rec = self.find_surface_by_window_id(*id);
-            if rec.is_null() {
-                continue;
-            }
-            unsafe {
-                if (*rec).xdg_toplevel.is_null() || !(*rec).mapped {
-                    continue;
-                }
-                if (*rec).layout_target == Some(*rect) {
-                    continue; // already at the target; do not reconfigure
-                }
-                let old = aegis_model::Rect {
-                    origin: (*rec).position,
-                    size: (*rec).window.size,
-                };
-                reposition_toplevel_with_popups(rec, rect.origin);
-                (*rec).window.size = rect.size;
-                (*rec).window.layout_role = aegis_model::layout::LayoutRole::Tiled;
-                (*rec).layout_target = Some(*rect);
-                self.note_transition(rec, old);
-                reconfigure_with_size(rec, rect.size.w, rect.size.h);
-                if !flushed {
-                    ffi::wl_display_flush_clients(self.state.display);
-                    flushed = true;
                 }
             }
         }

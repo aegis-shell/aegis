@@ -470,17 +470,6 @@ fn switch_workspace_command_round_trips() {
 }
 
 #[test]
-fn toggle_tiling_command_round_trips() {
-    let json = serde_json::to_string(&Command::ToggleTiling).unwrap();
-    assert_eq!(json, r#"{"type":"ToggleTiling"}"#);
-    assert_eq!(
-        serde_json::from_str::<Command>(&json).unwrap(),
-        Command::ToggleTiling
-    );
-    assert!(Command::ToggleTiling.required_cap().control);
-}
-
-#[test]
 fn system_control_command_has_a_stable_tagged_shape() {
     let cmd = Command::System {
         action: SystemAction::SetVolume { level: 55 },
@@ -1713,7 +1702,6 @@ fn transact_op_command_round_trip_and_op_class() {
             window: WindowId(3),
             workspace: WorkspaceId(4),
         },
-        TransactOp::ToggleTiling,
         TransactOp::Notify {
             summary: "s".into(),
             body: "b".into(),
@@ -1769,7 +1757,7 @@ fn transact_request_and_result_round_trip() {
     let request = Request::Transact {
         expected_journal_seq: Some(11),
         expected_interaction_domain_revision: Some(4),
-        ops: vec![TransactOp::ToggleTiling],
+        ops: vec![TransactOp::DismissNotification { id: 9 }],
     };
     let json = serde_json::to_string(&request).unwrap();
     assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);

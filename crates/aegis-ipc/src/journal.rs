@@ -104,7 +104,6 @@ pub enum AuditedCommand {
         window: aegis_model::window::WindowId,
         workspace: aegis_model::workspace::WorkspaceId,
     },
-    ToggleTiling,
     System {
         action: crate::schema::SystemAction,
     },
@@ -147,7 +146,6 @@ impl AuditedCommand {
             }
             Self::Cycle { .. }
             | Self::SwitchWorkspace { .. }
-            | Self::ToggleTiling
             | Self::System { .. }
             | Self::Notify { .. }
             | Self::DismissNotification { .. }
@@ -224,7 +222,6 @@ impl From<&Command> for AuditedCommand {
                 window: *window,
                 workspace: *workspace,
             },
-            Command::ToggleTiling => Self::ToggleTiling,
             Command::System { action } => Self::System {
                 action: action.clone(),
             },
