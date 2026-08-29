@@ -540,7 +540,7 @@ fn render_glyph(
                     // SAFETY: the sprite textures are owned by this component and
                     // outlive the frame's `Ui::render`.
                     f.image_tinted(
-                        image.as_raw() as *mut lens::sys::flux_image,
+                        image.as_raw(),
                         rect.w,
                         rect.h,
                         Color::rgba(255, 255, 255, alpha),
