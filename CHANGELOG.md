@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.50] - 2026-08-29
+
 ### Changed
 
 - The screenshot region selector and portal window/output pickers no
@@ -49,16 +51,15 @@ project cuts a tagged release.
   separate, and allocates resolved intermediates only for layers with
   downstream consumers. Existing flat backdrop declarations remain fused
   into a compatibility root layer ([ADR-0143](docs/adr/0143-explicit-offscreen-composition-dag.md)).
-- Aligned with the post-v0.0.28 Optics Rust binding surface ahead of the
-  next tagged release: `flux::Format` variants renamed from C-style
+- Promoted every Optics dependency to `v0.0.29` and aligned with its Rust
+  binding surface: `flux::Format` variants renamed from C-style
   constants to idiomatic Rust (`Bgra8Unorm`, `Rgba8Unorm`, `Rgb10a2Unorm`,
   `D32Sfloat`, …), the canvas pass bracket unified into
   `begin_frame(Some(&frame), clear)` / `end_frame_checked()` (the frame-less
   CPU form is `begin_cpu`), and dma-buf imports now take `OwnedFd`s by value
   so ownership is enforced by the type system — the renderer and capture
-  stream no longer hand-orchestrate `dup`/`close`/
-  `mem::forget` on import error paths. Local Optics mode tracks this
-  interface; the canonical tag bump lands with the next Optics release.
+  stream no longer hand-orchestrate `dup`/`close`/`mem::forget` on import
+  error paths.
 
 ## [0.0.49] - 2026-08-25
 
