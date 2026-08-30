@@ -13,6 +13,13 @@ aegis-design = { workspace = true }
 aegis-ui = { workspace = true }
 aegis-shell = { workspace = true }
 lens = { workspace = true }
+# Direct dep purely so this crate's build script receives DEP_LENS_RPATHS
+# (published via the -sys crate's `links` metadata) and can re-emit the rpaths
+# for the test harness — `rustc-link-arg` does not propagate across crates.
+lens-sys = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["lens-sys"]
 
 [lints]
 workspace = true
