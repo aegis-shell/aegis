@@ -551,27 +551,17 @@ impl Chrome for Prism {
         if !self.brain.is_open() && self.visibility <= 0.01 {
             return Vec::new();
         }
-        let panel = Self::panel_rect(display, self.brain.filtered().len(), self.visibility);
         // The gentle dark veil behind the panel is a wash INTO the frost,
         // beneath the panel's glass body — it used to be painted by
         // `render` above the glass, hiding the lens's refraction. The veil
         // is fullscreen and dims the whole desktop behind the spotlight.
-        vec![
-            BackdropRegion {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-                wash: Some(aegis_shell::backdrop_wash(lens::Color::rgba(4, 6, 14, 54))),
-            },
-            BackdropRegion {
-                x: panel.x,
-                y: panel.y,
-                w: panel.w,
-                h: panel.h,
-                wash: None,
-            },
-        ]
+        vec![BackdropRegion {
+            x: 0.0,
+            y: 0.0,
+            w: display.0,
+            h: display.1,
+            wash: Some(aegis_shell::backdrop_wash(lens::Color::rgba(4, 6, 14, 54))),
+        }]
     }
 
     fn liquid_glass_regions(
@@ -670,16 +660,13 @@ mod tests {
 
         let backdrop = prism.backdrop_regions(display, &[], &workspaces);
         let glass = prism.liquid_glass_regions(display, &[], &workspaces);
-        // Two declared regions: the fullscreen veil wash beneath everything,
-        // then the panel region the glass body sits on. The glass body
-        // itself equals the panel region (the last one).
-        assert_eq!(backdrop.len(), 2);
+        assert_eq!(backdrop.len(), 1);
         assert_eq!(glass.len(), 1);
         assert!(
             backdrop[0].wash.is_some(),
             "the veil is a wash into the frost"
         );
-        assert_eq!(glass[0].bounds, backdrop[1]);
+        assert_eq!(glass[0].bounds.w, 680.0);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 0.75);
     }

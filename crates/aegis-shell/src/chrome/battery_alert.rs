@@ -432,17 +432,11 @@ impl Chrome for BatteryAlert {
         if !self.active {
             return Vec::new();
         }
-        let layout = AlertLayout::for_display(display, self.modal_reserved);
+        let _ = AlertLayout::for_display(display, self.modal_reserved);
         // The modal's full-display dim is a wash INTO the frost (beneath the
         // panel's glass body) — it used to be painted above the glass, which
-        // hid the lens's refraction and split the layer stack. The second
-        // region exactly matches the glass body below: the runtime drops it
-        // from the rectangular frost set, so the analytic pass alone owns
-        // the rounded panel.
-        vec![
-            modal_scrim_backdrop(display, &self.design),
-            BackdropRegion::from(layout.panel),
-        ]
+        // hid the lens's refraction and split the layer stack.
+        vec![modal_scrim_backdrop(display, &self.design)]
     }
 
     fn liquid_glass_regions(
@@ -572,14 +566,13 @@ mod tests {
         alert.start_battery_alert(params());
         let backdrop = alert.backdrop_regions(display, &[], &workspaces);
         let glass = alert.liquid_glass_regions(display, &[], &workspaces);
-        // Fullscreen veil wash + the panel region the glass body equals.
-        assert_eq!(backdrop.len(), 2);
+        assert_eq!(backdrop.len(), 1);
         assert!(
             backdrop[0].wash.is_some(),
             "the dim is a wash into the frost"
         );
         assert_eq!(glass.len(), 1);
-        assert_eq!(glass[0].bounds, backdrop[1]);
+        assert_eq!(glass[0].bounds.w, 400.0);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 1.0);
         assert!(alert.exclusive_presentation_active());

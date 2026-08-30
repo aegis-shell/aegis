@@ -969,23 +969,12 @@ impl Chrome for Hud {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        if self.dormant() {
-            return Vec::new();
-        }
-        self.layout
-            .chips
-            .iter()
-            .zip(self.layout.visible.iter())
-            .zip(self.chip_fade.iter())
-            .filter(|((_, visible), fade)| **visible && **fade > 0.01)
-            .map(|((chip, _), _)| BackdropRegion {
-                x: chip.x,
-                y: chip.y,
-                w: chip.w,
-                h: chip.h,
-                wash: None,
-            })
-            .collect()
+        // The HUD chips are liquid-glass bodies, declared via
+        // `liquid_glass_regions` below. Declaring them here as frost regions
+        // would instruct the layered backdrop compositor to frost-blur the
+        // sheet beneath them before the glass pass runs, destroying physical
+        // optical refraction and turning the chip into frosted glass.
+        Vec::new()
     }
 
     fn liquid_glass_regions(

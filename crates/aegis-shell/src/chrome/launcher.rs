@@ -260,7 +260,7 @@ impl Launcher {
     /// crossing — a full capture teardown and rebuild mid-fade, visible as a
     /// one-frame flash.
     fn active(&self) -> bool {
-        self.brain.is_open() || self.anim_active || self.visibility.value > 0.0
+        self.brain.is_open() || self.anim_active || self.visibility.value > 0.01
     }
 
     fn toggle(&mut self, _out: &mut ChromeEvents) {
@@ -316,15 +316,22 @@ impl Launcher {
             return target;
         }
         // Shared analytic spring integrator (ADR-0139); `dt` is clamped
-        // inside. The reveal is a 0..=1 progress scalar, so the launch
-        // overshoot envelope is bounded by the clamp below as before.
+        // inside. Snappy underdamped arrival on open, critically damped
+        // exit on close so the full-screen backdrop blur tears down
+        // promptly as the scrim drains without lingering.
+        let (stiffness, damping) = if target > 0.5 {
+            (OPEN_STIFFNESS, OPEN_DAMPING)
+        } else {
+            (1100.0, 1.0)
+        };
         self.visibility
-            .advance(target, OPEN_STIFFNESS, OPEN_DAMPING, dt);
+            .advance(target, stiffness, damping, dt);
         self.visibility.value = self.visibility.value.clamp(-0.04, 1.04);
 
-        self.anim_active = !self.visibility.settled_on(target, 0.002, 0.02);
-        if !self.anim_active {
+        self.anim_active = !self.visibility.settled_on(target, 0.005, 0.03);
+        if !self.anim_active || (target == 0.0 && self.visibility.value <= 0.01) {
             self.visibility.snap_to(target);
+            self.anim_active = false;
         }
         self.visibility.value.clamp(0.0, 1.0)
     }
@@ -345,10 +352,12 @@ impl Launcher {
     fn search_rect_for_display(display: (f32, f32), rise_y: f32) -> Rect {
         let search_w = (display.0 * 0.40)
             .clamp(SEARCH_MIN_W, SEARCH_MAX_W)
-            .min((display.0 - 40.0).max(1.0));
-        let search_y = if display.1 < 560.0 { 22.0 } else { SEARCH_TOP } + rise_y;
+            .min((display.0 - 40.0).max(1.0))
+            .floor();
+        let search_y = ((if display.1 < 560.0 { 22.0 } else { SEARCH_TOP } + rise_y)).round();
+        let search_x = ((display.0 - search_w) * 0.5).round();
         Rect {
-            x: (display.0 - search_w) * 0.5,
+            x: search_x,
             y: search_y,
             w: search_w,
             h: SEARCH_H,
@@ -631,7 +640,6 @@ impl Chrome for Launcher {
                 // they sit on the right side of the light scheme's white
                 // glass (the outer on-scrim override would keep them light).
                 let outer = frame.theme();
-                frame.set_theme(outer.with_fg(self.design.colors.application_text));
                 frame.row_ex(
                     &LayoutOpts {
                         width: search_w,
@@ -642,14 +650,16 @@ impl Chrome for Launcher {
                         ..Default::default()
                     },
                     |frame| {
+                        frame.set_theme(outer.with_fg(self.design.colors.application_text));
                         frame.spacer(16.0);
                         frame.icon(Icon::Search, 17.0);
                         frame.spacer(10.0);
                         if self.brain.query().is_empty() {
                             // Keep the placeholder on the exact same text
-                            // origin as a real query. Its caret is a separate
-                            // placement below so the caret does not consume
-                            // layout width.
+                            // origin as a real query with muted tone.
+                            frame.set_theme(
+                                outer.with_fg(self.design.colors.application_text.with_alpha(140)),
+                            );
                             frame.label_compact_sized(&shown_placeholder, typography.headline);
                         } else {
                             // The regular label carries theme padding, which
@@ -657,6 +667,7 @@ impl Chrome for Launcher {
                             // compact form keeps its measured box vertically
                             // centred; the caret is placed at the shaped text
                             // edge below so it does not alter layout.
+                            frame.set_theme(outer.with_fg(self.design.colors.application_text));
                             frame.label_compact_sized(&shown_query, typography.headline);
                         }
                     },

@@ -629,16 +629,6 @@ fn to_lens(rect: aegis_model::Rect) -> LensRect {
     }
 }
 
-fn to_backdrop(rect: LensRect) -> BackdropRegion {
-    BackdropRegion {
-        x: rect.x,
-        y: rect.y,
-        w: rect.w,
-        h: rect.h,
-        wash: None,
-    }
-}
-
 fn status_rect(anchor: LensRect, size: (f32, f32), display: (f32, f32)) -> LensRect {
     let w = size.0.min(display.0.max(1.0));
     let h = size.1.min(display.1.max(1.0));
@@ -932,13 +922,13 @@ impl Chrome for ScreenshotSelector {
 
     fn backdrop_regions(
         &self,
-        display: (f32, f32),
+        _display: (f32, f32),
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        self.glass_rect(display)
-            .map(|rect| vec![to_backdrop(rect)])
-            .unwrap_or_default()
+        // Loupe and floating toolbar are analytic liquid-glass bodies,
+        // declared via `liquid_glass_regions` below.
+        Vec::new()
     }
 
     fn liquid_glass_regions(
@@ -1198,9 +1188,9 @@ mod tests {
         assert_eq!(s.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
         let backdrop = s.backdrop_regions((800.0, 600.0), &[], &workspaces);
         let glass = s.liquid_glass_regions((800.0, 600.0), &[], &workspaces);
-        assert_eq!(backdrop.len(), 1);
+        assert!(backdrop.is_empty());
         assert_eq!(glass.len(), 1);
-        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].bounds.w, 140.0);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert!(glass[0].focus.is_none());
     }

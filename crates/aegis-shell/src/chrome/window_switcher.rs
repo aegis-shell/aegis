@@ -515,11 +515,12 @@ impl Chrome for WindowSwitcher {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        self.presentation
-            .as_ref()
-            .filter(|presentation| presentation.visibility > 0.01)
-            .map(|presentation| vec![BackdropRegion::from(presentation.panel)])
-            .unwrap_or_default()
+        // The switcher panel is an analytic liquid-glass body, declared via
+        // `liquid_glass_regions` below. Declaring it here as a frost region
+        // would instruct the layered backdrop compositor to frost-blur the
+        // panel area beneath the glass and leave a lingering blurred rectangle
+        // on dismiss.
+        Vec::new()
     }
 
     fn liquid_glass_regions(
@@ -794,9 +795,10 @@ mod tests {
 
         let backdrop = switcher.backdrop_regions((1280.0, 720.0), &[], &workspaces);
         let glass = switcher.liquid_glass_regions((1280.0, 720.0), &[], &workspaces);
-        assert_eq!(backdrop.len(), 1);
+        assert!(backdrop.is_empty(), "switcher panel is a liquid glass body");
         assert_eq!(glass.len(), 1);
-        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].bounds.x, 200.0);
+        assert_eq!(glass[0].bounds.w, 640.0);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 0.6);
         let style = Design::dark().glass.floating_panel;

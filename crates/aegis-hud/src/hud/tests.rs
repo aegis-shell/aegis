@@ -125,10 +125,9 @@ fn maximized_window_keeps_the_hud_visible() {
     assert!(!bar.fullscreen_active);
     assert!(bar.requires_composition());
     assert_eq!(bar.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
-    assert_eq!(
+    assert!(
         bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces)
-            .len(),
-        2
+            .is_empty()
     );
     assert_eq!(
         bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces)
@@ -157,8 +156,12 @@ fn minimized_immersive_windows_do_not_hide_the_hud() {
     assert!(!bar.fullscreen_active);
     assert!(bar.requires_composition());
     assert_eq!(bar.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
-    assert_eq!(
+    assert!(
         bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces)
+            .is_empty()
+    );
+    assert_eq!(
+        bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces)
             .len(),
         1
     );
@@ -290,7 +293,7 @@ fn backdrop_prepass_advances_glass_and_content_on_the_same_frame() {
 }
 
 #[test]
-fn backdrop_regions_cover_only_the_visible_chips() {
+fn backdrop_regions_leave_frost_to_liquid_glass() {
     let mut bar = Hud::new();
     bar.layout.visible = [true, true];
     bar.chip_fade = [1.0, 0.5];
@@ -309,14 +312,14 @@ fn backdrop_regions_cover_only_the_visible_chips() {
     };
     let workspaces = workspaces_empty();
     let regions = bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces);
-    assert_eq!(regions.len(), 2);
-    assert_eq!(regions[0].x, 8.0);
-    assert_eq!(regions[1].x, 1600.0);
+    assert!(regions.is_empty(), "HUD chips are liquid glass bodies, not frost rects");
     assert_eq!(bar.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
     assert!(bar.requires_composition());
     let glass = bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces);
     assert_eq!(glass.len(), 2);
-    assert_eq!(glass[0].bounds, regions[0]);
+    assert_eq!(glass[0].bounds.x, 8.0);
+    assert_eq!(glass[0].bounds.w, 200.0);
+    assert_eq!(glass[1].bounds.x, 1600.0);
     assert_eq!(glass[0].corner_radius, Design::dark().radii.chip);
     assert_eq!(glass[0].opacity, 1.0);
     assert_eq!(glass[1].opacity, 0.5);
