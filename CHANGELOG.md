@@ -7,6 +7,13 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.51] - 2026-08-30
+
+### Changed
+
+- Removed Super+T keybinding and tiling layout engine in favor of floating window management.
+- Upgraded Optics dependencies to `v0.0.32`.
+
 ## [0.0.50] - 2026-08-29
 
 ### Changed
