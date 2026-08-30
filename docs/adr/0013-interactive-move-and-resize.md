@@ -1,6 +1,6 @@
 # ADR-0013: Interactive move and resize
 
-- Status: Accepted
+- Status: Accepted (amended by [0145](0145-drag-tear-off-dynamic-reanchoring.md))
 - Date: 2026-06-18
 
 ## Context

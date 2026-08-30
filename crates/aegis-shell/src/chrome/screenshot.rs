@@ -1190,7 +1190,7 @@ mod tests {
         let glass = s.liquid_glass_regions((800.0, 600.0), &[], &workspaces);
         assert!(backdrop.is_empty());
         assert_eq!(glass.len(), 1);
-        assert_eq!(glass[0].bounds.w, 140.0);
+        assert_eq!(glass[0].bounds.w, PIXEL_LENS_SIZE);
         assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert!(glass[0].focus.is_none());
     }

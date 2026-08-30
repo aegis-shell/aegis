@@ -620,6 +620,99 @@ fn fullscreen_reconfigure_covers_the_output_and_restores_the_floating_rect() {
     assert_eq!(rec.layout_target, None);
 }
 
+#[test]
+fn maximized_tear_off_drag_reanchors_to_cursor() {
+    let mut state = State::new(std::ptr::null_mut());
+    state.output_geometry = aegis_model::output::OutputGeometry {
+        mode: aegis_model::output::OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        },
+        ..Default::default()
+    };
+    let mut rec = SurfaceRec::new(std::ptr::null_mut());
+    rec.state = &mut state;
+    rec.mapped = true;
+    rec.position = aegis_model::Point { x: 100, y: 100 };
+    rec.window.size = aegis_model::Size { w: 800, h: 600 };
+    rec.window.id = aegis_model::window::WindowId(1234);
+
+    // Maximize the window
+    rec.window.state.maximized = true;
+    let _ = unsafe { apply_state_geometry(&mut rec) };
+    assert_eq!(rec.saved_floating_rect, Some(aegis_model::Rect::new(100, 100, 800, 600)));
+    assert_eq!(rec.window.size, aegis_model::Size { w: 1920, h: 1080 });
+
+    // Drag from the right side of the maximized window titlebar: (1536, 25) - 80% across
+    unsafe {
+        crate::protocol::begin_toplevel_interactive_move(&mut rec, (1536.0, 25.0));
+    }
+
+    // Maximized state cleared, restored to floating size (800, 600)
+    assert!(!rec.window.state.maximized);
+    assert_eq!(rec.window.size, aegis_model::Size { w: 800, h: 600 });
+    assert_eq!(rec.saved_floating_rect, None);
+
+    // Re-anchored: ratio_x = 1536 / 1920 = 0.8.
+    // New origin x = 1536 - 0.8 * 800 = 896.
+    // New origin y = 25 - 25 = 0.
+    assert_eq!(rec.position, aegis_model::Point { x: 896, y: 0 });
+
+    // Interactive::Move starts with the re-anchored position and cursor origin
+    assert_eq!(
+        state.interactive,
+        Some(aegis_model::window::Interactive::Move {
+            window_id: aegis_model::window::WindowId(1234),
+            origin: (1536.0, 25.0),
+            start_position: aegis_model::Point { x: 896, y: 0 },
+        })
+    );
+}
+
+#[test]
+fn fullscreen_tear_off_drag_reanchors_to_cursor() {
+    let mut state = State::new(std::ptr::null_mut());
+    state.output_geometry = aegis_model::output::OutputGeometry {
+        mode: aegis_model::output::OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        },
+        ..Default::default()
+    };
+    let mut rec = SurfaceRec::new(std::ptr::null_mut());
+    rec.state = &mut state;
+    rec.mapped = true;
+    rec.position = aegis_model::Point { x: 300, y: 200 };
+    rec.window.size = aegis_model::Size { w: 1000, h: 600 };
+    rec.window.id = aegis_model::window::WindowId(5678);
+
+    // Fullscreen the window
+    rec.window.state.fullscreen = true;
+    let _ = unsafe { apply_state_geometry(&mut rec) };
+    assert_eq!(rec.saved_floating_rect, Some(aegis_model::Rect::new(300, 200, 1000, 600)));
+
+    // Drag from center of the screen (960, 540) - 50% across, 50% down
+    unsafe {
+        crate::protocol::begin_toplevel_interactive_move(&mut rec, (960.0, 540.0));
+    }
+
+    assert!(!rec.window.state.fullscreen);
+    assert_eq!(rec.window.size, aegis_model::Size { w: 1000, h: 600 });
+    // Re-anchored: ratio_x = 0.5 -> 960 - 500 = 460.
+    // delta_y = 540 < 600 -> 540 - 540 = 0.
+    assert_eq!(rec.position, aegis_model::Point { x: 460, y: 0 });
+    assert_eq!(
+        state.interactive,
+        Some(aegis_model::window::Interactive::Move {
+            window_id: aegis_model::window::WindowId(5678),
+            origin: (960.0, 540.0),
+            start_position: aegis_model::Point { x: 460, y: 0 },
+        })
+    );
+}
+
 /// The compositor-side fullscreen setter: a human-controlled toplevel flips
 /// the same state bit and geometry the client's own request would, and a
 /// read-only mirror (an agent-controlled window) is refused. The FFI half of

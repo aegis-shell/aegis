@@ -992,7 +992,6 @@ struct TopBorderClick {
 struct PendingTopBorderDoubleClick {
     window_id: aegis_model::window::WindowId,
     press_position: (f32, f32),
-    start_position: aegis_model::Point,
 }
 
 /// Runtime protocol and input state for one logical `wl_seat`.

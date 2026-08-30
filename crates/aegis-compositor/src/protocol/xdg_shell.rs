@@ -1264,6 +1264,135 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
 // events as normal during the grab (per protocol, the pointer stays with
 // the surface that had it when the grab began).
 
+/// Compute re-anchored origin when tearing off a maximized or fullscreen window via interactive drag.
+///
+/// In maximized / fullscreen state, the user grab position `cursor` is relative to screen coordinates.
+/// To ensure the floating window stays directly underneath the user's cursor without jumping,
+/// the horizontal position is placed proportionally based on where along the maximized width the
+/// grab happened, and the vertical offset is preserved from the top of the window (keeping the cursor
+/// locked to the title bar / grab header).
+pub(crate) fn reanchor_tear_off(
+    cursor: (f32, f32),
+    current_origin: aegis_model::Point,
+    current_size: aegis_model::Size,
+    target_size: aegis_model::Size,
+) -> aegis_model::Point {
+    let (cursor_x, cursor_y) = cursor;
+    let curr_x = current_origin.x as f32;
+    let curr_y = current_origin.y as f32;
+    let curr_w = current_size.w as f32;
+    let curr_h = current_size.h as f32;
+    let target_w = (target_size.w.max(1)) as f32;
+    let target_h = (target_size.h.max(1)) as f32;
+
+    // Horizontal ratio: where in the maximized/fullscreen window was the cursor grabbed?
+    let ratio_x = if curr_w > 0.0 {
+        ((cursor_x - curr_x) / curr_w).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+
+    let new_x = cursor_x - ratio_x * target_w;
+
+    // Vertical handling:
+    // If grabbed within the floating height bounds, preserve absolute delta (title bar offset).
+    // If grabbed below target_h (e.g. middle of a large fullscreen window), scale proportionally.
+    let delta_y = cursor_y - curr_y;
+    let new_y = if delta_y >= 0.0 && delta_y < target_h {
+        cursor_y - delta_y
+    } else if curr_h > 0.0 {
+        let ratio_y = (delta_y / curr_h).clamp(0.0, 1.0);
+        cursor_y - ratio_y * target_h
+    } else {
+        cursor_y
+    };
+
+    aegis_model::Point {
+        x: new_x.round() as i32,
+        y: new_y.round() as i32,
+    }
+}
+
+/// Detach a toplevel from any tiled, maximized, or fullscreen layout and initiate an
+/// interactive move. When tearing off from maximized or fullscreen state, the floating
+/// position is dynamically re-anchored so that the cursor maintains its relative horizontal
+/// ratio and vertical grab depth on the restored window.
+pub(crate) unsafe fn begin_toplevel_interactive_move(rec: *mut SurfaceRec, origin: (f32, f32)) {
+    unsafe {
+        if rec.is_null() {
+            return;
+        }
+        let state_ptr = (*rec).state;
+        if state_ptr.is_null() {
+            return;
+        }
+
+        let was_maximized = (*rec).window.state.maximized;
+        let was_fullscreen = (*rec).window.state.fullscreen;
+        let was_tiled = (*rec).window.layout_role != aegis_model::layout::LayoutRole::Floating;
+
+        let start_position = if was_maximized || was_fullscreen {
+            let curr_origin = (*rec).position;
+            let curr_size = (*rec).window.size;
+
+            let target_size = if let Some(saved) = (*rec).saved_floating_rect.take() {
+                saved.size
+            } else {
+                let hints = (*rec).window.size_hints;
+                let default_w = if hints.min_w > 0 {
+                    hints.min_w
+                } else {
+                    (curr_size.w * 7 / 10).max(320)
+                };
+                let default_h = if hints.min_h > 0 {
+                    hints.min_h
+                } else {
+                    (curr_size.h * 7 / 10).max(240)
+                };
+                let w = if hints.max_w > 0 {
+                    default_w.min(hints.max_w)
+                } else {
+                    default_w
+                };
+                let h = if hints.max_h > 0 {
+                    default_h.min(hints.max_h)
+                } else {
+                    default_h
+                };
+                aegis_model::Size { w, h }
+            };
+
+            let reanchored = reanchor_tear_off(origin, curr_origin, curr_size, target_size);
+
+            (*rec).window.state.maximized = false;
+            (*rec).window.state.fullscreen = false;
+            (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
+            (*rec).layout_target = None;
+            (*rec).window.size = target_size;
+
+            reposition_toplevel_with_popups(rec, reanchored);
+            let (w, h) = state_configure_dimensions(target_size);
+            reconfigure_with_size(rec, w, h);
+
+            reanchored
+        } else {
+            if was_tiled {
+                (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
+                (*rec).layout_target = None;
+            }
+            (*rec).position
+        };
+
+        (*state_ptr).interactive = Some(aegis_model::window::Interactive::Move {
+            window_id: (*rec).window.id,
+            origin,
+            start_position,
+        });
+        (*state_ptr).compositor_pointer_grab = false;
+        (*state_ptr).damaged_windows.insert((*rec).window.id);
+    }
+}
+
 unsafe extern "C" fn toplevel_move(
     client: *mut ffi::wl_client,
     resource: *mut ffi::wl_resource,
@@ -1287,21 +1416,8 @@ unsafe extern "C" fn toplevel_move(
         if (*state_ptr).interactive.is_some() {
             return; // Already grabbing; ignore.
         }
-        let layout_changed = (*rec).window.layout_role != aegis_model::layout::LayoutRole::Floating;
-        (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
-        (*rec).layout_target = None;
-        let state_changed = (*rec).window.state.maximized || (*rec).window.state.fullscreen;
-        (*rec).window.state.maximized = false;
-        (*rec).window.state.fullscreen = false;
-        if state_changed || layout_changed {
-            reconfigure_with_state(rec);
-        }
-        (*state_ptr).interactive = Some(aegis_model::window::Interactive::Move {
-            window_id: (*rec).window.id,
-            origin: ((*state_ptr).pointer_x, (*state_ptr).pointer_y),
-            start_position: (*rec).position,
-        });
-        (*state_ptr).compositor_pointer_grab = false;
+        let origin = ((*state_ptr).pointer_x, (*state_ptr).pointer_y);
+        begin_toplevel_interactive_move(rec, origin);
     }
 }
 
@@ -1566,5 +1682,60 @@ mod tests {
 
         assert_eq!(origin.x, 0);
         assert_eq!(size.w, 100);
+    }
+
+    #[test]
+    fn reanchor_tear_off_centers_and_preserves_titlebar_grab() {
+        let current_origin = aegis_model::Point { x: 0, y: 0 };
+        let current_size = aegis_model::Size { w: 1920, h: 1080 };
+        let target_size = aegis_model::Size { w: 800, h: 600 };
+
+        // Center grab on maximized title bar: (960, 20)
+        let reanchored = reanchor_tear_off((960.0, 20.0), current_origin, current_size, target_size);
+        // Ratio x is 960 / 1920 = 0.5. Target w is 800.
+        // New x = 960 - 0.5 * 800 = 560.
+        // New y = 20 - 20 = 0.
+        assert_eq!(reanchored, aegis_model::Point { x: 560, y: 0 });
+
+        // Cursor at 960 is 400px from left of 800px window (50% width).
+        assert_eq!(960 - reanchored.x, 400);
+        // Cursor at 20 is 20px from top of window.
+        assert_eq!(20 - reanchored.y, 20);
+    }
+
+    #[test]
+    fn reanchor_tear_off_scales_horizontal_ratio_consistently() {
+        let current_origin = aegis_model::Point { x: 0, y: 0 };
+        let current_size = aegis_model::Size { w: 2000, h: 1000 };
+        let target_size = aegis_model::Size { w: 1000, h: 500 };
+
+        // Grab at 80% width (1600, 30)
+        let reanchored_right = reanchor_tear_off((1600.0, 30.0), current_origin, current_size, target_size);
+        // 1600 - 0.8 * 1000 = 800.
+        assert_eq!(reanchored_right, aegis_model::Point { x: 800, y: 0 });
+        assert_eq!(1600 - reanchored_right.x, 800); // 80% of 1000px
+
+        // Grab at 20% width (400, 30)
+        let reanchored_left = reanchor_tear_off((400.0, 30.0), current_origin, current_size, target_size);
+        // 400 - 0.2 * 1000 = 200.
+        assert_eq!(reanchored_left, aegis_model::Point { x: 200, y: 0 });
+        assert_eq!(400 - reanchored_left.x, 200); // 20% of 1000px
+    }
+
+    #[test]
+    fn reanchor_tear_off_handles_fullscreen_deep_grabs() {
+        let current_origin = aegis_model::Point { x: 0, y: 0 };
+        let current_size = aegis_model::Size { w: 1920, h: 1080 };
+        let target_size = aegis_model::Size { w: 600, h: 400 };
+
+        // Super+drag at bottom-middle (960, 810) - 75% down
+        let reanchored = reanchor_tear_off((960.0, 810.0), current_origin, current_size, target_size);
+        // ratio_x = 0.5 -> new_x = 960 - 300 = 660.
+        // ratio_y = 810 / 1080 = 0.75 -> new_y = 810 - 0.75 * 400 = 510.
+        assert_eq!(reanchored, aegis_model::Point { x: 660, y: 510 });
+
+        // Cursor at (960, 810) is inside the 600x400 window starting at (660, 510).
+        assert_eq!(960 - reanchored.x, 300); // 50% width
+        assert_eq!(810 - reanchored.y, 300); // 75% height
     }
 }

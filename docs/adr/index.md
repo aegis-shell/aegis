@@ -152,3 +152,4 @@ background and how the decisions fit together, see
 | [0142](0142-layered-glass-backdrop-compositor.md) | Layered glass — the backdrop compositor owns the frost→glass nesting (amends [0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md)) | Superseded by [0143](0143-explicit-offscreen-composition-dag.md) |
 | [0143](0143-explicit-offscreen-composition-dag.md) | Explicit offscreen composition DAG for cumulative layers (supersedes [0142](0142-layered-glass-backdrop-compositor.md)) | Accepted |
 | [0144](0144-product-semantic-design-vocabulary.md) | Product-semantic design vocabulary (supersedes Decision 3 of [0081](0081-hud-and-command-panel-naming.md) and the token-retention clause of [0114](0114-panel-hosted-settings-and-hud-command-panel.md)) | Accepted |
+| [0145](0145-drag-tear-off-dynamic-reanchoring.md) | Drag tear-off dynamic re-anchoring for maximized and fullscreen toplevels (amends [0013](0013-interactive-move-and-resize.md)) | Accepted |

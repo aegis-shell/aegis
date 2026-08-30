@@ -395,7 +395,7 @@ impl ResizeEdges {
 /// An ongoing interactive move or resize. Started by `xdg_toplevel.move` /
 /// `xdg_toplevel.resize` when the supplied serial matches the last pointer
 /// button press; cleared on button release.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Interactive {
     /// Move the window by the pointer delta from `origin`.
     Move {

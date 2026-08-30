@@ -226,17 +226,8 @@ impl Server {
         {
             self.state.pending_top_border_double_click = None;
             self.state.compositor_pointer_grab = false;
-            self.start_interactive_move(pending.window_id);
-            if let Some(aegis_model::window::Interactive::Move {
-                origin,
-                start_position,
-                ..
-            }) = self.state.interactive.as_mut()
-            {
-                *origin = pending.press_position;
-                *start_position = pending.start_position;
-                self.state.compositor_pointer_grab = true;
-            }
+            self.start_interactive_move_for_seat(pending.window_id, pending.press_position);
+            self.state.compositor_pointer_grab = true;
         }
         // If an interactive grab is active, update the window's geometry
         // before any hit-testing — motion goes to the grabbed surface, not
@@ -428,7 +419,13 @@ impl Server {
                         .unwrap_or_else(|| surface_logical_size(&*rec));
                     window.resize_edges_nearest(self.state.pointer_x, self.state.pointer_y)
                 };
-                if button != BTN_RIGHT || !resize_edges.is_none() {
+                if button == BTN_LEFT {
+                    self.start_interactive_move(id);
+                    if self.state.interactive.is_some() {
+                        self.state.compositor_pointer_grab = true;
+                        return;
+                    }
+                } else if !resize_edges.is_none() {
                     unsafe {
                         (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
                         (*rec).layout_target = None;
@@ -440,11 +437,7 @@ impl Server {
                             reconfigure_with_state(rec);
                         }
                     }
-                    if button == BTN_LEFT {
-                        self.start_interactive_move(id);
-                    } else {
-                        self.start_interactive_resize(id, resize_edges);
-                    }
+                    self.start_interactive_resize(id, resize_edges);
                     if self.state.interactive.is_some() {
                         self.state.compositor_pointer_grab = true;
                         return;
@@ -479,7 +472,6 @@ impl Server {
                 self.state.pending_top_border_double_click = Some(PendingTopBorderDoubleClick {
                     window_id: id,
                     press_position: position,
-                    start_position: unsafe { (*rec).position },
                 });
                 self.state.compositor_pointer_grab = true;
                 return;

@@ -805,23 +805,37 @@ impl Server {
         }
         self.change_keyboard_focus(unsafe { (*rec).resource });
         unsafe {
-            let layout_changed =
-                (*rec).window.layout_role != aegis_model::layout::LayoutRole::Floating;
-            (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
-            (*rec).layout_target = None;
-            let state_changed = (*rec).window.state.maximized || (*rec).window.state.fullscreen;
-            (*rec).window.state.maximized = false;
-            (*rec).window.state.fullscreen = false;
-            if state_changed || layout_changed {
-                reconfigure_with_state(rec);
-            }
+            crate::protocol::begin_toplevel_interactive_move(
+                rec,
+                (self.state.pointer_x, self.state.pointer_y),
+            );
         }
-        self.state.interactive = Some(aegis_model::window::Interactive::Move {
-            window_id: surface_id,
-            origin: (self.state.pointer_x, self.state.pointer_y),
-            start_position: unsafe { (*rec).position },
-        });
-        self.state.compositor_pointer_grab = false;
+    }
+
+    /// Begin an interactive move targeting a specific surface with an explicit
+    /// cursor origin point (for example, when a border gesture passes its initial
+    /// press coordinates).
+    pub fn start_interactive_move_for_seat(
+        &mut self,
+        surface_id: aegis_model::window::WindowId,
+        origin: (f32, f32),
+    ) {
+        if self.state.interactive.is_some()
+            || !self
+                .state
+                .authority
+                .seat_controls_window(self.state.active_seat, surface_id)
+        {
+            return;
+        }
+        let rec = self.find_surface_by_window_id(surface_id);
+        if rec.is_null() || unsafe { (*rec).xdg_toplevel.is_null() } {
+            return;
+        }
+        self.change_keyboard_focus(unsafe { (*rec).resource });
+        unsafe {
+            crate::protocol::begin_toplevel_interactive_move(rec, origin);
+        }
     }
 
     /// Begin an interactive move of a read-only mirror, initiated by trusted
@@ -855,23 +869,8 @@ impl Server {
             return;
         }
         unsafe {
-            let layout_changed =
-                (*rec).window.layout_role != aegis_model::layout::LayoutRole::Floating;
-            (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
-            (*rec).layout_target = None;
-            let state_changed = (*rec).window.state.maximized || (*rec).window.state.fullscreen;
-            (*rec).window.state.maximized = false;
-            (*rec).window.state.fullscreen = false;
-            if state_changed || layout_changed {
-                reconfigure_with_state(rec);
-            }
+            crate::protocol::begin_toplevel_interactive_move(rec, origin);
         }
-        self.state.interactive = Some(aegis_model::window::Interactive::Move {
-            window_id: surface_id,
-            origin,
-            start_position: unsafe { (*rec).position },
-        });
-        self.state.compositor_pointer_grab = false;
     }
 
     /// Begin an interactive resize from the shell. Same serial-less contract
