@@ -103,6 +103,7 @@ impl Prism {
             .and_then(get)
             .or_else(|| get(entry.id.strip_suffix(".desktop").unwrap_or(&entry.id)))
             .or_else(|| entry.icon.as_deref().and_then(get))
+            .or_else(|| self.icons.default_icon())
     }
 
     fn emit(outcome: Option<Launch>, out: &mut ChromeEvents) {

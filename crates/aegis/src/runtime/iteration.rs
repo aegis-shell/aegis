@@ -759,7 +759,7 @@ impl CompositorRuntime {
             self.shell.set_app_catalog(aegis_shell::AppCatalog {
                 apps: self.launcher_apps.clone(),
                 pinned,
-                icons: aegis_shell::IconSet::from_raw(self.icon_cache.map.clone()),
+                icons: self.icon_cache.as_icon_set(),
                 position: self
                     .config
                     .as_ref()
@@ -817,7 +817,7 @@ impl CompositorRuntime {
                 self.shell.set_app_catalog(aegis_shell::AppCatalog {
                     apps: refreshed.clone(),
                     pinned,
-                    icons: aegis_shell::IconSet::from_raw(refreshed_icons.map.clone()),
+                    icons: refreshed_icons.as_icon_set(),
                     position: self
                         .config
                         .as_ref()

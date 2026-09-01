@@ -7,7 +7,19 @@
 pub(super) struct IconCache {
     pub(super) _images: Vec<flux::Image>,
     pub(super) map: std::collections::HashMap<String, *mut std::ffi::c_void>,
+    pub(super) default_icon: Option<*mut std::ffi::c_void>,
 }
+
+impl IconCache {
+    pub(super) fn as_icon_set(&self) -> aegis_shell::IconSet {
+        aegis_shell::IconSet::from_raw_with_default(self.map.clone(), self.default_icon)
+    }
+}
+
+/// Fallback SVG icon used for applications and windows without a desktop icon.
+pub(super) const DEFAULT_APP_ICON_SVG: &str =
+    include_str!("../../../../assets/icons/unknown.svg");
+pub(super) const DEFAULT_ICON_KEY: &str = "__aegis_default_app_icon__";
 
 /// Raster extensions the `image` crate decodes directly. SVG/SVGZ uses the
 /// standard librsvg command-line rasterizer when installed and otherwise
@@ -227,6 +239,27 @@ pub(super) struct DecodedIcon {
     pub(super) overwrite: bool,
 }
 
+/// Rasterize an SVG byte slice into a BGRA8 pixel buffer using `usvg`/`resvg`/`tiny-skia`.
+pub(super) fn rasterize_svg_bgra(svg: &[u8], target_size: u32) -> Option<Vec<u8>> {
+    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
+    let size = tree.size();
+    if size.width() <= 0.0 || size.height() <= 0.0 {
+        return None;
+    }
+    let target = target_size.clamp(1, 512);
+    let mut pixmap = tiny_skia::Pixmap::new(target, target)?;
+    let scale = (target as f32 / size.width()).min(target as f32 / size.height());
+    let dx = (target as f32 - size.width() * scale) * 0.5;
+    let dy = (target as f32 - size.height() * scale) * 0.5;
+    let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let mut bgra = pixmap.take();
+    for chunk in bgra.chunks_exact_mut(4) {
+        chunk.swap(0, 2); // RGBA -> BGRA
+    }
+    Some(bgra)
+}
+
 /// Decode every application and HUD icon into raw BGRA8 pixels. Runs on the
 /// app-scan worker thread: it performs no GPU work, only file I/O and
 /// (for SVG) `rsvg-convert` subprocesses.
@@ -236,6 +269,26 @@ pub(super) fn decode_icons(
     icon_scale: u32,
 ) -> Vec<DecodedIcon> {
     let mut decoded = Vec::new();
+
+    // Default application fallback icon decoded from embedded SVG.
+    let default_target = aegis_desktop_entries::DEFAULT_ICON_SIZE
+        .saturating_mul(icon_scale.max(1))
+        .min(512);
+    if let Some(default_bgra) = rasterize_svg_bgra(DEFAULT_APP_ICON_SVG.as_bytes(), default_target)
+    {
+        decoded.push(DecodedIcon {
+            keys: vec![
+                DEFAULT_ICON_KEY.to_string(),
+                "application-x-executable".to_string(),
+                "unknown".to_string(),
+            ],
+            width: default_target,
+            height: default_target,
+            bgra: default_bgra,
+            overwrite: false,
+        });
+    }
+
     for entry in apps {
         let Some(path) = &entry.icon_path else {
             continue;
@@ -363,6 +416,8 @@ pub(super) fn build_icon_cache(device: &flux::Device, decoded: &[DecodedIcon]) -
         }
     }
 
+    let default_icon = map.get(DEFAULT_ICON_KEY).copied();
+
     log::info!(
         "icons: {} application texture(s), {hud_count} themed HUD symbol(s)",
         images.len().saturating_sub(hud_count)
@@ -370,6 +425,7 @@ pub(super) fn build_icon_cache(device: &flux::Device, decoded: &[DecodedIcon]) -
     IconCache {
         _images: images,
         map,
+        default_icon,
     }
 }
 
@@ -387,11 +443,11 @@ pub(super) fn decode_icon(
     if !SVG_ICON_EXTS.contains(&ext) {
         return None;
     }
-    let target = aegis_desktop_entries::DEFAULT_ICON_SIZE
+    let target_u32 = aegis_desktop_entries::DEFAULT_ICON_SIZE
         .saturating_mul(icon_scale.max(1))
-        .min(512)
-        .to_string();
-    let output = std::process::Command::new("rsvg-convert")
+        .min(512);
+    let target = target_u32.to_string();
+    if let Ok(output) = std::process::Command::new("rsvg-convert")
         .args([
             "--width",
             &target,
@@ -401,12 +457,27 @@ pub(super) fn decode_icon(
         ])
         .arg(path)
         .output()
-        .ok()?;
-    if !output.status.success() {
-        log::debug!("icon: SVG rasterization failed for {}", path.display());
+    {
+        if output.status.success() {
+            if let Ok(img) = image::load_from_memory(&output.stdout) {
+                return Some(img);
+            }
+        }
+    }
+    let data = std::fs::read(path).ok()?;
+    let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
+    let size = tree.size();
+    if size.width() <= 0.0 || size.height() <= 0.0 {
         return None;
     }
-    image::load_from_memory(&output.stdout).ok()
+    let mut pixmap = tiny_skia::Pixmap::new(target_u32, target_u32)?;
+    let scale = (target_u32 as f32 / size.width()).min(target_u32 as f32 / size.height());
+    let dx = (target_u32 as f32 - size.width() * scale) * 0.5;
+    let dy = (target_u32 as f32 - size.height() * scale) * 0.5;
+    let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let rgba = image::RgbaImage::from_raw(target_u32, target_u32, pixmap.take())?;
+    Some(image::DynamicImage::ImageRgba8(rgba))
 }
 
 #[cfg(test)]
@@ -489,5 +560,13 @@ mod tests {
             )],
         );
         assert_eq!(pinned, vec!["org.example.Terminal.desktop"]);
+    }
+
+    #[test]
+    fn default_app_icon_svg_rasterizes_successfully() {
+        let bgra = rasterize_svg_bgra(DEFAULT_APP_ICON_SVG.as_bytes(), 48);
+        assert!(bgra.is_some(), "default unknown.svg must rasterize cleanly");
+        let bytes = bgra.unwrap();
+        assert_eq!(bytes.len(), 48 * 48 * 4);
     }
 }

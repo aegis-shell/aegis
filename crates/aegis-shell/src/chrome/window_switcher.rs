@@ -378,7 +378,8 @@ impl Chrome for WindowSwitcher {
             let icon = window
                 .app_id
                 .as_deref()
-                .and_then(|app_id| self.icons.get(&app_id.to_ascii_lowercase()));
+                .and_then(|app_id| self.icons.get(&app_id.to_ascii_lowercase()))
+                .or_else(|| self.icons.default_icon());
             let occupied_width = 16.0 + if icon.is_some() { 20.0 + 7.0 } else { 0.0 };
             let icon_tint = design.colors.application_text;
             let label = ellipsize(

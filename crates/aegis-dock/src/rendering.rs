@@ -659,7 +659,7 @@ impl Chrome for Dock {
                     });
                 } else {
                     f.place(&icon_id, &chrome_place(rect, tile_opts()), |f| {
-                        match t.icon {
+                        match t.icon.or_else(|| self.icons.default_icon()) {
                             // The pointer crosses from the binary's flux binding type to
                             // lens's ABI-identical flux_image.
                             Some(ptr) => unsafe {

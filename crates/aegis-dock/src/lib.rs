@@ -1045,7 +1045,11 @@ impl Dock {
                     }
                 }
             }
-            let icon = app.keys.iter().find_map(|k| icons.get(k));
+            let icon = app
+                .keys
+                .iter()
+                .find_map(|k| icons.get(k))
+                .or_else(|| icons.default_icon());
             tiles.push(Tile {
                 key: format!("app:{}", app.entry.id),
                 icon,
@@ -1120,7 +1124,11 @@ impl Dock {
                 }
             }
             let first = &windows[group.windows[0]];
-            let icon = group.app_id.as_ref().and_then(|a| icons.get(a));
+            let icon = group
+                .app_id
+                .as_ref()
+                .and_then(|a| icons.get(a))
+                .or_else(|| icons.default_icon());
             let label = match group.entry {
                 Some(i) => all_apps[i].name.clone(),
                 None if group.windows.len() == 1 => first

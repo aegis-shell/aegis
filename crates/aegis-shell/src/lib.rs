@@ -448,17 +448,39 @@ pub struct LiquidGlassFocus {
 #[derive(Clone, Default)]
 pub struct IconSet {
     map: HashMap<String, *mut c_void>,
+    default_icon: Option<*mut c_void>,
 }
 
 impl IconSet {
     /// Wrap a raw handle map (`app_id` → borrowed `flux_image` pointer).
     pub fn from_raw(map: HashMap<String, *mut c_void>) -> IconSet {
-        IconSet { map }
+        IconSet {
+            map,
+            default_icon: None,
+        }
+    }
+
+    /// Wrap a raw handle map with a fallback default icon texture.
+    pub fn from_raw_with_default(
+        map: HashMap<String, *mut c_void>,
+        default_icon: Option<*mut c_void>,
+    ) -> IconSet {
+        IconSet { map, default_icon }
     }
 
     /// The borrowed texture handle filed under `key`, if any.
     pub fn get(&self, key: &str) -> Option<*mut c_void> {
         self.map.get(key).copied()
+    }
+
+    /// The fallback default icon texture handle, if any.
+    pub fn default_icon(&self) -> Option<*mut c_void> {
+        self.default_icon
+    }
+
+    /// Look up an icon by key, falling back to the default icon when absent.
+    pub fn get_or_default(&self, key: &str) -> Option<*mut c_void> {
+        self.get(key).or(self.default_icon)
     }
 }
 

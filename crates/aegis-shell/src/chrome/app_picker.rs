@@ -268,6 +268,7 @@ impl AppPicker {
                     .and_then(|entry| entry.icon.as_deref())
                     .and_then(get)
             })
+            .or_else(|| self.catalog.icons.default_icon())
     }
 }
 

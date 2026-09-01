@@ -296,7 +296,11 @@ impl Launcher {
         if let Some(icon) = get(entry.id.strip_suffix(".desktop").unwrap_or(&entry.id)) {
             return Some(icon);
         }
-        entry.icon.as_deref().and_then(get)
+        entry
+            .icon
+            .as_deref()
+            .and_then(get)
+            .or_else(|| self.icons.default_icon())
     }
 
     fn emit(outcome: Option<Launch>, out: &mut ChromeEvents) {
@@ -1833,5 +1837,25 @@ mod tests {
                 )
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn launcher_entry_icon_falls_back_to_default_icon() {
+        let dummy_ptr = 0x5678 as *mut std::ffi::c_void;
+        let mut launcher = Launcher::new();
+        let app = Entry {
+            id: "app-without-icon.desktop".to_string(),
+            name: "App Without Icon".to_string(),
+            ..Default::default()
+        };
+        let catalog = AppCatalog {
+            apps: vec![app.clone()],
+            pinned: vec![],
+            icons: IconSet::from_raw_with_default(std::collections::HashMap::new(), Some(dummy_ptr)),
+            position: aegis_model::dock::DockPosition::Bottom,
+        };
+        launcher.update(ChromeUpdate::AppCatalog(&catalog));
+        let resolved = launcher.entry_icon(&app);
+        assert_eq!(resolved, Some(dummy_ptr));
     }
 }

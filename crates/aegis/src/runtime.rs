@@ -517,7 +517,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     shell.set_app_catalog(aegis_shell::AppCatalog {
         apps: launcher_apps.clone(),
         pinned,
-        icons: aegis_shell::IconSet::from_raw(icon_cache.map.clone()),
+        icons: icon_cache.as_icon_set(),
         position: config.as_ref().map(|c| c.dock.position).unwrap_or_default(),
     });
     #[cfg(feature = "chrome-dock")]

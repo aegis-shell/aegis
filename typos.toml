@@ -28,5 +28,6 @@ extend-exclude = [
     "Cargo.lock",
     "assets/cursors/**",
     "assets/wallpapers/**",
+    "assets/icons/**",
     ".git/**",
 ]

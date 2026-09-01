@@ -1390,3 +1390,33 @@ fn minimize_targets_follow_the_dock_edge() {
         "icon near vertical centre: {rect:?}"
     );
 }
+
+#[test]
+fn dock_tiles_fall_back_to_default_icon_when_app_has_no_icon() {
+    let dummy_ptr = 0x1234 as *mut std::ffi::c_void;
+    let mut dock = Dock::new();
+    let app_without_icon = app("custom-app.desktop");
+    dock.update_app_catalog(&AppCatalog {
+        apps: vec![app_without_icon.clone()],
+        pinned: vec![app_without_icon],
+        icons: IconSet::from_raw_with_default(HashMap::new(), Some(dummy_ptr)),
+        position: DockPosition::Bottom,
+    });
+    let running_unknown = window(1, "unknown-unregistered-window", false);
+    dock.update(ChromeUpdate::AllWindows(std::slice::from_ref(&running_unknown)));
+    let tiles = Dock::frame_tiles(
+        &dock.tile_cache,
+        &dock.apps,
+        &dock.all_apps,
+        &dock.icons,
+        dock.catalog_revision,
+        &[running_unknown],
+        Some("Applications"),
+    );
+    // Pinned tile without an icon gets the default icon
+    let pinned_tile = tiles.iter().find(|t| t.key == "app:custom-app.desktop").unwrap();
+    assert_eq!(pinned_tile.icon, Some(dummy_ptr));
+    // Transient running window without an icon also gets the default icon
+    let transient_tile = tiles.iter().find(|t| !t.pinned && !t.launchpad).unwrap();
+    assert_eq!(transient_tile.icon, Some(dummy_ptr));
+}
