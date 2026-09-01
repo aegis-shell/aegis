@@ -324,8 +324,7 @@ impl Launcher {
         } else {
             (1100.0, 1.0)
         };
-        self.visibility
-            .advance(target, stiffness, damping, dt);
+        self.visibility.advance(target, stiffness, damping, dt);
         self.visibility.value = self.visibility.value.clamp(-0.04, 1.04);
 
         self.anim_active = !self.visibility.settled_on(target, 0.005, 0.03);
@@ -354,7 +353,7 @@ impl Launcher {
             .clamp(SEARCH_MIN_W, SEARCH_MAX_W)
             .min((display.0 - 40.0).max(1.0))
             .floor();
-        let search_y = ((if display.1 < 560.0 { 22.0 } else { SEARCH_TOP } + rise_y)).round();
+        let search_y = (if display.1 < 560.0 { 22.0 } else { SEARCH_TOP } + rise_y).round();
         let search_x = ((display.0 - search_w) * 0.5).round();
         Rect {
             x: search_x,

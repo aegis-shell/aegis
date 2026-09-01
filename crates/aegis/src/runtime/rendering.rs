@@ -1902,6 +1902,32 @@ pub(super) fn draw_client_scene(
     if !ghosts.is_empty() {
         renderer.draw_closing_frames(device, canvas, &ghosts);
     }
+    // Hierarchy-aware modal feedback: draw suspended scrim over blocked parents
+    // and luminous attention pulse halo over active modal leaves.
+    for w in &windows {
+        if w.suspended_by_modal && !w.minimized {
+            let (r, g, b, a) = (10, 12, 22, 130);
+            canvas.fill_rect(
+                w.position.x as f32,
+                w.position.y as f32,
+                w.size.w as f32,
+                w.size.h as f32,
+                flux::rgba(r, g, b, a),
+            );
+        }
+        if w.attention_pulse && !w.minimized {
+            let color = flux::rgba(120, 175, 255, 245);
+            let x = w.position.x as f32;
+            let y = w.position.y as f32;
+            let width = w.size.w as f32;
+            let height = w.size.h as f32;
+            let t = 2.5;
+            canvas.fill_rect(x, y, width, t, color);
+            canvas.fill_rect(x, y + height - t, width, t, color);
+            canvas.fill_rect(x, y + t, t, (height - 2.0 * t).max(0.0), color);
+            canvas.fill_rect(x + width - t, y + t, t, (height - 2.0 * t).max(0.0), color);
+        }
+    }
     canvas.restore();
 }
 

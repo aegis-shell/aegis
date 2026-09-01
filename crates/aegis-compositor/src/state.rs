@@ -204,6 +204,7 @@ impl State {
             last_background_frame_callback_ms: 0,
             window_switcher: None,
             workspace_slide: None,
+            attention_pulses: std::collections::HashMap::new(),
             closing_frames: Vec::new(),
             output_resources: Vec::new(),
             output_globals: Vec::new(),

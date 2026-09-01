@@ -641,7 +641,10 @@ fn maximized_tear_off_drag_reanchors_to_cursor() {
     // Maximize the window
     rec.window.state.maximized = true;
     let _ = unsafe { apply_state_geometry(&mut rec) };
-    assert_eq!(rec.saved_floating_rect, Some(aegis_model::Rect::new(100, 100, 800, 600)));
+    assert_eq!(
+        rec.saved_floating_rect,
+        Some(aegis_model::Rect::new(100, 100, 800, 600))
+    );
     assert_eq!(rec.window.size, aegis_model::Size { w: 1920, h: 1080 });
 
     // Drag from the right side of the maximized window titlebar: (1536, 25) - 80% across
@@ -691,7 +694,10 @@ fn fullscreen_tear_off_drag_reanchors_to_cursor() {
     // Fullscreen the window
     rec.window.state.fullscreen = true;
     let _ = unsafe { apply_state_geometry(&mut rec) };
-    assert_eq!(rec.saved_floating_rect, Some(aegis_model::Rect::new(300, 200, 1000, 600)));
+    assert_eq!(
+        rec.saved_floating_rect,
+        Some(aegis_model::Rect::new(300, 200, 1000, 600))
+    );
 
     // Drag from center of the screen (960, 540) - 50% across, 50% down
     unsafe {
@@ -1562,4 +1568,91 @@ fn destroying_a_finished_data_control_device_is_scrubbed_from_the_runtime() {
         runtime.data_control_offers.contains(&stale_offer),
         "the offer is untouched by the device scrub"
     );
+}
+
+#[test]
+fn modal_topology_resolves_deep_descendant_chains_and_topmost_leaf() {
+    let mut state = State::new(std::ptr::null_mut());
+    let root_id = aegis_model::window::WindowId(1);
+    let child_id = aegis_model::window::WindowId(2);
+    let leaf_id = aegis_model::window::WindowId(3);
+    let sibling_id = aegis_model::window::WindowId(4);
+
+    let mut root = mapped_toplevel_fixture(root_id, 0x100);
+    root.state = &mut state;
+    let mut child = mapped_toplevel_fixture(child_id, 0x200);
+    child.state = &mut state;
+    child.window.parent = Some(root.as_mut() as *mut SurfaceRec as usize);
+    let mut leaf = mapped_toplevel_fixture(leaf_id, 0x300);
+    leaf.state = &mut state;
+    leaf.window.parent = Some(child.as_mut() as *mut SurfaceRec as usize);
+    let mut sibling = mapped_toplevel_fixture(sibling_id, 0x400);
+    sibling.state = &mut state;
+
+    root.index = 0;
+    child.index = 1;
+    leaf.index = 2;
+    sibling.index = 3;
+
+    state.surfaces = vec![
+        root.as_mut(),
+        child.as_mut(),
+        leaf.as_mut(),
+        sibling.as_mut(),
+    ];
+
+    // Check descendant relations
+    assert!(unsafe { is_transient_descendant_of(child.as_mut(), root.as_mut(), &state) });
+    assert!(unsafe { is_transient_descendant_of(leaf.as_mut(), root.as_mut(), &state) });
+    assert!(unsafe { is_transient_descendant_of(leaf.as_mut(), child.as_mut(), &state) });
+    assert!(!unsafe { is_transient_descendant_of(root.as_mut(), leaf.as_mut(), &state) });
+    assert!(!unsafe { is_transient_descendant_of(sibling.as_mut(), root.as_mut(), &state) });
+
+    // Check topmost modal descendant
+    assert_eq!(
+        unsafe { topmost_modal_descendant(root.as_mut(), &state) },
+        Some(leaf.as_mut() as *mut SurfaceRec)
+    );
+    assert_eq!(
+        unsafe { topmost_modal_descendant(child.as_mut(), &state) },
+        Some(leaf.as_mut() as *mut SurfaceRec)
+    );
+    assert_eq!(
+        unsafe { topmost_modal_descendant(leaf.as_mut(), &state) },
+        None
+    );
+    assert_eq!(
+        unsafe { topmost_modal_descendant(sibling.as_mut(), &state) },
+        None
+    );
+}
+
+#[test]
+fn shifting_parent_toplevel_moves_transient_children_synchronously() {
+    let mut state = State::new(std::ptr::null_mut());
+    let root_id = aegis_model::window::WindowId(10);
+    let child_id = aegis_model::window::WindowId(11);
+
+    let mut root = mapped_toplevel_fixture(root_id, 0x100);
+    root.state = &mut state;
+    root.position = aegis_model::Point { x: 100, y: 100 };
+    root.window.position = root.position;
+
+    let mut child = mapped_toplevel_fixture(child_id, 0x200);
+    child.state = &mut state;
+    child.window.parent = Some(root.as_mut() as *mut SurfaceRec as usize);
+    child.position = aegis_model::Point { x: 150, y: 150 };
+    child.window.position = child.position;
+
+    state.surfaces = vec![root.as_mut(), child.as_mut()];
+
+    unsafe {
+        reposition_toplevel_with_popups(root.as_mut(), aegis_model::Point { x: 200, y: 250 });
+    }
+
+    assert_eq!(root.position, aegis_model::Point { x: 200, y: 250 });
+    assert_eq!(root.window.position, aegis_model::Point { x: 200, y: 250 });
+    // Child moved with the exact delta (+100, +150)
+    assert_eq!(child.position, aegis_model::Point { x: 250, y: 300 });
+    assert_eq!(child.window.position, aegis_model::Point { x: 250, y: 300 });
 }

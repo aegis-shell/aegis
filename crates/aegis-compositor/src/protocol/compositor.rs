@@ -478,6 +478,67 @@ pub(crate) unsafe fn toplevel_has_live_parent(rec: *mut SurfaceRec) -> bool {
     unsafe { live_transient_parent(rec).is_some() }
 }
 
+/// Checks if `child` is a transient descendant of `parent` in the surface tree.
+pub(crate) unsafe fn is_transient_descendant_of(
+    child: *mut SurfaceRec,
+    parent: *mut SurfaceRec,
+    state: &State,
+) -> bool {
+    unsafe {
+        if child.is_null() || parent.is_null() || child == parent {
+            return false;
+        }
+        let mut current = child;
+        let mut depth = 0;
+        while depth < 32 {
+            let current_parent_ptr = (*current).window.parent;
+            let Some(p_raw) = current_parent_ptr else {
+                return false;
+            };
+            let p = p_raw as *mut SurfaceRec;
+            if p.is_null() || !state.live_surfaces_pub().any(|c| c == p) {
+                return false;
+            }
+            if p == parent {
+                return true;
+            }
+            current = p;
+            depth += 1;
+        }
+        false
+    }
+}
+
+/// Returns the topmost mapped, non-minimized descendant in the transient tree of `rec`, if any.
+/// If `rec` has no mapped modal children, returns `None`.
+pub(crate) unsafe fn topmost_modal_descendant(
+    rec: *mut SurfaceRec,
+    state: &State,
+) -> Option<*mut SurfaceRec> {
+    unsafe {
+        if rec.is_null() {
+            return None;
+        }
+        let mut live_descendants = Vec::new();
+        for candidate in state.live_surfaces_pub() {
+            if candidate == rec {
+                continue;
+            }
+            let surface = &*candidate;
+            if !surface.mapped || surface.xdg_toplevel.is_null() || surface.window.minimized {
+                continue;
+            }
+            if is_transient_descendant_of(candidate, rec, state) {
+                live_descendants.push(candidate);
+            }
+        }
+        if live_descendants.is_empty() {
+            return None;
+        }
+        live_descendants.into_iter().max_by_key(|&s| (*s).index)
+    }
+}
+
 /// Move a toplevel to `new_origin`, carrying its whole popup subtree with
 /// the same delta so menus, tooltips, and combo boxes stay anchored to the
 /// window they belong to. Subsurfaces need no handling here: their draw
@@ -510,6 +571,37 @@ pub(crate) unsafe fn reposition_toplevel_with_popups(
         (*rec).position = new_origin;
         (*rec).window.position = new_origin;
         shift_popup_subtree(rec, delta, 0);
+        shift_transient_subtree(rec, delta, 0);
+    }
+}
+
+/// Recursively shift every live transient child anchored to `rec`, keeping
+/// dialogs and prompters centered / relative to their parent window.
+unsafe fn shift_transient_subtree(rec: *mut SurfaceRec, delta: aegis_model::Point, depth: u32) {
+    unsafe {
+        if rec.is_null() || depth >= 32 || (*rec).state.is_null() {
+            return;
+        }
+        let child_ptrs: Vec<*mut SurfaceRec> = (*(*rec).state)
+            .live_surfaces_pub()
+            .filter(|p| {
+                let p = *p;
+                !p.is_null()
+                    && !(*p).xdg_toplevel.is_null()
+                    && (*p).window.parent == Some(rec as usize)
+                    && (*p).mapped
+            })
+            .collect();
+        for ptr in child_ptrs {
+            let new_child_origin = aegis_model::Point {
+                x: (*ptr).position.x.saturating_add(delta.x),
+                y: (*ptr).position.y.saturating_add(delta.y),
+            };
+            (*ptr).position = new_child_origin;
+            (*ptr).window.position = new_child_origin;
+            shift_popup_subtree(ptr, delta, 0);
+            shift_transient_subtree(ptr, delta, depth + 1);
+        }
     }
 }
 

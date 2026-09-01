@@ -79,13 +79,23 @@ impl Server {
         flags: IngestFlags,
     ) -> Result<UipDispatchResult, InteractionDomainRuntimeError> {
         // 1. Validate domain existence
-        let domain_rec = match self.state.authority.interaction_domain(transaction.target_domain) {
+        let domain_rec = match self
+            .state
+            .authority
+            .interaction_domain(transaction.target_domain)
+        {
             Some(rec) => rec,
-            None => return Ok(UipDispatchResult::Rejected(UipRejectReason::UnauthorizedDomain)),
+            None => {
+                return Ok(UipDispatchResult::Rejected(
+                    UipRejectReason::UnauthorizedDomain,
+                ));
+            }
         };
 
         if domain_rec.state != aegis_model::interaction_domain::InteractionDomainState::Active {
-            return Ok(UipDispatchResult::Rejected(UipRejectReason::DomainNotActive));
+            return Ok(UipDispatchResult::Rejected(
+                UipRejectReason::DomainNotActive,
+            ));
         }
 
         // 2. Optimistic concurrency check
@@ -250,4 +260,3 @@ mod tests {
         }
     }
 }
-

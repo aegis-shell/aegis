@@ -113,16 +113,25 @@ impl Server {
             return;
         };
         let root = self.state.surfaces[pos];
-        let mut rest = Vec::with_capacity(self.state.surfaces.len());
-        let mut raised = Vec::new();
-        for ptr in self.state.surfaces.drain(..) {
-            if !ptr.is_null() && unsafe { surface_root_toplevel(ptr) == root } {
-                raised.push(ptr);
+        let surfaces = std::mem::take(&mut self.state.surfaces);
+        let mut rest = Vec::with_capacity(surfaces.len());
+        let mut raised_parents = Vec::new();
+        let mut raised_descendants = Vec::new();
+        for ptr in surfaces {
+            if ptr.is_null() {
+                continue;
+            }
+            let r = unsafe { surface_root_toplevel(ptr) };
+            if r == root {
+                raised_parents.push(ptr);
+            } else if !r.is_null() && unsafe { is_transient_descendant_of(r, root, &self.state) } {
+                raised_descendants.push(ptr);
             } else {
                 rest.push(ptr);
             }
         }
-        rest.append(&mut raised);
+        rest.append(&mut raised_parents);
+        rest.append(&mut raised_descendants);
         self.state.surfaces = rest;
         for (index, ptr) in self.state.surfaces.iter().copied().enumerate() {
             if !ptr.is_null() {
@@ -206,6 +215,12 @@ impl Server {
             // the renderer and hit-test pick it up again.
             if activated {
                 s.window.minimized = false;
+                let s_ptr = s as *mut SurfaceRec;
+                for p in self.state.live_surfaces() {
+                    if p != s_ptr && unsafe { is_transient_descendant_of(p, s_ptr, &self.state) } {
+                        unsafe { (*p).window.minimized = false };
+                    }
+                }
             }
             unsafe { reconfigure_with_state(s as *mut SurfaceRec) };
             return;

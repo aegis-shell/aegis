@@ -467,11 +467,7 @@ impl Chrome for Overview {
                 ),
                 |_| {},
             );
-            let mut label = window
-                .title
-                .clone()
-                .or_else(|| window.app_id.clone())
-                .unwrap_or_default();
+            let mut label = resolve_overview_hierarchy_title(window, windows);
             if window.read_only {
                 if !label.is_empty() {
                     label.push_str(" · ");
@@ -642,5 +638,83 @@ fn to_lens(rect: aegis_model::Rect) -> Rect {
         y: rect.origin.y as f32,
         w: rect.size.w as f32,
         h: rect.size.h as f32,
+    }
+}
+
+fn resolve_overview_hierarchy_title(window: &Window, windows: &[Window]) -> String {
+    let mut chain = Vec::new();
+    let mut current_id = window.parent_id;
+    let mut depth = 0;
+    while let Some(pid) = current_id {
+        if depth >= 10 {
+            break;
+        }
+        if let Some(parent) = windows.iter().find(|w| w.id == pid) {
+            let p_title = parent
+                .title
+                .as_deref()
+                .or(parent.app_id.as_deref())
+                .unwrap_or_default();
+            if !p_title.is_empty() {
+                chain.push(p_title);
+            }
+            current_id = parent.parent_id;
+            depth += 1;
+        } else {
+            break;
+        }
+    }
+    let own_title = window
+        .title
+        .as_deref()
+        .or(window.app_id.as_deref())
+        .unwrap_or_default();
+
+    if chain.is_empty() {
+        if window.suspended_by_modal {
+            format!("{own_title} ⧗")
+        } else {
+            own_title.to_string()
+        }
+    } else {
+        chain.reverse();
+        let mut full = chain.join(" › ");
+        full.push_str(" › ");
+        full.push_str(own_title);
+        if window.suspended_by_modal {
+            full.push_str(" ⧗");
+        }
+        full
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aegis_model::window::{Window, WindowId};
+
+    #[test]
+    fn overview_hierarchy_title_resolves_breadcrumbs() {
+        let parent = Window {
+            id: WindowId(1),
+            title: Some("Editor".into()),
+            ..Default::default()
+        };
+        let dialog = Window {
+            id: WindowId(2),
+            title: Some("Find & Replace".into()),
+            parent_id: Some(WindowId(1)),
+            ..Default::default()
+        };
+        let windows = vec![parent.clone(), dialog.clone()];
+
+        assert_eq!(
+            resolve_overview_hierarchy_title(&parent, &windows),
+            "Editor"
+        );
+        assert_eq!(
+            resolve_overview_hierarchy_title(&dialog, &windows),
+            "Editor › Find & Replace"
+        );
     }
 }

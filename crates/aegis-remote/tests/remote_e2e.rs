@@ -24,7 +24,9 @@ fn test_remote_session_lifecycle_and_drain() {
 
     // 1. Ingest a pointer button press
     let press_frame = client.trigger(MonotonicTimestampUs(100_000), 1, true);
-    session.ingest_frame(&press_frame).expect("ingest should succeed");
+    session
+        .ingest_frame(&press_frame)
+        .expect("ingest should succeed");
 
     assert_eq!(session.tracker.active_triggers.len(), 1);
     assert_eq!(session.state, SessionLifecycle::Active);
@@ -46,8 +48,9 @@ fn test_remote_session_lifecycle_and_drain() {
     let frame = &drain_frames[0];
     assert_eq!(frame.seat_id, seat);
     assert!(frame.flags.synthetic_drain);
-    if let ActionPayload::Discrete(DiscreteTransition::Trigger { trigger_id, state, .. }) =
-        &frame.payload
+    if let ActionPayload::Discrete(DiscreteTransition::Trigger {
+        trigger_id, state, ..
+    }) = &frame.payload
     {
         assert_eq!(*trigger_id, 1);
         assert!(!*state); // Released!

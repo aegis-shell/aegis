@@ -46,6 +46,10 @@ pub struct ProductColors {
     pub modal_scrim: Color,
     /// Foreground for content drawn directly on [`Self::modal_scrim`].
     pub modal_scrim_text: Color,
+    /// Translucent scrim wash over a parent window suspended by an active modal descendant.
+    pub parent_modal_scrim: Color,
+    /// Luminous halo border color for an active modal child during an attention pulse.
+    pub attention_pulse_border: Color,
     pub launcher_field_surface: Color,
     pub launcher_field_border: Color,
     pub launcher_selection_surface: Color,
@@ -81,6 +85,8 @@ impl ProductColors {
             generic_icon_surface: Color::rgba(76, 85, 116, 224),
             modal_scrim: Color::rgba(8, 10, 18, 118),
             modal_scrim_text: Color::rgba(248, 250, 253, 255),
+            parent_modal_scrim: Color::rgba(10, 12, 22, 140),
+            attention_pulse_border: Color::rgba(120, 175, 255, 245),
             launcher_field_surface: Color::rgba(16, 19, 30, 122),
             launcher_field_border: Color::rgba(255, 255, 255, 44),
             launcher_selection_surface: Color::rgba(12, 15, 26, 96),
@@ -114,6 +120,8 @@ impl ProductColors {
             generic_icon_surface: Color::rgba(76, 85, 116, 224),
             modal_scrim: Color::rgba(28, 32, 44, 104),
             modal_scrim_text: Color::rgba(248, 250, 253, 255),
+            parent_modal_scrim: Color::rgba(30, 36, 52, 110),
+            attention_pulse_border: Color::rgba(45, 125, 245, 245),
             launcher_field_surface: Color::rgba(250, 251, 253, 208),
             launcher_field_border: Color::rgba(28, 32, 44, 30),
             launcher_selection_surface: Color::rgba(255, 255, 255, 72),

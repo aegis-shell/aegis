@@ -198,6 +198,10 @@ impl Server {
             return;
         }
         self.state.workspaces.move_toplevel(window_id, workspace);
+        let descendants = self.transient_descendant_window_ids(window_id);
+        for child_id in descendants {
+            self.state.workspaces.move_toplevel(child_id, workspace);
+        }
         self.drop_focus_if_hidden();
     }
 

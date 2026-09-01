@@ -75,10 +75,7 @@ impl RemoteSession {
     }
 
     /// Check if the session has exceeded its dead-man heartbeat threshold.
-    pub fn check_heartbeat(
-        &mut self,
-        now: MonotonicTimestampUs,
-    ) -> Option<Vec<InteractionFrame>> {
+    pub fn check_heartbeat(&mut self, now: MonotonicTimestampUs) -> Option<Vec<InteractionFrame>> {
         if self.state != SessionLifecycle::Active {
             return None;
         }

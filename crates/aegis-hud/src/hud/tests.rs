@@ -312,7 +312,10 @@ fn backdrop_regions_leave_frost_to_liquid_glass() {
     };
     let workspaces = workspaces_empty();
     let regions = bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces);
-    assert!(regions.is_empty(), "HUD chips are liquid glass bodies, not frost rects");
+    assert!(
+        regions.is_empty(),
+        "HUD chips are liquid glass bodies, not frost rects"
+    );
     assert_eq!(bar.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
     assert!(bar.requires_composition());
     let glass = bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces);

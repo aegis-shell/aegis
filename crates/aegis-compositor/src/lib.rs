@@ -1399,6 +1399,8 @@ pub(crate) struct State {
     last_background_frame_callback_ms: u32,
     window_switcher: Option<WindowSwitcherSession>,
     workspace_slide: Option<WorkspaceSlide>,
+    /// Monotonic millisecond timestamps when an attention pulse was triggered for a window.
+    pub(crate) attention_pulses: std::collections::HashMap<aegis_model::window::WindowId, u64>,
     /// Closing-window ghost frames (ADR-0029 open/close transitions). When a
     /// mapped toplevel unmaps or its client destroys it while close
     /// transitions are enabled, the last committed contents are snapshotted

@@ -1194,6 +1194,20 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
         if state.is_null() {
             return;
         }
+        let descendants: Vec<*mut SurfaceRec> = (*state)
+            .live_surfaces_pub()
+            .filter(|p| {
+                let p = *p;
+                !p.is_null()
+                    && p != rec
+                    && !(*p).xdg_toplevel.is_null()
+                    && !(*p).window.minimized
+                    && is_transient_descendant_of(p, rec, &*state)
+            })
+            .collect();
+        for child in descendants {
+            (*child).window.minimized = true;
+        }
         // A minimized toplevel is no longer a valid focus target on any seat.
         // This free protocol handler mirrors the complete dependency set in
         // `Server::change_keyboard_focus`, not just wl_keyboard.
@@ -1691,7 +1705,8 @@ mod tests {
         let target_size = aegis_model::Size { w: 800, h: 600 };
 
         // Center grab on maximized title bar: (960, 20)
-        let reanchored = reanchor_tear_off((960.0, 20.0), current_origin, current_size, target_size);
+        let reanchored =
+            reanchor_tear_off((960.0, 20.0), current_origin, current_size, target_size);
         // Ratio x is 960 / 1920 = 0.5. Target w is 800.
         // New x = 960 - 0.5 * 800 = 560.
         // New y = 20 - 20 = 0.
@@ -1710,13 +1725,15 @@ mod tests {
         let target_size = aegis_model::Size { w: 1000, h: 500 };
 
         // Grab at 80% width (1600, 30)
-        let reanchored_right = reanchor_tear_off((1600.0, 30.0), current_origin, current_size, target_size);
+        let reanchored_right =
+            reanchor_tear_off((1600.0, 30.0), current_origin, current_size, target_size);
         // 1600 - 0.8 * 1000 = 800.
         assert_eq!(reanchored_right, aegis_model::Point { x: 800, y: 0 });
         assert_eq!(1600 - reanchored_right.x, 800); // 80% of 1000px
 
         // Grab at 20% width (400, 30)
-        let reanchored_left = reanchor_tear_off((400.0, 30.0), current_origin, current_size, target_size);
+        let reanchored_left =
+            reanchor_tear_off((400.0, 30.0), current_origin, current_size, target_size);
         // 400 - 0.2 * 1000 = 200.
         assert_eq!(reanchored_left, aegis_model::Point { x: 200, y: 0 });
         assert_eq!(400 - reanchored_left.x, 200); // 20% of 1000px
@@ -1729,7 +1746,8 @@ mod tests {
         let target_size = aegis_model::Size { w: 600, h: 400 };
 
         // Super+drag at bottom-middle (960, 810) - 75% down
-        let reanchored = reanchor_tear_off((960.0, 810.0), current_origin, current_size, target_size);
+        let reanchored =
+            reanchor_tear_off((960.0, 810.0), current_origin, current_size, target_size);
         // ratio_x = 0.5 -> new_x = 960 - 300 = 660.
         // ratio_y = 810 / 1080 = 0.75 -> new_y = 810 - 0.75 * 400 = 510.
         assert_eq!(reanchored, aegis_model::Point { x: 660, y: 510 });

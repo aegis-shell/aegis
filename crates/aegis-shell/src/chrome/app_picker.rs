@@ -587,8 +587,7 @@ impl Chrome for AppPicker {
         if !self.active {
             return Vec::new();
         }
-        let _ =
-            PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
+        let _ = PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
         // The modal's full-display dim is a wash INTO the frost (beneath the
         // panel's glass body) — it used to be painted above the glass, which
         // hid the lens's refraction and split the layer stack.

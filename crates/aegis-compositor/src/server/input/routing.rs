@@ -454,6 +454,22 @@ impl Server {
                 let mut w = s.window.clone();
                 w.read_only = !self.state.authority.seat_controls_window(HUMAN_SEAT, w.id);
                 w.state.activated = self.seat_focuses_window(HUMAN_SEAT, w.id);
+                // Resolve durable parent WindowId
+                w.parent_id = s.window.parent.and_then(|ptr| {
+                    let parent_rec = ptr as *mut SurfaceRec;
+                    if self.state.live_surfaces().any(|c| c == parent_rec) {
+                        Some(unsafe { (*parent_rec).window.id })
+                    } else {
+                        None
+                    }
+                });
+                // Check if this window is suspended by an active modal child
+                w.suspended_by_modal = unsafe {
+                    topmost_modal_descendant(s as *const SurfaceRec as *mut SurfaceRec, &self.state)
+                        .is_some()
+                };
+                // Check if attention pulse is active
+                w.attention_pulse = self.attention_pulse_active(w.id);
                 // Publish only in-flight transitions; settled ones are noise
                 // to chrome and IPC consumers (ADR-0029).
                 let target = aegis_model::Rect {
@@ -571,6 +587,7 @@ impl Server {
             w.position.y.hash(&mut hasher);
             w.size.w.hash(&mut hasher);
             w.size.h.hash(&mut hasher);
+            self.attention_pulse_active(w.id).hash(&mut hasher);
             // Only in-flight transitions are published; settled ones read as
             // `None` in the snapshot (ADR-0029).
             let target = aegis_model::Rect {
@@ -589,6 +606,47 @@ impl Server {
             }
         }
         hasher.finish()
+    }
+
+    pub const ATTENTION_PULSE_DURATION_MS: u64 = 300;
+
+    /// Trigger a visual attention pulse on a window (e.g. when an input attempt
+    /// lands on a suspended parent and is redirected to this modal child).
+    pub fn trigger_attention_pulse(&mut self, window_id: aegis_model::window::WindowId) {
+        let now = self.now_ms();
+        self.state.attention_pulses.insert(window_id, now);
+    }
+
+    /// Whether an attention pulse is currently active for `window_id`.
+    pub fn attention_pulse_active(&self, window_id: aegis_model::window::WindowId) -> bool {
+        let now = self.now_ms();
+        self.state
+            .attention_pulses
+            .get(&window_id)
+            .is_some_and(|&ts| now.saturating_sub(ts) < Self::ATTENTION_PULSE_DURATION_MS)
+    }
+
+    /// Enumerate all transient descendant WindowIds whose ancestor chain leads to `window_id`.
+    pub fn transient_descendant_window_ids(
+        &self,
+        window_id: aegis_model::window::WindowId,
+    ) -> Vec<aegis_model::window::WindowId> {
+        let root = self
+            .state
+            .live_surfaces()
+            .find(|p| unsafe { (**p).window.id == window_id && !(**p).xdg_toplevel.is_null() });
+        let Some(root) = root else {
+            return Vec::new();
+        };
+        self.state
+            .live_surfaces()
+            .filter(|&candidate| unsafe {
+                candidate != root
+                    && !(*candidate).xdg_toplevel.is_null()
+                    && is_transient_descendant_of(candidate, root, &self.state)
+            })
+            .map(|s| unsafe { (*s).window.id })
+            .collect()
     }
 
     /// Whether compositor-owned physical chrome may mutate this window.

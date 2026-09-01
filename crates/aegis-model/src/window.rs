@@ -161,6 +161,15 @@ pub struct Window {
     pub title: Option<String>,
     pub app_id: Option<String>,
     pub parent: Option<usize>,
+    /// Durable identifier of the parent window when this toplevel is a transient dialog.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub parent_id: Option<WindowId>,
+    /// Whether this window is currently suspended because an active modal descendant is awaiting input.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub suspended_by_modal: bool,
+    /// Whether this window is currently displaying an attention pulse animation.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub attention_pulse: bool,
     pub size_hints: SizeHints,
     pub state: WindowState,
     /// This snapshot is a presentation-only mirror for the physical human

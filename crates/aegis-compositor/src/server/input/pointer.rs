@@ -509,6 +509,17 @@ impl Server {
             let pointer_surface = unsafe {
                 ffi::wl_resource_get_user_data(self.state.pointer_focus) as *mut SurfaceRec
             };
+            let root = unsafe { surface_root_toplevel(pointer_surface) };
+            if !root.is_null()
+                && let Some(leaf) = unsafe { topmost_modal_descendant(root, &self.state) }
+            {
+                let leaf_res = unsafe { (*leaf).resource };
+                let leaf_id = unsafe { (*leaf).window.id };
+                self.change_keyboard_focus(leaf_res);
+                self.change_pointer_focus(leaf_res);
+                self.trigger_attention_pulse(leaf_id);
+                return;
+            }
             let keyboard_target = unsafe {
                 xdg_role_aware_keyboard_target(
                     pointer_surface,
@@ -1154,9 +1165,20 @@ impl Server {
             return;
         }
         let focus = self.state.pointer_focus;
+        let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
+        let root = unsafe { surface_root_toplevel(rec) };
+        if !root.is_null()
+            && let Some(leaf) = unsafe { topmost_modal_descendant(root, &self.state) }
+        {
+            let leaf_res = unsafe { (*leaf).resource };
+            let leaf_id = unsafe { (*leaf).window.id };
+            self.change_keyboard_focus(leaf_res);
+            self.change_pointer_focus(leaf_res);
+            self.trigger_attention_pulse(leaf_id);
+            return;
+        }
         let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
         let client = unsafe { ffi::wl_resource_get_client(focus) };
-        let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
         let origin = if rec.is_null() {
             aegis_model::Point::default()
         } else {

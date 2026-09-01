@@ -64,9 +64,7 @@ pub enum ContinuousManifold {
         confidence: f32,
     },
     /// Topological multi-touch mesh.
-    TopologicalMesh {
-        contacts: Vec<TouchContactNode>,
-    },
+    TopologicalMesh { contacts: Vec<TouchContactNode> },
 }
 
 /// A single contact point in a topological multi-touch surface.
@@ -104,15 +102,9 @@ pub enum DiscreteTransition {
         actuation_force: f32,
     },
     /// Symbolic text submission (direct UTF-8 stream, avoiding scancode emulation).
-    Symbolic {
-        text: String,
-        is_commit: bool,
-    },
+    Symbolic { text: String, is_commit: bool },
     /// Discrete multi-position selector (mode switches, stepped knobs).
-    StateSelector {
-        selector_id: u16,
-        state_index: u32,
-    },
+    StateSelector { selector_id: u16, state_index: u32 },
 }
 
 /// Structured semantic transaction with precondition barriers.
@@ -137,8 +129,14 @@ pub struct SemanticTransaction {
 pub enum IntentPayload {
     Activate,
     Dismiss,
-    SelectRange { start: u32, end: u32 },
-    InvokeAction { action_name: String, parameters: Vec<u8> },
+    SelectRange {
+        start: u32,
+        end: u32,
+    },
+    InvokeAction {
+        action_name: String,
+        parameters: Vec<u8>,
+    },
 }
 
 // ============================================================================
@@ -194,13 +192,9 @@ pub enum PerceptionSubscription {
     /// Blind endpoint (e.g. macro keypad, foot pedal): receives no state stream.
     Blind,
     /// Variable state stream (e.g. rotary dial OLED, status indicators).
-    VariableStream {
-        variables: Vec<String>,
-    },
+    VariableStream { variables: Vec<String> },
     /// Semantic tree slice (e.g. smartphone companion UI, accessibility deck).
-    SemanticTree {
-        domain: InteractionDomainId,
-    },
+    SemanticTree { domain: InteractionDomainId },
     /// Rendered visual buffer (e.g. companion display, tablet stylus canvas).
     SurfaceBuffer {
         domain: InteractionDomainId,
@@ -237,7 +231,9 @@ impl RemoteSeatTracker {
     pub fn observe_ingest(&mut self, frame: &InteractionFrame) {
         self.last_seen = frame.timestamp;
         match &frame.payload {
-            ActionPayload::Discrete(DiscreteTransition::Trigger { trigger_id, state, .. }) => {
+            ActionPayload::Discrete(DiscreteTransition::Trigger {
+                trigger_id, state, ..
+            }) => {
                 if *state {
                     self.active_triggers.insert(*trigger_id);
                 } else {
@@ -248,7 +244,8 @@ impl RemoteSeatTracker {
                 for contact in contacts {
                     match contact.phase {
                         TouchPhase::Down | TouchPhase::Move | TouchPhase::Hold => {
-                            self.active_touch_points.insert(contact.touch_id, (contact.x, contact.y));
+                            self.active_touch_points
+                                .insert(contact.touch_id, (contact.x, contact.y));
                         }
                         TouchPhase::Up | TouchPhase::Cancelled => {
                             self.active_touch_points.remove(&contact.touch_id);

@@ -514,6 +514,16 @@ mod tests {
     }
 
     #[test]
+    fn parent_modal_scrim_and_attention_pulse_tokens_are_valid() {
+        for design in [Design::dark(), Design::light()] {
+            let (_, _, _, scrim_alpha) = design.colors.parent_modal_scrim.components();
+            assert!(scrim_alpha >= 100 && scrim_alpha <= 160);
+            let (_, _, _, pulse_alpha) = design.colors.attention_pulse_border.components();
+            assert!(pulse_alpha >= 200);
+        }
+    }
+
+    #[test]
     fn generic_icon_surface_is_scheme_invariant() {
         // The no-icon app chip is a mid-tone slate in both appearances.
         assert_eq!(

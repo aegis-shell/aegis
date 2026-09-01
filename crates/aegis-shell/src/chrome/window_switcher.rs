@@ -373,11 +373,8 @@ impl Chrome for WindowSwitcher {
             }
 
             let label_rect = to_lens(presented.geometry.label);
-            let title = window
-                .title
-                .as_deref()
-                .or(window.app_id.as_deref())
-                .unwrap_or_else(|| i18n.text(Message::UntitledWindow));
+            let fallback_title = i18n.text(Message::UntitledWindow);
+            let hierarchy_title = resolve_switcher_hierarchy_title(window, windows, fallback_title);
             let icon = window
                 .app_id
                 .as_deref()
@@ -386,7 +383,7 @@ impl Chrome for WindowSwitcher {
             let icon_tint = design.colors.application_text;
             let label = ellipsize(
                 frame,
-                title,
+                &hierarchy_title,
                 design.typography.label,
                 (label_rect.w - occupied_width).max(0.0),
             );
@@ -628,9 +625,104 @@ fn layer_size(width: f32, height: f32) -> LayoutOpts {
     }
 }
 
+fn resolve_switcher_hierarchy_title(window: &Window, windows: &[Window], fallback: &str) -> String {
+    let mut chain = Vec::new();
+    let mut current_id = window.parent_id;
+    let mut depth = 0;
+    while let Some(pid) = current_id {
+        if depth >= 10 {
+            break;
+        }
+        if let Some(parent) = windows.iter().find(|w| w.id == pid) {
+            let p_title = parent
+                .title
+                .as_deref()
+                .or(parent.app_id.as_deref())
+                .unwrap_or(fallback);
+            chain.push(p_title);
+            current_id = parent.parent_id;
+            depth += 1;
+        } else {
+            break;
+        }
+    }
+    let own_title = window
+        .title
+        .as_deref()
+        .or(window.app_id.as_deref())
+        .unwrap_or(fallback);
+
+    if chain.is_empty() {
+        if window.suspended_by_modal {
+            format!("{own_title} ⧗")
+        } else {
+            own_title.to_string()
+        }
+    } else {
+        chain.reverse();
+        let mut full = chain.join(" › ");
+        full.push_str(" › ");
+        full.push_str(own_title);
+        if window.suspended_by_modal {
+            full.push_str(" ⧗");
+        }
+        full
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switcher_hierarchy_breadcrumb_resolves_nested_chain() {
+        let parent = Window {
+            id: WindowId(1),
+            title: Some("GIMP".into()),
+            ..Default::default()
+        };
+        let dialog = Window {
+            id: WindowId(2),
+            title: Some("Color Picker".into()),
+            parent_id: Some(WindowId(1)),
+            ..Default::default()
+        };
+        let leaf = Window {
+            id: WindowId(3),
+            title: Some("Select Palette".into()),
+            parent_id: Some(WindowId(2)),
+            ..Default::default()
+        };
+        let windows = vec![parent.clone(), dialog.clone(), leaf.clone()];
+
+        assert_eq!(
+            resolve_switcher_hierarchy_title(&parent, &windows, "Untitled"),
+            "GIMP"
+        );
+        assert_eq!(
+            resolve_switcher_hierarchy_title(&dialog, &windows, "Untitled"),
+            "GIMP › Color Picker"
+        );
+        assert_eq!(
+            resolve_switcher_hierarchy_title(&leaf, &windows, "Untitled"),
+            "GIMP › Color Picker › Select Palette"
+        );
+    }
+
+    #[test]
+    fn switcher_hierarchy_indicates_suspended_modal_state() {
+        let parent = Window {
+            id: WindowId(1),
+            title: Some("Settings".into()),
+            suspended_by_modal: true,
+            ..Default::default()
+        };
+        let windows = vec![parent.clone()];
+        assert_eq!(
+            resolve_switcher_hierarchy_title(&parent, &windows, "Untitled"),
+            "Settings ⧗"
+        );
+    }
 
     fn windows(count: u64) -> (Vec<Window>, Vec<WindowId>) {
         let order: Vec<_> = (1..=count).map(WindowId).collect();
