@@ -1,0 +1,10 @@
+[Icon Theme]
+Name=Tessera
+Comment=Tessera default cursor theme (white fill, black outline) — original MIT-licensed art.
+Directories=cursors
+
+[cursors]
+Size=24
+MinSize=8
+MaxSize=512
+Type=Fixed

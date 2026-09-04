@@ -6,7 +6,7 @@ members = ["crates/*", "tooling/*"]
 version = "0.0.53"
 edition = "2024"
 # Workspace crates contain MIT-licensed source, including the bundled cursor
-# art under assets/cursors/Aegis (original, generated in-tree).
+# art under assets/cursors/Tessera (original, generated in-tree).
 license = "MIT"
 rust-version = "1.88"
 repository = "https://github.com/atrium-desktop/tessera"
@@ -170,7 +170,7 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 
 # SVG cursor rasterization (pure Rust; see ADR-0070 and cursor.rs). The
-# bundled Aegis cursors are path/fill/stroke art with no text and no
+# bundled Tessera cursors are path/fill/stroke art with no text and no
 # embedded raster images, so resvg/usvg default-features stay off: that
 # drops the text-shaping (rustybuzz/fontdb/unicode) and image-decode
 # (gif/webp/jpeg) trees from the compositor build entirely.
@@ -178,7 +178,7 @@ resvg = { version = "0.47", default-features = false }
 usvg = { version = "0.47", default-features = false }
 tiny-skia = "0.12"
 
-# Embed the bundled Aegis cursor theme into the binary so a
+# Embed the bundled Tessera cursor theme into the binary so a
 # sane default exists even with no XCURSOR_THEME and a bare TTY.
 include_dir = "0.7"
 

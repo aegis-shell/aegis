@@ -3,12 +3,10 @@
 # system-auth/common-auth stack. The login service is the portable baseline
 # and preserves the host's authentication and account policy.
 auth include login
-# The vault-unlock token is planted by pam_tessera at the credential-commit
-# hook: tessera-lock calls pam_setcred(PAM_ESTABLISH_CRED) after a successful
-# authentication, and pam_sm_setcred (or pam_sm_open_session, whichever
-# fires first) writes $XDG_RUNTIME_DIR/tessera-pam-token, mode 0600; the
-# portal consumes and deletes it. Optional: authentication never depends
+# Vault re-unlock upon screen lock dismissal (sigil ADR-0001 / portal ADR-0020):
+# pam_sigil passes the authentication token directly to sigil daemon via
+# native memory Unix domain socket. Optional: authentication never depends
 # on the module.
-auth optional pam_tessera.so
+auth optional pam_sigil.so
 account include login
-session optional pam_tessera.so
+session optional pam_sigil.so

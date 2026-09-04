@@ -117,7 +117,6 @@ inside the package build root.
 | `contrib/systemd/tessera-session` | `/usr/bin/tessera-session` | core |
 | `contrib/pam/tessera-lock` | `/etc/pam.d/tessera-lock` | core |
 | Portal: generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.atrium.service` | portal |
-| Portal: optional Meson PAM artifact | `/usr/lib/security/pam_tessera.so` by default | portal |
 | Portal: `contrib/xdg-desktop-portal/portals/atrium.portal` | `/usr/share/xdg-desktop-portal/portals/atrium.portal` | portal |
 | Portal: `contrib/xdg-desktop-portal/atrium-portals.conf` | `/usr/share/xdg-desktop-portal/atrium-portals.conf` | portal |
 | `LICENSE` | `/usr/share/licenses/tessera/LICENSE` | core |
@@ -165,18 +164,13 @@ management. Omitting or misnaming this profile leaves a securely locked
 session unable to authenticate.
 
 `xdg-desktop-portal-atrium` is a separate source and runtime component. Its
-package owns both private executables, the generated D-Bus activation file,
-the `.portal` metadata, the backend-selection file, and the optional
-`pam_tessera.so` secret auto-unlock module. The core package must not own those
+package owns the private executable, the generated D-Bus activation file,
+the `.portal` metadata, and the backend-selection file. The core package must not own those
 files or require the portal frontend and PipeWire solely for this backend.
 The core package continues to own `/etc/pam.d/tessera-lock`; its optional
-`pam_tessera.so` line is safe when the portal package is absent.
+`pam_sigil.so` line is safe whether sigil is present or absent.
 
-The Portal repository's own source is MIT. A package that ships
-`pam_tessera.so` must also declare GPL-3.0-only because the module links the
-GPL-licensed `pamsm` dependency.
-
-Install `pam_tessera.so` in the distribution's canonical PAM module directory.
+Vault auto-unlock is provided by `sigil` (`pam_sigil.so`, ADR-0001 / portal ADR-0020).
 The supplied `tessera-lock` profile loads it as `optional`, so the module never
 becomes the screen authenticator. A distribution that enables login-time
 vault auto-unlock must add the same optional line after its primary login

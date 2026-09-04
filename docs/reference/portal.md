@@ -45,7 +45,7 @@ unadvertised interfaces and configured fallbacks.
 | FileChooser | GTK4 and Tessera xdg-foreign-v2 support |
 | Unsupported interface fallback | `xdg-desktop-portal-gtk` |
 | Email | `xdg-email`, or the command selected by `TESSERA_PORTAL_MAILER` |
-| Password-vault auto-unlock | Optional `pam_tessera.so` integration |
+| Password-vault auto-unlock | Optional `pam_sigil.so` integration |
 
 ## Interface Coverage
 
@@ -82,7 +82,7 @@ Background, Print, and Location.
 The portal-native Secret interface stores one encrypted vault under
 `$XDG_DATA_HOME/tessera/secrets/`. The backend rejects symlinks, unsafe owners
 or modes, oversized files, corrupt vaults, and orphan ciphertext. The
-optional `pam_tessera.so` module can provide a short-lived token for automatic
+optional `pam_sigil.so` module can unlock the vault automatically
 unlock. The Portal does not implement the separate
 `org.freedesktop.secrets` API; distributions must provide a complete keyring
 service for un-sandboxed Secret Service clients.

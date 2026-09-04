@@ -50,7 +50,7 @@ const CLICK_SIZE: (f32, f32) = (21.0, 30.0);
 /// The click point lands between the mouse buttons, not the body center.
 const CLICK_ANCHOR: (f32, f32) = (0.5, 0.175);
 
-// Arrow cursor: the Aegis theme's `left_ptr` (MIT, original art), the same
+// Arrow cursor: the Tessera theme's `left_ptr` (MIT, original art), the same
 // theme the compositor's software cursor embeds under `assets/cursors/`. The
 // Agent pointer is an ordinary arrow by design — the mask and text carry the
 // operation signal, not an exotic marker shape.
