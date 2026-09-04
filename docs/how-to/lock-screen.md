@@ -15,7 +15,7 @@ stack. Installing `tessera-lock` alone does not enable the feature.
 | `/etc/pam.d/tessera-lock` | Selects the host authentication and account policy used to unlock. |
 | `brightnessctl` | Dims and restores a physical backlight when host permissions allow it. |
 | `systemd-logind` | Supplies the sleep delay inhibitor, sleep notifications, and suspend request in a direct session. |
-| `pam_tessera.so` | Optionally caches a successful password for portal secret-vault auto-unlock. It is not the screen authenticator. |
+| `pam_sigil.so` | Optionally unlocks secret vault upon screen unlock (sigil ADR-0001 / portal ADR-0020). It is not the screen authenticator. |
 
 Unlocking does not run `tessera-lock` as root and does not use a compositor
 password database. PAM applies the host's current authentication and account
@@ -41,13 +41,13 @@ classes:
 
 ```text
 auth include login
-auth optional pam_tessera.so
+auth optional pam_sigil.so
 account include login
 ```
 
 A distribution can replace `login` with its canonical system authentication
 stack, but it must preserve both the `auth` and `account` classes. Keep
-`pam_tessera.so` optional and after the primary authentication include.
+`pam_sigil.so` optional and after the primary authentication include.
 
 ### Prepare a source-tree test
 
@@ -146,7 +146,7 @@ test crash behavior until TTY recovery is available.
 | Locking works but dimming does not | Confirm `brightnessctl --class=backlight get` works for the session user. The lock policy continues when backlight access is unavailable. |
 | Locking works but suspend does not | Confirm a direct session can call logind and that host authorization permits suspend. Inspect the journal for `logind suspend request failed`. |
 | Only locking works in a nested session | This is expected. The outer desktop retains physical backlight, output-power, and suspend authority. |
-| `pam_tessera.so` is missing | Screen authentication should still work because the module is optional. Only portal secret-vault auto-unlock is unavailable. |
+| `pam_sigil.so` is missing | Screen authentication should still work because the module is optional. Only portal secret-vault auto-unlock is unavailable. |
 
 ## Recover a Misconfigured Direct Session
 

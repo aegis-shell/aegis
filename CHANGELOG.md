@@ -10,9 +10,13 @@ project cuts a tagged release.
 > retain the original `Aegis`/`aegis` identifiers for accuracy. The GitHub
 > repository moved from `atrium-desktop/aegis` to
 > `atrium-desktop/tessera`. Environment variables use the `TESSERA_*` prefix
-> (previously `AEGIS_*`). The bundled cursor theme keeps the `Aegis` name.
+> (previously `AEGIS_*`). The bundled cursor theme uses the `Tessera` name.
 
-## [Unreleased]
+## [0.0.54] - 2026-09-05
+
+### Changed
+- Renamed the bundled cursor theme from `Aegis` to `Tessera` (`assets/cursors/Tessera/`, `scripts/prepare-tessera-cursors.py`).
+- Updated `tessera-lock` PAM configuration (`contrib/pam/tessera-lock`) and documentation to delegate secret vault auto-unlock to `pam_sigil.so` (sigil ADR-0001 / portal ADR-0020).
 
 ## [0.0.53] - 2026-09-05
 

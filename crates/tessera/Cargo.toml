@@ -5,7 +5,7 @@ readme = "README.md"
 version.workspace = true
 edition.workspace = true
 # The compositor binary embeds the original MIT-licensed cursor theme under
-# assets/cursors/Aegis.
+# assets/cursors/Tessera.
 license.workspace = true
 rust-version.workspace = true
 default-run = "tessera"
@@ -73,7 +73,7 @@ libc = { workspace = true }
 resvg = { workspace = true }
 usvg = { workspace = true }
 tiny-skia = { workspace = true }
-# Embeds the bundled Aegis cursor theme as the default fallback.
+# Embeds the bundled Tessera cursor theme as the default fallback.
 include_dir = { workspace = true }
 sha2.workspace = true
 serde.workspace = true

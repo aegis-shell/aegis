@@ -172,11 +172,11 @@ fn authenticate(username: &str, secret: Secret) -> AuthResult {
         status = unsafe { pam_acct_mgmt(handle, 0) };
     }
     // Commit the just-proven credentials so the stack's committing hooks
-    // run: pam_tessera plants the vault-unlock token in `pam_sm_setcred`
-    // (ADR-0010), which is what lets the secret vault re-unlock silently
-    // after this screen unlock. A failure here never blocks the unlock —
-    // the authentication already succeeded — it only skips the token, and
-    // the vault falls back to its own prompt.
+    // run: pam_sigil triggers secret vault re-unlock (sigil ADR-0001 /
+    // portal ADR-0020), letting the secret vault re-unlock silently after
+    // this screen unlock. A failure here never blocks the unlock — the
+    // authentication already succeeded — it only skips the token, and the
+    // vault falls back to its own prompt.
     if status == PAM_SUCCESS {
         let cred = unsafe { pam_setcred(handle, PAM_ESTABLISH_CRED) };
         if cred != PAM_SUCCESS && cred != PAM_CRED_ERR {

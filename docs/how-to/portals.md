@@ -185,18 +185,16 @@ another workspace.
 
 ## Enable Secret Auto-Unlock Separately
 
-Portal activation and secret prompting do not require `pam_tessera.so`.
-`pam_tessera` is an optional, independently built PAM module that caches a
-just-verified password in an owner-only runtime token. The portal consumes
-and deletes that token to unlock a password-mode secret vault without a
-second prompt.
+Portal activation and secret prompting do not require `pam_sigil.so`.
+`pam_sigil` is an optional PAM module from Sigil (ADR-0001 / portal ADR-0020)
+that unlocks the secret vault upon login and screen unlock without a second prompt.
 
-Install the matching `tessera-pam` build from the Tessera Portal repository in
-the distribution's PAM module directory, then add this line *after* the
-primary authentication stack in the login and `tessera-lock` service profiles:
+Install `pam_sigil` from the Sigil package in the distribution's PAM module
+directory, then add this line *after* the primary authentication stack in the
+login and `tessera-lock` service profiles:
 
 ```text
-auth optional pam_tessera.so
+auth optional pam_sigil.so
 ```
 
 The Tessera core package's supplied `/etc/pam.d/tessera-lock` profile already

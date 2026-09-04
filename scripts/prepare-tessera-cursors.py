@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the bundled ``Aegis`` SVG cursor theme — original MIT-licensed art.
+"""Generate the bundled ``Tessera`` SVG cursor theme — original MIT-licensed art.
 
 Every cursor in this theme is authored programmatically in this file from
 explicit geometry (polygons, capsules, rounded rects). Nothing is copied,
@@ -26,9 +26,9 @@ interior seams where primitives overlap.
 
 Usage::
 
-    scripts/prepare-aegis-cursors.py [--out DIR]
+    scripts/prepare-tessera-cursors.py [--out DIR]
 
-``--out`` defaults to ``assets/cursors/Aegis`` relative to the repository
+``--out`` defaults to ``assets/cursors/Tessera`` relative to the repository
 root. Regenerating rewrites the output directory from scratch.
 """
 
@@ -40,7 +40,7 @@ import shutil
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = REPO / "assets" / "cursors" / "Aegis"
+DEFAULT_OUT = REPO / "assets" / "cursors" / "Tessera"
 
 FILL = "#FFFFFF"
 INK = "#000000"
@@ -529,8 +529,8 @@ def main() -> None:
 
     (out / "index.theme").write_text(
         "[Icon Theme]\n"
-        "Name=Aegis\n"
-        "Comment=Aegis default cursor theme (white fill, black outline) — original MIT-licensed art.\n"
+        "Name=Tessera\n"
+        "Comment=Tessera default cursor theme (white fill, black outline) — original MIT-licensed art.\n"
         "Directories=cursors\n\n"
         "[cursors]\n"
         "Size=24\n"
