@@ -12,7 +12,7 @@ project cuts a tagged release.
 > `atrium-desktop/tessera`. Environment variables use the `TESSERA_*` prefix
 > (previously `AEGIS_*`). The bundled cursor theme uses the `Tessera` name.
 
-## [Unreleased]
+## [0.0.54] - 2026-09-05
 
 ### Changed
 - Renamed the bundled cursor theme from `Aegis` to `Tessera` (`assets/cursors/Tessera/`, `scripts/prepare-tessera-cursors.py`).
