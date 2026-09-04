@@ -799,7 +799,7 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 [[package]]
 name = "flux"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "flux-sys",
 ]
@@ -807,12 +807,12 @@ dependencies = [
 [[package]]
 name = "flux-composition-graph"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 
 [[package]]
 name = "flux-scene-graph"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -823,7 +823,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -833,7 +833,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1212,7 +1212,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lens"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "flux",
  "lens-sys",
@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -1549,7 +1549,7 @@ dependencies = [
 [[package]]
 name = "prism"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "flux",
  "flux-sys",
@@ -1559,7 +1559,7 @@ dependencies = [
 [[package]]
 name = "prism-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.33#ef778fdfb9800a89a0ceadd6845208e1bf80690b"
 dependencies = [
  "bindgen",
  "flux-sys",
