@@ -1,12 +1,12 @@
 # Distribution Packaging
 
 Use this guide to build coordinated distribution packages from matching
-Aegis and Aegis Portal source releases. Daily source-tree development does
-not install Aegis; see [Setup](setup.md) instead.
+Tessera and Tessera Portal source releases. Daily source-tree development does
+not install Tessera; see [Setup](setup.md) instead.
 
 ## Dependency Contract
 
-Aegis has two separate Optics dependency surfaces:
+Tessera has two separate Optics dependency surfaces:
 
 - `Cargo.lock` pins the Rust bindings to the Optics tag reported by
   `scripts/optics-release-ref.sh`.
@@ -16,7 +16,7 @@ Aegis has two separate Optics dependency surfaces:
 
 A package build must not depend on an `../optics` checkout or enable
 `.cargo/optics-local.toml`. Package the matching Optics release first and
-verify the native development files before building Aegis:
+verify the native development files before building Tessera:
 
 ```bash
 pkg-config --modversion flux flux-scene-graph lens iris
@@ -28,30 +28,30 @@ libraries, headers, and `.pc` files rather than copying files from an Optics
 build tree. (On Arch this is the separate `optics` package; see
 [Arch Linux](#arch-linux).)
 
-The remaining Aegis build dependencies include a C toolchain, `pkg-config`,
+The remaining Tessera build dependencies include a C toolchain, `pkg-config`,
 Wayland and its protocols, Vulkan, xkbcommon, libinput, libseat, and libclang
 for binding generation. The core runtime uses Linux PAM, logind, and
 `brightnessctl` for authentication, sleep coordination, and backlight
 dimming.
 
 The compatible
-[Aegis Portal source release](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
+[Tessera Portal source release](https://github.com/aegis-shell/xdg-desktop-portal-atrium)
 has its own `Cargo.lock` and additionally requires GTK 4.10, PipeWire/SPA,
 Meson, and Ninja. Linux PAM development files are required only for the
-optional unlock module. Its Portal-owned protocol projection has no Aegis
+optional unlock module. Its Portal-owned protocol projection has no Tessera
 source dependency; the compositor remains a runtime provider for protocol 24
 settings, capture, picking, and stream resources. The portal runtime requires
 `xdg-desktop-portal`, WirePlumber, and `xdg-email`; install the GTK backend as
-a fallback for interfaces Aegis does not implement.
+a fallback for interfaces Tessera does not implement.
 
 ## Reproducible Source Preparation
 
 Keep each repository's committed `Cargo.lock`. Run source preparation once
-from the Aegis root and once from the compatible Aegis Portal root. A
+from the Tessera root and once from the compatible Tessera Portal root. A
 network-enabled phase may fetch each locked graph directly or vendor it for
 an offline builder:
 
-Prepare an Aegis release commit in canonical Optics mode. The local path
+Prepare an Tessera release commit in canonical Optics mode. The local path
 override must be absent, and the regenerated lockfile must resolve the full
 remote dependency graph without modification:
 
@@ -72,11 +72,11 @@ cargo vendor --locked vendor
 Record Cargo's emitted source-replacement configuration in the corresponding
 package build environment, include each `vendor/` tree in its prepared
 source, and build with `--frozen --offline`. Do not rewrite the Optics or
-Aegis Git dependencies to local paths in a distribution patch.
+Tessera Git dependencies to local paths in a distribution patch.
 
 ## Build
 
-Build the core workspace from the Aegis source root:
+Build the core workspace from the Tessera source root:
 
 ```bash
 cargo build --frozen --offline --release --workspace
@@ -85,7 +85,7 @@ cargo build --frozen --offline --release --workspace
 Use `cargo build --locked --release --workspace` when the package builder is
 allowed to use its pre-populated Cargo cache without a vendored source tree.
 
-Build the matching Aegis Portal release through its production Meson
+Build the matching Tessera Portal release through its production Meson
 installer. Meson owns the configured executable paths and generated D-Bus
 activation metadata:
 
@@ -105,31 +105,31 @@ inside the package build root.
 
 | Source | Destination | Suggested component |
 |--------|-------------|---------------------|
-| `target/release/aegis` | `/usr/bin/aegis` | core |
-| `target/release/aegis-idle` | `/usr/bin/aegis-idle` | core |
-| `target/release/aegis-atspi` | `/usr/bin/aegis-atspi` | core |
-| `target/release/aegis-lock` | `/usr/bin/aegis-lock` | core |
-| Portal: Meson portal executable | `/usr/libexec/xdg-desktop-portal-aegis` by default | portal |
-| Portal: Meson FileChooser executable | `/usr/libexec/aegis-portal-prompter` by default | portal |
-| `target/release/aegis-mcp` | `/usr/bin/aegis-mcp` | agent integration |
-| `contrib/systemd/user/aegis.service` | `/usr/lib/systemd/user/aegis.service` | core |
-| `contrib/systemd/user/aegis-shutdown.target` | `/usr/lib/systemd/user/aegis-shutdown.target` | core |
-| `contrib/systemd/aegis-session` | `/usr/bin/aegis-session` | core |
-| `contrib/pam/aegis-lock` | `/etc/pam.d/aegis-lock` | core |
-| Portal: generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
-| Portal: optional Meson PAM artifact | `/usr/lib/security/pam_aegis.so` by default | portal |
-| Portal: `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` | portal |
-| Portal: `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` | portal |
-| `LICENSE` | `/usr/share/licenses/aegis/LICENSE` | core |
-| Portal: `LICENSE` | `/usr/share/licenses/xdg-desktop-portal-aegis/LICENSE` | portal |
+| `target/release/tessera` | `/usr/bin/tessera` | core |
+| `target/release/tessera-idle` | `/usr/bin/tessera-idle` | core |
+| `target/release/tessera-atspi` | `/usr/bin/tessera-atspi` | core |
+| `target/release/tessera-lock` | `/usr/bin/tessera-lock` | core |
+| Portal: Meson portal executable | `/usr/libexec/xdg-desktop-portal-atrium` by default | portal |
+| Portal: Meson FileChooser executable | `/usr/libexec/atrium-portal-prompter` by default | portal |
+| `target/release/tessera-mcp` | `/usr/bin/tessera-mcp` | agent integration |
+| `contrib/systemd/user/tessera.service` | `/usr/lib/systemd/user/tessera.service` | core |
+| `contrib/systemd/user/tessera-shutdown.target` | `/usr/lib/systemd/user/tessera-shutdown.target` | core |
+| `contrib/systemd/tessera-session` | `/usr/bin/tessera-session` | core |
+| `contrib/pam/tessera-lock` | `/etc/pam.d/tessera-lock` | core |
+| Portal: generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.atrium.service` | portal |
+| Portal: optional Meson PAM artifact | `/usr/lib/security/pam_tessera.so` by default | portal |
+| Portal: `contrib/xdg-desktop-portal/portals/atrium.portal` | `/usr/share/xdg-desktop-portal/portals/atrium.portal` | portal |
+| Portal: `contrib/xdg-desktop-portal/atrium-portals.conf` | `/usr/share/xdg-desktop-portal/atrium-portals.conf` | portal |
+| `LICENSE` | `/usr/share/licenses/tessera/LICENSE` | core |
+| Portal: `LICENSE` | `/usr/share/licenses/xdg-desktop-portal-atrium/LICENSE` | portal |
 
-`aegis-lock-preview` is a feature-gated contributor tool, not a distribution
+`tessera-lock-preview` is a feature-gated contributor tool, not a distribution
 artifact. Package builds must not enable the `dev-preview` feature and must
-not install `target/release/aegis-lock-preview`. Keep the explicit
-`target/release/aegis-lock` install entry above; do not replace it with an
-`aegis-*` wildcard.
+not install `target/release/tessera-lock-preview`. Keep the explicit
+`target/release/tessera-lock` install entry above; do not replace it with an
+`tessera-*` wildcard.
 
-The bundled Aegis cursor theme is embedded into the `aegis` binary via
+The bundled Aegis cursor theme is embedded into the `tessera` binary via
 `include_dir`. The art is original and MIT-licensed (generated by
 `scripts/prepare-aegis-cursors.py`), so the shipped binary is MIT through and
 through and no third-party license staging is required for it.
@@ -141,50 +141,50 @@ For example, a simple package recipe can stage binaries with:
 
 ```bash
 package_root=${DESTDIR:?set DESTDIR to the package staging root}
-install -Dm0755 target/release/aegis \
-  "$package_root/usr/bin/aegis"
-install -Dm0755 target/release/aegis-idle \
-  "$package_root/usr/bin/aegis-idle"
-install -Dm0755 target/release/aegis-atspi \
-  "$package_root/usr/bin/aegis-atspi"
-install -Dm0755 target/release/aegis-lock \
-  "$package_root/usr/bin/aegis-lock"
-install -Dm0755 target/release/aegis-mcp \
-  "$package_root/usr/bin/aegis-mcp"
+install -Dm0755 target/release/tessera \
+  "$package_root/usr/bin/tessera"
+install -Dm0755 target/release/tessera-idle \
+  "$package_root/usr/bin/tessera-idle"
+install -Dm0755 target/release/tessera-atspi \
+  "$package_root/usr/bin/tessera-atspi"
+install -Dm0755 target/release/tessera-lock \
+  "$package_root/usr/bin/tessera-lock"
+install -Dm0755 target/release/tessera-mcp \
+  "$package_root/usr/bin/tessera-mcp"
 ```
 
 Stage the portal executable and all portal-owned data files from the separate
-Aegis Portal build root using the same `package_root` destination.
+Tessera Portal build root using the same `package_root` destination.
 
 Install the data files according to the table using mode `0644`.
 The PAM profile lives under `/etc`, outside the logical `/usr` prefix. A
 distribution may replace its `login` includes with the distribution's
 canonical authentication and account stacks, but it must keep both service
-classes: `aegis-lock` calls PAM authentication followed by account
+classes: `tessera-lock` calls PAM authentication followed by account
 management. Omitting or misnaming this profile leaves a securely locked
 session unable to authenticate.
 
-`xdg-desktop-portal-aegis` is a separate source and runtime component. Its
+`xdg-desktop-portal-atrium` is a separate source and runtime component. Its
 package owns both private executables, the generated D-Bus activation file,
 the `.portal` metadata, the backend-selection file, and the optional
-`pam_aegis.so` secret auto-unlock module. The core package must not own those
+`pam_tessera.so` secret auto-unlock module. The core package must not own those
 files or require the portal frontend and PipeWire solely for this backend.
-The core package continues to own `/etc/pam.d/aegis-lock`; its optional
-`pam_aegis.so` line is safe when the portal package is absent.
+The core package continues to own `/etc/pam.d/tessera-lock`; its optional
+`pam_tessera.so` line is safe when the portal package is absent.
 
 The Portal repository's own source is MIT. A package that ships
-`pam_aegis.so` must also declare GPL-3.0-only because the module links the
+`pam_tessera.so` must also declare GPL-3.0-only because the module links the
 GPL-licensed `pamsm` dependency.
 
-Install `pam_aegis.so` in the distribution's canonical PAM module directory.
-The supplied `aegis-lock` profile loads it as `optional`, so the module never
+Install `pam_tessera.so` in the distribution's canonical PAM module directory.
+The supplied `tessera-lock` profile loads it as `optional`, so the module never
 becomes the screen authenticator. A distribution that enables login-time
 vault auto-unlock must add the same optional line after its primary login
 authentication stack through the distribution's normal PAM integration
 mechanism; do not replace or take ownership of another package's login
 profile.
 
-The supplied systemd user service executes `aegis` from `/usr/bin`; the
+The supplied systemd user service executes `tessera` from `/usr/bin`; the
 Portal's Meson build generates its D-Bus activation file from the configured
 `libexecdir`. A distribution using another logical prefix must configure both
 packages consistently; changing only a binary destination creates broken
@@ -215,20 +215,20 @@ Test the completed packages in a clean environment rather than running out of
 `target/release`:
 
 ```bash
-systemd-analyze --user verify aegis.service aegis-shutdown.target
+systemd-analyze --user verify tessera.service tessera-shutdown.target
 pkg-config --modversion flux flux-scene-graph lens iris
-test -x /usr/bin/aegis-idle
-test -x /usr/bin/aegis-atspi
-test -x /usr/bin/aegis-lock
-test -r /etc/pam.d/aegis-lock
+test -x /usr/bin/tessera-idle
+test -x /usr/bin/tessera-atspi
+test -x /usr/bin/tessera-lock
+test -r /etc/pam.d/tessera-lock
 systemctl --user daemon-reload
-systemctl --user start aegis.service
+systemctl --user start tessera.service
 ```
 
 Confirm that the command panel's Power Management tab
 persists an idle policy, `Super+L` authenticates through the installed PAM
-stack, `xdg-desktop-portal-aegis` activates through D-Bus, the preferred portal
-configuration is selected for an Aegis session, and `aegis window` reaches
+stack, `xdg-desktop-portal-atrium` activates through D-Bus, the preferred portal
+configuration is selected for an Tessera session, and `tessera window` reaches
 the compositor. Run the Interaction Domain sandbox test through the packaged service
 topology as described in [Setup](setup.md#tests).
 
@@ -239,23 +239,23 @@ to a specific distribution. Each recipe consumes the same source-preparation,
 build, install-manifest, and validation contract; only the dependency names,
 package format, and integration hooks change.
 
-- [Arch Linux](#arch-linux) — separate `optics`, `aegis`, and
-  `xdg-desktop-portal-aegis` source packages.
+- [Arch Linux](#arch-linux) — separate `optics`, `tessera`, and
+  `xdg-desktop-portal-atrium` source packages.
 
 ### Arch Linux
 
-Aegis on Arch uses three installable packages from three source repositories.
-Package Optics first, then package the explicitly compatible Aegis and Aegis
+Tessera on Arch uses three installable packages from three source repositories.
+Package Optics first, then package the explicitly compatible Tessera and Tessera
 Portal tags independently.
 
-Replace `<OPTICS_VERSION>`, `<AEGIS_VERSION>`, and `<PORTAL_VERSION>` below
+Replace `<OPTICS_VERSION>`, `<TESSERA_VERSION>`, and `<PORTAL_VERSION>` below
 with the compatible release versions being packaged.
 
 | Package | Provides | Built by |
 |---------|----------|----------|
 | `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v<OPTICS_VERSION>` tag |
-| `aegis` | Compositor, CLI and agent integration binaries, systemd user unit, and cursor license disclosure | Cargo from the `ming2k/aegis` `v<AEGIS_VERSION>` tag |
-| `xdg-desktop-portal-aegis` | Private portal backend plus its D-Bus activation, `.portal`, backend-selection files, and PAM helper | Cargo from the `aegis-shell/xdg-desktop-portal-aegis` `v<PORTAL_VERSION>` tag |
+| `tessera` | Compositor, CLI and agent integration binaries, systemd user unit, and cursor license disclosure | Cargo from the `atrium-desktop/tessera` `v<TESSERA_VERSION>` tag |
+| `xdg-desktop-portal-atrium` | Private portal backend plus its D-Bus activation, `.portal`, backend-selection files, and PAM helper | Cargo from the `tessera-shell/xdg-desktop-portal-atrium` `v<PORTAL_VERSION>` tag |
 
 Each repository's CI validates its own dependency surface; the
 `makedepends`/`depends` lists below are their Arch equivalents.
@@ -293,17 +293,17 @@ package() {
 `pkg-config --modversion flux flux-scene-graph lens iris` resolves after the
 package is installed.
 
-#### `aegis` PKGBUILD
+#### `tessera` PKGBUILD
 
 ```bash
 # Maintainer: <you>
-pkgbase=aegis
-pkgname=aegis
-pkgver='<AEGIS_VERSION>'
+pkgbase=tessera
+pkgname=tessera
+pkgver='<TESSERA_VERSION>'
 _portalver='<PORTAL_VERSION>'
 pkgrel=1
 arch=(x86_64)
-url='https://github.com/ming2k/aegis'
+url='https://github.com/atrium-desktop/tessera'
 makedepends=(rust pkgconf clang wayland wayland-protocols optics)
 source=("$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')   # replace with the real release-tarball checksum
@@ -322,49 +322,49 @@ package() {
   depends=(optics vulkan-icd-loader wayland libxkbcommon libinput seatd
            systemd-libs dbus pam brightnessctl)
   optdepends=(
-    "xdg-desktop-portal-aegis=$_portalver: screenshots and screen sharing through xdg-desktop-portal"
+    "xdg-desktop-portal-atrium=$_portalver: screenshots and screen sharing through xdg-desktop-portal"
     'vulkan-mesa-layers: validation and layers for development'
   )
 
   cd "$pkgbase-$pkgver"
   local dest="$pkgdir/usr"
 
-  install -Dm0755 target/release/aegis          "$dest/bin/aegis"
-  install -Dm0755 target/release/aegis-idle     "$dest/bin/aegis-idle"
-  install -Dm0755 target/release/aegis-atspi    "$dest/bin/aegis-atspi"
-  install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
-  install -Dm0755 target/release/aegis-mcp "$dest/bin/aegis-mcp"
+  install -Dm0755 target/release/tessera          "$dest/bin/tessera"
+  install -Dm0755 target/release/tessera-idle     "$dest/bin/tessera-idle"
+  install -Dm0755 target/release/tessera-atspi    "$dest/bin/tessera-atspi"
+  install -Dm0755 target/release/tessera-lock     "$dest/bin/tessera-lock"
+  install -Dm0755 target/release/tessera-mcp "$dest/bin/tessera-mcp"
 
-  install -Dm0644 contrib/systemd/user/aegis.service \
-    "$pkgdir/usr/lib/systemd/user/aegis.service"
-  install -Dm0644 contrib/systemd/user/aegis-shutdown.target \
-    "$pkgdir/usr/lib/systemd/user/aegis-shutdown.target"
-  install -Dm0755 contrib/systemd/aegis-session \
-    "$pkgdir/usr/bin/aegis-session"
-  install -Dm0644 contrib/pam/aegis-lock \
-    "$pkgdir/etc/pam.d/aegis-lock"
+  install -Dm0644 contrib/systemd/user/tessera.service \
+    "$pkgdir/usr/lib/systemd/user/tessera.service"
+  install -Dm0644 contrib/systemd/user/tessera-shutdown.target \
+    "$pkgdir/usr/lib/systemd/user/tessera-shutdown.target"
+  install -Dm0755 contrib/systemd/tessera-session \
+    "$pkgdir/usr/bin/tessera-session"
+  install -Dm0644 contrib/pam/tessera-lock \
+    "$pkgdir/etc/pam.d/tessera-lock"
 
   install -Dm0644 LICENSE \
-    "$pkgdir/usr/share/licenses/aegis/LICENSE"
+    "$pkgdir/usr/share/licenses/tessera/LICENSE"
 }
 ```
 
-#### `xdg-desktop-portal-aegis` PKGBUILD
+#### `xdg-desktop-portal-atrium` PKGBUILD
 
 ```bash
 # Maintainer: <you>
-pkgname=xdg-desktop-portal-aegis
+pkgname=xdg-desktop-portal-atrium
 pkgver='<PORTAL_VERSION>'
-_aegisver='<AEGIS_VERSION>'
+_tesseraver='<TESSERA_VERSION>'
 pkgrel=1
-pkgdesc='xdg-desktop-portal backend for the Aegis compositor'
+pkgdesc='xdg-desktop-portal backend for the Tessera compositor'
 arch=(x86_64)
-url='https://github.com/aegis-shell/xdg-desktop-portal-aegis'
+url='https://github.com/aegis-shell/xdg-desktop-portal-atrium'
 license=(MIT GPL-3.0-only)
-depends=("aegis=$_aegisver" gtk4 pam pipewire wireplumber xdg-desktop-portal xdg-email)
+depends=("tessera=$_tesseraver" gtk4 pam pipewire wireplumber xdg-desktop-portal xdg-email)
 makedepends=(rust meson ninja pkgconf clang pipewire pam)
 optdepends=(
-  'xdg-desktop-portal-gtk: fallback for portal interfaces Aegis does not implement'
+  'xdg-desktop-portal-gtk: fallback for portal interfaces Tessera does not implement'
 )
 source=("$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')   # replace with the real release-tarball checksum
@@ -381,26 +381,26 @@ package() {
 
   DESTDIR="$pkgdir" meson install -C build
   install -Dm0644 LICENSE \
-    "$dest/share/licenses/xdg-desktop-portal-aegis/LICENSE"
+    "$dest/share/licenses/xdg-desktop-portal-atrium/LICENSE"
 }
 ```
 
 #### Recipe notes
 
-- **Optics first.** `aegis` declares `optics` in both `makedepends` and
-  `depends`; never build Aegis against an in-tree Optics checkout.
+- **Optics first.** `tessera` declares `optics` in both `makedepends` and
+  `depends`; never build Tessera against an in-tree Optics checkout.
 - **Locked Cargo.** `cargo build --locked` honors the committed `Cargo.lock`.
   For a fully offline build (e.g. an air-gapped build server), vendor in
   `prepare()` instead: `cargo vendor --locked vendor`, then build with
   `--frozen --offline` and include `vendor/` in `source=`.
-- **The package boundary is intentional.** `aegis` works without the portal
-  package. The separate `xdg-desktop-portal-aegis` PKGBUILD depends on the
+- **The package boundary is intentional.** `tessera` works without the portal
+  package. The separate `xdg-desktop-portal-atrium` PKGBUILD depends on the
   exact compatible core package declared by the Portal release because its
   scoped IPC protocol and compositor mechanisms move in lockstep.
-- **`/usr` prefix is fixed.** The systemd unit runs `/usr/bin/aegis`; the
+- **`/usr` prefix is fixed.** The systemd unit runs `/usr/bin/tessera`; the
   generated D-Bus service uses Meson's configured portal `libexecdir`. Keep
   both destinations synchronized when changing the prefix.
-- **Keep `Delegate=cpu memory pids`** in `aegis.service`; Interaction Domain sandboxing
+- **Keep `Delegate=cpu memory pids`** in `tessera.service`; Interaction Domain sandboxing
   depends on it.
 - **Use distribution hooks.** The packages that own systemd, desktop, icon,
   and loader catalogs provide the standard `libalpm` hooks. Do not place

@@ -10,11 +10,11 @@ defaults; they are not the same as authenticated Actor principals.
 
 | Responsibility | Owner |
 |----------------|-------|
-| Presentation profile and account defaults | `aegis-shell::persona` |
-| Still-image and VRM source precedence | `aegis-shell::persona` with the `persona` feature |
-| Still-image normalization and live reload | `aegis-shell::persona::portrait` |
-| VRM parsing, animation, and offscreen texture | `aegis-shell::persona::portrait` |
-| Ring, fallback colors, and initials scale | `aegis-design` |
+| Presentation profile and account defaults | `tessera-shell::persona` |
+| Still-image and VRM source precedence | `tessera-shell::persona` with the `persona` feature |
+| Still-image normalization and live reload | `tessera-shell::persona::portrait` |
+| VRM parsing, animation, and offscreen texture | `tessera-shell::persona::portrait` |
+| Ring, fallback colors, and initials scale | `tessera-design` |
 | Portrait size, placement, camera, and motion trigger | Presentation host |
 
 The complete source and reload contract is documented in the
@@ -37,7 +37,7 @@ appearance and background while retaining the `LockHero` ring and typography.
 ## Custom content
 
 User customization changes profile content, not the design role. The ordered
-`PortraitConfig` contract resolves canonical Aegis still images,
+`PortraitConfig` contract resolves canonical Tessera still images,
 freedesktop-compatible faces, and the canonical VRM. The same immutable
 configuration drives initial loading and filesystem observation, so custom
 content appears consistently across every consumer. Future display-name and
@@ -45,5 +45,5 @@ behavior settings belong to the same presentation profile rather than the
 security-principal model.
 
 Presentation code never discovers files or chooses source precedence.
-Likewise, `aegis-design` never receives account data, filesystem paths,
+Likewise, `tessera-design` never receives account data, filesystem paths,
 textures, or animation state.

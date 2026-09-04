@@ -1,6 +1,6 @@
 # Contributor Documentation
 
-Contributor-only documentation for aegis. User-facing material lives under
+Contributor-only documentation for tessera. User-facing material lives under
 the other `docs/` sections; see the [documentation index](../index.md).
 
 ## Pages
@@ -8,7 +8,7 @@ the other `docs/` sections; see the [documentation index](../index.md).
 | Page | Purpose |
 |------|---------|
 | [Setup](setup.md) | Toolchain, dependencies, and build/run |
-| [Aegis and Optics Cross-Repository Development](cross-repository-development.md) | Worktree-isolated local patches, commit protection, and release promotion |
+| [Tessera and Optics Cross-Repository Development](cross-repository-development.md) | Worktree-isolated local patches, commit protection, and release promotion |
 | [Nested Backend Development](nested-backend.md) | Successful-build process replacement, scene restoration, and backend validation inside a Wayland session |
 | [Surface Testing](surface-testing.md) | Test model and code conventions for shell surfaces: command-panel and lock-screen previews, nested integration, agent pixel capture, and physical validation |
 | [First-Party Application Development](first-party-applications.md) | Installation staging, application discovery, and focused test behavior for standalone system applications |

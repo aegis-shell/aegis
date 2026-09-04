@@ -1,5 +1,5 @@
 {
-  description = "Aegis desktop compositor and Wayland window manager";
+  description = "Tessera desktop compositor and Wayland window manager";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

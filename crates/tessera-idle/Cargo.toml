@@ -1,0 +1,21 @@
+[package]
+name = "tessera-idle"
+description = "Idle policy coordinator for the Tessera desktop"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tessera-model.workspace = true
+tessera-ipc.workspace = true
+log.workspace = true
+tessera-logging.workspace = true
+libc.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true

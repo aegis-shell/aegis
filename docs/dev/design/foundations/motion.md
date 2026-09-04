@@ -3,12 +3,12 @@
 Status: **Partial**.
 
 Motion explains spatial or state change without delaying input feedback.
-Aegis owns the policy: what moves, when it starts, and how strong it is.
+Tessera owns the policy: what moves, when it starts, and how strong it is.
 Optics owns any mechanism that touches pixels or GPU work.
 
 ## Shared vocabulary
 
-`aegis-ui::motion` provides frame-rate-independent interpolation, cubic
+`tessera-ui::motion` provides frame-rate-independent interpolation, cubic
 easing, smoothstep, stagger, exponential approach and decay, and an analytic
 damped spring. Components retain their own clocks and animation state.
 
@@ -37,7 +37,7 @@ duration scale for every component.
 - Interruptions retarget from the current presented state instead of jumping
   back to the previous endpoint.
 - Pixel deformations and image effects belong in Optics; their strength and
-  trigger policy remain in Aegis.
+  trigger policy remain in Tessera.
 
 ## Reduced motion
 

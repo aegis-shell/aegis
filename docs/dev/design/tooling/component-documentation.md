@@ -2,7 +2,7 @@
 
 Status: **Draft**.
 
-Aegis does not yet ship a Storybook, component catalog, or interactive design
+Tessera does not yet ship a Storybook, component catalog, or interactive design
 playground. The target is a native `lens` catalog that renders the same code
 paths as compositor chrome. A web Storybook is useful only for portable web
 components; it is not a pixel-accurate substitute for the native renderer.

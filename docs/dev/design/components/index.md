@@ -1,7 +1,7 @@
 # Components
 
 Components turn foundations into reusable controls and containers. Optics
-`lens` owns generic widget mechanics. `aegis-ui` owns Aegis-specific
+`lens` owns generic widget mechanics. `tessera-ui` owns Tessera-specific
 composition and interaction scaffolding, while the consuming crate retains
 domain state and emits product intents.
 

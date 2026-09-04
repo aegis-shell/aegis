@@ -1,6 +1,6 @@
 # How to Use the HUD and the Command Panel
 
-Aegis presents system status as a minimal HUD and keeps every related
+Tessera presents system status as a minimal HUD and keeps every related
 interaction in one modal panel, the command panel (ADR-0080, ADR-0081,
 ADR-0083, ADR-0114). The panel is the display-and-control surface for
 desktop-computer behavior (ADR-0115): the state and controls of the

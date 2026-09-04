@@ -2,7 +2,7 @@
 
 How to attribute popup and floating card placement issues between client
 toolkits and the compositor before changing any code, and what to do with the
-result. The rule throughout: fix what aegis gets wrong, never paper over what a
+result. The rule throughout: fix what tessera gets wrong, never paper over what a
 client gets wrong.
 
 ## How popups and subsurfaces are positioned
@@ -13,12 +13,12 @@ surfaces:
 - **`xdg_popup` + `xdg_positioner`** — the protocol mechanism for context
   menus, dropdowns, and tooltips. The client specifies an `anchor_rect` in
   parent coordinates, anchor edges, gravity, and constraint adjustments.
-  `aegis` positions the popup relative to the parent window's geometry.
+  `tessera` positions the popup relative to the parent window's geometry.
 - **`wl_subsurface`** — a child surface fixed at a pixel offset relative to its
   parent surface.
 - **`xdg_toplevel`** — an independent top-level window. In the Wayland
   architecture, `xdg_toplevel` windows have no protocol request for setting
-  absolute coordinates or requesting specific desktop placement. `aegis` owns
+  absolute coordinates or requesting specific desktop placement. `tessera` owns
   toplevel window placement (cascading, centering, or layout-driven).
 
 ## Server-side invariants
@@ -49,9 +49,9 @@ Watch the requests sent when the popup or hover card opens:
   new `BrowserWindow`) rather than `get_popup` → **client-side toolkit limitation**.
   The client attempted to simulate a popup with an independent window, which
   Wayland places according to default compositor policy (e.g. top-left cascade).
-- The client requests `get_popup` with an `xdg_positioner`, but `aegis` computes
+- The client requests `get_popup` with an `xdg_positioner`, but `tessera` computes
   wrong coordinates or ignores constraint adjustments → **compositor-side**.
-  File a bug and write regression coverage in `crates/aegis-compositor/src/tests/popup_e2e.rs`.
+  File a bug and write regression coverage in `crates/tessera-compositor/src/tests/popup_e2e.rs`.
 
 Quick symptom table:
 
@@ -78,8 +78,8 @@ Trace through the invariants:
    hovered item's bounding rect and the main window position.
 4. Because Wayland provides no global coordinate queries (`getPosition()` returns
    zeros) and `xdg_toplevel` has no `set_position` request, no coordinate
-   information reaches `aegis`.
-5. `aegis` treats the card as a regular new window and assigns it the default
+   information reaches `tessera`.
+5. `tessera` treats the card as a regular new window and assigns it the default
    cascade origin `(60, 60)`.
 
 Conclusion: application and toolkit limitation. The application must render

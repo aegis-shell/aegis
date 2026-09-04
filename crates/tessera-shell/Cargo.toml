@@ -1,0 +1,65 @@
+[package]
+name = "tessera-shell"
+description = "Compositor chrome host and contract: Shell, Chrome, launcher, workspaces, decorations, and notifications"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+# Full personalized portrait runtime. The lightweight `persona::Profile`
+# contract remains available without this feature.
+persona = [
+    "dep:tessera-desktop-entries",
+    "dep:fastrand",
+    "dep:flux-sys",
+    "dep:flux-scene-graph",
+    "dep:flux-scene-graph-sys",
+    "dep:image",
+    "dep:notify",
+]
+
+[[example]]
+name = "debug_avatar"
+required-features = ["persona"]
+
+[dependencies]
+tessera-model = { workspace = true }
+tessera-design = { workspace = true }
+tessera-ui = { workspace = true }
+tessera-desktop-entries = { workspace = true, optional = true }
+fastrand = { workspace = true, optional = true }
+# Agent-feedback sprites: SVG rasterization (resvg/usvg/tiny-skia, same
+# default-features-off policy as the `tessera` crate's cursor pipeline) and a
+# borrowed flux device for texture upload, mirroring `tessera-hud`.
+flux = { workspace = true }
+flux-sys = { workspace = true, optional = true }
+flux-scene-graph = { workspace = true, optional = true }
+flux-scene-graph-sys = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+lens = { workspace = true }
+lens-sys = { workspace = true }
+log.workspace = true
+notify = { workspace = true, optional = true }
+resvg = { workspace = true }
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tiny-skia = { workspace = true }
+usvg = { workspace = true }
+# statvfs for the resource probe's root-filesystem usage sample.
+libc.workspace = true
+# The secret prompt's edit buffer is zeroized on close (password hygiene).
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[package.metadata.cargo-machete]
+ignored = ["flux-scene-graph-sys", "flux-sys", "lens-sys"]
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
-# Aegis
+# Tessera
 
-Aegis is a Wayland compositor and desktop shell for Linux. It combines a
+Tessera is a Wayland compositor and desktop shell for Linux. It combines a
 Vulkan-first renderer, native shell surfaces, panel-hosted system settings,
 and scoped AI-agent workspaces behind explicit process and security
 boundaries.
@@ -22,7 +22,7 @@ boundaries.
 ## Quick Start
 
 The safest first run is a nested session inside an existing Wayland desktop.
-Aegis requires Rust 1.88 or later and the native build dependencies listed in
+Tessera requires Rust 1.88 or later and the native build dependencies listed in
 the [Getting Started tutorial](docs/tutorials/01-getting-started.md).
 
 Install the Optics `v<OPTICS_VERSION>` native libraries from a distribution package or
@@ -39,32 +39,32 @@ sudo ldconfig
 pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-From the Aegis repository root, start the compositor:
+From the Tessera repository root, start the compositor:
 
 ```bash
-cargo build --locked -p aegis-idle -p aegis-lock -p aegis-atspi
-cargo run --locked -p aegis
+cargo build --locked -p tessera-idle -p tessera-lock -p tessera-atspi
+cargo run --locked -p tessera
 ```
 
-`AEGIS_BACKEND=auto` is the default. A terminal with `WAYLAND_DISPLAY` set
+`TESSERA_BACKEND=auto` is the default. A terminal with `WAYLAND_DISPLAY` set
 opens a nested window; a login on a bare TTY selects direct DRM/KMS.
-When developing nested inside an active Aegis session, specify an isolated
-`XDG_DATA_HOME` (e.g. `XDG_DATA_HOME=/tmp/aegis-dev XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share`)
+When developing nested inside an active Tessera session, specify an isolated
+`XDG_DATA_HOME` (e.g. `XDG_DATA_HOME=/tmp/tessera-dev XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share`)
 to prevent audit store lock contention with the host compositor.
 
 Source-tree Cargo commands do not install systemd, D-Bus, portal, desktop, or
 icon metadata. The D-Bus-activated portal backend is built from the
 independent
-[xdg-desktop-portal-aegis repository](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
+[xdg-desktop-portal-atrium repository](https://github.com/aegis-shell/xdg-desktop-portal-atrium)
 and distributed as a compatibility-mapped optional package; the core
 compositor runs without it. An installed core package can start the
 compositor as a user service:
 
 ```bash
-systemctl --user start --wait aegis.service
+systemctl --user start --wait tessera.service
 ```
 
-Greeters and TTY logins should use the `aegis-session` wrapper instead; it
+Greeters and TTY logins should use the `tessera-session` wrapper instead; it
 additionally manages the login environment and the `graphical-session.target`
 lifecycle.
 
@@ -75,7 +75,7 @@ lifecycle.
 | Open Applications | Click Launchpad or press `Super` |
 | Open System Settings | Press `Super+S` and select a settings tab |
 | Lock the session | Press `Super+L` |
-| Inspect compositor state | Run `aegis window` |
+| Inspect compositor state | Run `tessera window` |
 
 ## Documentation
 

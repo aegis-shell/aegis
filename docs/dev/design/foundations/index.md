@@ -1,9 +1,9 @@
 # Foundations
 
-Foundations define the values from which every Aegis-owned surface is built.
+Foundations define the values from which every Tessera-owned surface is built.
 They are semantic product policy, not a bag of visual constants. Generic
-drawing capabilities remain in Optics; adopted Aegis values live in
-`aegis-design` and shared motion math lives in `aegis-ui`.
+drawing capabilities remain in Optics; adopted Tessera values live in
+`tessera-design` and shared motion math lives in `tessera-ui`.
 
 ## Inventory
 
@@ -14,7 +14,7 @@ drawing capabilities remain in Optics; adopted Aegis values live in
 | 1.3 | [Shape and Border](shape-and-border.md) | Adopted | `Radii`, `Strokes`, and analytic glass geometry |
 | 1.4 | [Elevation and Materials](elevation-and-materials.md) | Adopted | Material factories and Liquid Glass roles |
 | 1.5 | [Typography](typography.md) | Partial | `TypeScale`; typeface and text-scale propagation remain incomplete |
-| 1.6 | [Motion](motion.md) | Partial | Window transition policy and `aegis-ui::motion` |
+| 1.6 | [Motion](motion.md) | Partial | Window transition policy and `tessera-ui::motion` |
 | 1.7 | [Assets](assets.md) | Partial | XDG icon resolution, Aegis cursors, and owner-local media |
 | 1.8 | [Multimodal Feedback](multimodal-feedback.md) | Draft | No shared sound or haptic contract exists |
 

@@ -1,8 +1,8 @@
-# Getting Started with Aegis
+# Getting Started with Tessera
 
-This tutorial builds Aegis, starts a nested compositor, opens the command
+This tutorial builds Tessera, starts a nested compositor, opens the command
 panel's settings tabs, and queries compositor state.
-Run every command from the Aegis repository root inside an existing Wayland
+Run every command from the Tessera repository root inside an existing Wayland
 session.
 
 ## Prerequisites
@@ -15,7 +15,7 @@ Install:
 - the Optics `v<OPTICS_VERSION>` native libraries.
 
 The independently sourced
-[xdg-desktop-portal-aegis](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
+[xdg-desktop-portal-atrium](https://github.com/aegis-shell/xdg-desktop-portal-atrium)
 additionally requires PipeWire and SPA development files. The nested
 compositor tutorial does not clone, build, or install that package.
 
@@ -41,12 +41,12 @@ Each version printed by the final command must be compatible with
 Build the two supervised session clients, then run:
 
 ```bash
-cargo build --locked -p aegis-idle -p aegis-lock
-cargo run --locked -p aegis
+cargo build --locked -p tessera-idle -p tessera-lock
+cargo run --locked -p tessera
 ```
 
-Because `WAYLAND_DISPLAY` is set, the default `AEGIS_BACKEND=auto` opens a
-nested Aegis window. The background, HUD chips, and Dock confirm that the
+Because `WAYLAND_DISPLAY` is set, the default `TESSERA_BACKEND=auto` opens a
+nested Tessera window. The background, HUD chips, and Dock confirm that the
 session is ready.
 
 ## Open the Settings Tabs
@@ -62,11 +62,11 @@ panel chrome, the hosted settings modules, and the commit path together.
 From a second terminal in the same user session, run:
 
 ```bash
-cargo run --locked -p aegis -- display
-cargo run --locked -p aegis -- window
+cargo run --locked -p tessera -- display
+cargo run --locked -p tessera -- window
 ```
 
-Both commands print state from the running compositor. Stop Aegis with
+Both commands print state from the running compositor. Stop Tessera with
 `Ctrl+C`.
 
 ## Next Steps

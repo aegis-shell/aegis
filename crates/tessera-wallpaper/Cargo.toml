@@ -1,0 +1,23 @@
+[package]
+name = "tessera-wallpaper"
+description = "Compositor wallpaper: image, video, 3D, and multi-plane parallax backgrounds"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flux = { workspace = true }
+flux-sys = { workspace = true }
+flux-scene-graph = { workspace = true }
+flux-scene-graph-sys = { workspace = true }
+image = { workspace = true }
+log.workspace = true
+thiserror.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["flux-scene-graph-sys", "flux-sys"]
+
+[lints]
+workspace = true

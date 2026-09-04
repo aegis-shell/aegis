@@ -1,9 +1,16 @@
 # Changelog
 
-Notable user-visible and contributor-visible changes to Aegis. The format
+Notable user-visible and contributor-visible changes to Tessera. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
+
+> **Project rename.** The project formerly known as **Aegis** was renamed to
+> **Tessera**. Entries below this note use the new name; historical entries
+> retain the original `Aegis`/`aegis` identifiers for accuracy. The GitHub
+> repository moved from `atrium-desktop/aegis` to
+> `atrium-desktop/tessera`. Environment variables use the `TESSERA_*` prefix
+> (previously `AEGIS_*`). The bundled cursor theme keeps the `Aegis` name.
 
 ## [Unreleased]
 

@@ -62,7 +62,7 @@ The whole output uses one opaque grouped background:
   its alpha channel — still photos, live-rendered 3D VRM models with VRMA
   animation playback, and the initials fallback all render cleanly. The orb
   follows the canonical persona contract
-  (`$XDG_DATA_HOME/aegis/avatars/avatar.vrm`).
+  (`$XDG_DATA_HOME/tessera/avatars/avatar.vrm`).
 - Beside the orb, the display name sets at title scale in the display
   typography; below it `@username · groups`, then the machine's **hostname**,
   so the block reads as who-on-which-machine.
@@ -109,7 +109,7 @@ split into two functional columns:
 - An opaque elevated page surface hosts the active tab content.
 - Header row renders the active section icon and headline.
 - Scrollable body renders the **Quick Controls** tab or modular settings
-  pages (`aegis-settings` registry).
+  pages (`tessera-settings` registry).
 
 ## Tabs
 
@@ -119,7 +119,7 @@ split into two functional columns:
   remaining quick settings (Wi-Fi/Bluetooth radios, tiling, Agent
   Workspaces status, Lock Now) are held out of the panel for now per the
   scope review; they return through the settings module tabs.
-- **Settings module tabs** — one tab per available `aegis-settings` module
+- **Settings module tabs** — one tab per available `tessera-settings` module
   (display, input, appearance, power), rendered from the registry inside
   the main panel; their `SettingsAction`s leave through
   `ChromeEvents::settings_actions` with the current snapshot revision.

@@ -8,8 +8,8 @@ hover; it does not select a numbered neutral or copy an RGBA literal.
 
 ## Ownership
 
-`aegis-design::colors` is the only production source of literal product
-colors inside `aegis-design`. `aegis-design::Design` combines those colors
+`tessera-design::colors` is the only production source of literal product
+colors inside `tessera-design`. `tessera-design::Design` combines those colors
 with shape, material, typography, and motion policy into complete dark and
 light snapshots.
 
@@ -81,7 +81,7 @@ unchanged.
 | Scene | clear color, scrim, glass tint | Owned by compositor presentation, not widgets. |
 | Identity | Dock marks, avatar frames, application icons | Preserve source identity unless a role explicitly recolors it. |
 
-Exact adopted values live in `aegis-design::colors`. The material-role values
+Exact adopted values live in `tessera-design::colors`. The material-role values
 used by chrome are also summarized in [Surfaces](../surfaces.md).
 
 ## Appearance resolution
@@ -97,9 +97,9 @@ partial and must not be advertised as complete design variants.
 
 ## Usage rules
 
-- Keep product RGBA literals in `aegis-design::colors`. A source-scanning unit
-  test rejects literals that escape into another `aegis-design` module.
-- Use semantic roles in Aegis-owned UI. Source media, protocol-defined values,
+- Keep product RGBA literals in `tessera-design::colors`. A source-scanning unit
+  test rejects literals that escape into another `tessera-design` module.
+- Use semantic roles in Tessera-owned UI. Source media, protocol-defined values,
   debug visualization, and application identity colors remain with their
   authoritative owner and are not product color tokens.
 - Do not derive hover, disabled, or selected colors at the call site when the
@@ -119,7 +119,7 @@ partial and must not be advertised as complete design variants.
 1. Name the scope, role, stable variant, and state in that order.
 2. Confirm that no existing semantic role expresses the same meaning.
 3. Add the field to the narrowest appropriate `*Colors` type.
-4. Define every supported appearance in `aegis-design::colors`.
+4. Define every supported appearance in `tessera-design::colors`.
 5. Add exact-value and cross-appearance relationship tests.
 6. Consume the role through `Design`, a theme, or a material factory.
 7. Validate contrast and non-color state cues in every supported appearance.
@@ -133,8 +133,8 @@ stable product meaning and an identified consumer boundary.
 - Map desktop accent and high-contrast preferences into semantic snapshots.
 - Add automated contrast checks for opaque pairs and reference-image checks
   for adaptive materials.
-- Extend literal and token-consumer linting from `aegis-design` to all
-  Aegis-owned UI crates without flagging source-owned media values.
+- Extend literal and token-consumer linting from `tessera-design` to all
+  Tessera-owned UI crates without flagging source-owned media values.
 
 See [Accessibility](../guidelines/accessibility.md) for contrast and
 non-color requirements. The product-semantic vocabulary boundary is recorded

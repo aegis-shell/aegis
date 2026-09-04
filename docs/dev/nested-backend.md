@@ -1,7 +1,7 @@
 # Nested Backend Development
 
 Use the nested backend for the default compositor development workflow. It runs
-aegis inside an existing Wayland desktop, so crashes and restarts affect one
+tessera inside an existing Wayland desktop, so crashes and restarts affect one
 host window instead of the active VT. Use the DRM/KMS backend only for
 behavior that depends on direct hardware or session ownership.
 
@@ -15,16 +15,16 @@ The nested process is both a Wayland client and a Wayland compositor:
 
 ```text
 outer Wayland compositor
-└── aegis xdg-toplevel window (outer Wayland client)
-    ├── Vulkan swapchain and aegis chrome
-    ├── aegis Wayland server socket (wayland-N)
+└── tessera xdg-toplevel window (outer Wayland client)
+    ├── Vulkan swapchain and tessera chrome
+    ├── tessera Wayland server socket (wayland-N)
     └── inner Wayland clients
 ```
 
-At startup, aegis connects to the inherited `$WAYLAND_DISPLAY`, creates an
+At startup, tessera connects to the inherited `$WAYLAND_DISPLAY`, creates an
 `xdg_toplevel`, and presents Flux frames through a Wayland Vulkan surface. It
 also creates a separate, auto-named Wayland server socket for applications
-managed inside aegis, then points its own process environment at that socket.
+managed inside tessera, then points its own process environment at that socket.
 The D-Bus and systemd activation environments are left to the host session:
 exporting the inner socket there would send the host's activated services to
 the nested compositor.
@@ -37,7 +37,7 @@ input ownership differ.
 
 The runtime still uses the production redraw lifecycle. A successful nested
 submission has no direct KMS page-flip event, so the outer FIFO swapchain owns
-physical throttling and Aegis uses an estimated refresh boundary only for
+physical throttling and Tessera uses an estimated refresh boundary only for
 no-damage callbacks and compositor animation. Client commits wake the nested
 poll immediately; callback-only work does not force an empty Flux frame. The
 estimate starts at render begin, so time already spent inside FIFO
@@ -53,14 +53,14 @@ Run the following commands from the repository root in a terminal belonging
 to an existing Wayland session:
 
 ```bash
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```
 
-The default `AEGIS_BACKEND=auto` selects nested presentation because the
-terminal inherits `$WAYLAND_DISPLAY`. Set `AEGIS_BACKEND=nested` only when a
+The default `TESSERA_BACKEND=auto` selects nested presentation because the
+terminal inherits `$WAYLAND_DISPLAY`. Set `TESSERA_BACKEND=nested` only when a
 test must fail instead of falling back to DRM if that environment is missing.
 
-A successful start opens an `aegis` window and logs both roles:
+A successful start opens an `tessera` window and logs both roles:
 
 ```text
 flux: device created for nested backend; ...
@@ -70,7 +70,7 @@ server: listening on WAYLAND_DISPLAY=wayland-N
 Close the outer window or press `Ctrl+C` in the terminal to stop the nested
 session.
 
-## Run Applications Inside aegis
+## Run Applications Inside tessera
 
 Prefer the built-in launcher. It passes the inner socket to the child process
 explicitly, so launched applications reach the nested compositor regardless of
@@ -97,13 +97,13 @@ this override connects to the outer desktop instead. Keep the existing
 Run the in-tree IPC client from another terminal:
 
 ```bash
-cargo run --locked -p aegis -- window
-cargo run --locked -p aegis -- display
+cargo run --locked -p tessera -- window
+cargo run --locked -p tessera -- display
 ```
 
-Only one aegis IPC server can own an `aegis.sock` path. A manually started
+Only one tessera IPC server can own an `tessera.sock` path. A manually started
 nested process continues without IPC and logs an address-in-use warning when
-another Aegis process already owns that path. It does not start a supervised
+another Tessera process already owns that path. It does not start a supervised
 idle coordinator in that state, so it cannot send policy actions to the other
 session; `Super+L` still starts its own lock client directly. Stop the other
 process before testing IPC.
@@ -159,15 +159,15 @@ Choose the narrowest command that answers the current question:
 
 | Goal | Command |
 |------|---------|
-| Check the crate being edited | `cargo check --locked -p aegis-shell` |
-| Check executable integration | `cargo check --locked -p aegis` |
-| Run the compositor | `cargo run --locked -p aegis` |
-| Test one crate | `cargo test --locked -p aegis-shell` |
+| Check the crate being edited | `cargo check --locked -p tessera-shell` |
+| Check executable integration | `cargo check --locked -p tessera` |
+| Run the compositor | `cargo run --locked -p tessera` |
+| Test one crate | `cargo test --locked -p tessera-shell` |
 | Validate the workspace | `cargo test --locked --workspace` |
-| Build a production artifact | `cargo build --locked --release -p aegis` |
-| Profile a release build | `cargo build --locked --release -p aegis --timings` |
+| Build a production artifact | `cargo build --locked --release -p tessera` |
+| Profile a release build | `cargo build --locked --release -p tessera --timings` |
 
-Replace `aegis-shell` with the package being edited. Run the release commands
+Replace `tessera-shell` with the package being edited. Run the release commands
 only before delivery, when validating production performance, or when a bug
 depends on release optimization. The first build after changing the compiler,
 profile, or features is a cold build and can still take several minutes;
@@ -180,8 +180,8 @@ critical path.
 
 ### Configuration Changes
 
-Edit `$XDG_CONFIG_HOME/aegis/config.toml`, defaulting to
-`~/.config/aegis/config.toml`, while the nested session runs. The compositor
+Edit `$XDG_CONFIG_HOME/tessera/config.toml`, defaulting to
+`~/.config/tessera/config.toml`, while the nested session runs. The compositor
 checks the file each frame and applies a valid change without restarting.
 Invalid configuration leaves the previous configuration active and writes a
 diagnostic to the log.
@@ -197,10 +197,10 @@ Rust code is compiled into the executable loaded by the running process and is
 not hot-reloaded in-process. Repeat this explicit development cycle:
 
 1. Save the change.
-2. Run `cargo check --locked -p aegis` or wait for the editor's Rust check
+2. Run `cargo check --locked -p tessera` or wait for the editor's Rust check
    to pass.
 3. Stop the nested process with `Ctrl+C`.
-4. Run `cargo run --locked -p aegis` again.
+4. Run `cargo run --locked -p tessera` again.
 5. Relaunch any inner client needed for the test.
 
 Each run recreates windows, Wayland connections, IPC state, and other
@@ -215,15 +215,15 @@ Use one of two recommended workflows for overlay debugging:
 
 ### 1. Auto-Open on Startup (Zero Keystrokes)
 
-Pass `AEGIS_COMMAND_PANEL_OPEN=1` to open the Command Panel automatically when
+Pass `TESSERA_COMMAND_PANEL_OPEN=1` to open the Command Panel automatically when
 the nested compositor starts in debug mode:
 
 ```bash
-mkdir -p /tmp/aegis-dev/aegis
-AEGIS_COMMAND_PANEL_OPEN=1 \
-XDG_DATA_HOME=/tmp/aegis-dev \
+mkdir -p /tmp/tessera-dev/tessera
+TESSERA_COMMAND_PANEL_OPEN=1 \
+XDG_DATA_HOME=/tmp/tessera-dev \
 XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share \
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```
 
 ### 2. Configure Non-Super Keybindings
@@ -274,11 +274,11 @@ printf '%s\n' "$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR"
 ```
 
 Do not replace the shell's `$WAYLAND_DISPLAY` with the inner `wayland-N`
-before starting aegis. The nested backend needs the outer display first.
+before starting tessera. The nested backend needs the outer display first.
 
 ### A Test Client Opens on the Outer Desktop
 
-Start it with the inner socket logged by aegis, or start it through the built-in
+Start it with the inner socket logged by tessera, or start it through the built-in
 launcher. The parent shell continues to point at the outer compositor by
 design.
 
@@ -297,15 +297,15 @@ Interaction Domain launch tests, as described in the [development setup](setup.m
 ### Audit Store Is Locked by Another Live Instance
 
 If the error `audit store is locked by another live instance: .../events-v2.jsonl`
-appears, an active Aegis host session is already running and owns an exclusive
+appears, an active Tessera host session is already running and owns an exclusive
 `flock` on the production audit log.
 
-Isolate the nested instance by setting `XDG_DATA_HOME=/tmp/aegis-dev` while
+Isolate the nested instance by setting `XDG_DATA_HOME=/tmp/tessera-dev` while
 retaining `XDG_DATA_DIRS=$HOME/.local/share:...` for asset discovery:
 
 ```bash
-mkdir -p /tmp/aegis-dev/aegis
-XDG_DATA_HOME=/tmp/aegis-dev \
+mkdir -p /tmp/tessera-dev/tessera
+XDG_DATA_HOME=/tmp/tessera-dev \
 XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share \
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```

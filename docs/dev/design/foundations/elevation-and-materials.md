@@ -34,7 +34,7 @@ adaptation contract live in [Liquid Glass](../liquid-glass.md).
 
 ## Ownership boundary
 
-`aegis-design` owns semantic material parameters and pure `lens` option
+`tessera-design` owns semantic material parameters and pure `lens` option
 factories. Optics owns effects that touch pixels, images, or GPU command
 buffers. The compositor connects those parameters to rendering. This
 boundary follows

@@ -1,6 +1,6 @@
 # First-Party Application Development
 
-Use this workflow for standalone applications that ship with Aegis but run as
+Use this workflow for standalone applications that ship with Tessera but run as
 ordinary Wayland clients. No first-party standalone application currently
 ships in-tree — the former System Settings application is now a settings
 module library hosted by the command panel
@@ -16,8 +16,8 @@ Sharing one repository and release does not make an application part of the
 compositor process:
 
 ```text
-Aegis repository and release
-├── aegis
+Tessera repository and release
+├── tessera
 │   └── Wayland compositor and IPC server
 └── first-party application
     └── independent Wayland client and IPC client
@@ -27,15 +27,15 @@ Cargo workspace membership coordinates source and builds. It does not load
 one binary into another, place sibling binaries on `PATH`, or register XDG
 metadata.
 
-A standalone application reaches Aegis through two runtime boundaries:
+A standalone application reaches Tessera through two runtime boundaries:
 
 - Wayland provides the window, input, rendering, and application identity.
-- `$XDG_RUNTIME_DIR/aegis.sock` provides scoped IPC snapshots and actions.
+- `$XDG_RUNTIME_DIR/tessera.sock` provides scoped IPC snapshots and actions.
 
-Do not add the application crate as an `aegis` Rust dependency. Shared
-schemas and models belong in library crates such as `aegis-model` and
-`aegis-ipc`. A surface that should render in-process belongs in a chrome
-component crate on the `aegis-shell` contract instead — that is where the
+Do not add the application crate as an `tessera` Rust dependency. Shared
+schemas and models belong in library crates such as `tessera-model` and
+`tessera-ipc`. A surface that should render in-process belongs in a chrome
+component crate on the `tessera-shell` contract instead — that is where the
 settings modules live.
 
 ## Installation Contract

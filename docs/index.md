@@ -1,6 +1,6 @@
-# aegis Documentation
+# tessera Documentation
 
-aegis is a Wayland compositor for Linux, written in Rust on
+tessera is a Wayland compositor for Linux, written in Rust on
 [flux](https://github.com/ming2k/optics/tree/main/libs/flux) and
 [lens](https://github.com/ming2k/optics/tree/main/libs/lens). Start with the
 [README](../README.md) for the project pitch and the shortest run path.
@@ -21,8 +21,8 @@ aegis is a Wayland compositor for Linux, written in Rust on
 - First-time walkthrough: read [Getting Started Tutorial](tutorials/01-getting-started.md).
 - New to the project: read [Architecture](explanation/architecture.md), then
   [Vision and Scope](explanation/vision.md).
-- Looking for where aegis is headed: read [Roadmap](explanation/roadmap.md).
-- Looking for how aegis compares to GNOME, KDE, sway, river, niri, macOS, and
+- Looking for where tessera is headed: read [Roadmap](explanation/roadmap.md).
+- Looking for how tessera compares to GNOME, KDE, sway, river, niri, macOS, and
   Xfce: read [Comparative Survey](explanation/comparative-survey.md).
 - Looking for a config key or option: read the
   [Configuration Reference](reference/config.md).
@@ -42,9 +42,9 @@ aegis is a Wayland compositor for Linux, written in Rust on
 - Isolating agent input and applications: read
   [How to Use Agent Workspaces](how-to/ai-workspaces.md).
 - Connecting an MCP agent to scoped desktop and Interaction Domain tools:
-  read [How to Connect an MCP Agent to Aegis](how-to/agent.md).
+  read [How to Connect an MCP Agent to Tessera](how-to/agent.md).
 - Booting from a TTY and smoke-testing real hardware: read
-  [How to Run aegis on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
+  [How to Run tessera on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
 - Enabling portal-aware and Flatpak apps through the independently installed
   backend: read
   [How to Install and Verify the Portal Backend](how-to/portals.md).

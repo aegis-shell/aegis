@@ -2,7 +2,7 @@
 
 Status: **Partial**.
 
-The current token source is handwritten Rust in `aegis-design`. Its
+The current token source is handwritten Rust in `tessera-design`. Its
 `build.rs` only propagates native-library runtime paths for tests; it does not
 generate design tokens. No Style Dictionary or parallel JSON token source is
 authoritative today.
@@ -11,10 +11,10 @@ authoritative today.
 
 | Stage | Owner | Contract |
 |------|-------|----------|
-| Color definition | `aegis-design::colors` | Semantic color roles and literal values for every appearance |
-| Non-color definition | `aegis-design::tokens` | Shape, material, typography, and presentation policy |
-| Composition | `aegis-design::themes` and `materials` | Pure factories that convert roles into `lens` options |
-| Reuse | `aegis-ui` | Shared component metrics and composition |
+| Color definition | `tessera-design::colors` | Semantic color roles and literal values for every appearance |
+| Non-color definition | `tessera-design::tokens` | Shape, material, typography, and presentation policy |
+| Composition | `tessera-design::themes` and `materials` | Pure factories that convert roles into `lens` options |
+| Reuse | `tessera-ui` | Shared component metrics and composition |
 | Consumption | Chrome and first-party application crates | Resolved design snapshot; no local replacement palette |
 | Verification | Rust unit tests | Exact values, literal placement, scheme invariance, and monotonic scales |
 
@@ -58,11 +58,11 @@ machine-specific output.
 
 ## Adoption work
 
-- Inventory repeated visual literals outside `aegis-design` and classify them
+- Inventory repeated visual literals outside `tessera-design` and classify them
   as shared roles or owner-local values.
 - Add deprecation guidance for renamed tokens.
 - Define export requirements before selecting a cross-platform token format.
-- Extend the color-literal guard from `aegis-design` to consuming UI crates
+- Extend the color-literal guard from `tessera-design` to consuming UI crates
   with explicit exceptions for source-owned media and protocol values.
 
 See [ADR-0046](../../../adr/0046-design-system-crate.md).

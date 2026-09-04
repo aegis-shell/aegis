@@ -1,7 +1,7 @@
 # Settings Reference
 
 Persistent settings live in the command panel, the compositor's modal
-chrome surface. The `aegis-settings` crate is the settings module library:
+chrome surface. The `tessera-settings` crate is the settings module library:
 the module contract, the module registry, and the built-in pages, rendered
 in-process by the panel. There is no standalone settings application.
 
@@ -22,11 +22,11 @@ command-line deep links; external tools use the settings IPC instead.
 
 | Route | Category | Apply behavior | Backend |
 |-------|----------|----------------|---------|
-| `display` | Hardware | Explicit Apply button | Available; aegis output model and direct DRM backend |
-| `input` | Hardware | Instant | Available; aegis input policy and libinput backend (keyboard repeat, mouse and touchpad speed/scrolling) |
-| `appearance` | Personalization | Explicit Apply button | Available; Aegis desktop-preference authority and portal projection |
-| `dock` | Personalization | Instant | Available; Aegis `[dock]` configuration authority |
-| `power` | System | Explicit Apply button | Available; Aegis idle policy, session lock, output power, and logind sleep coordination |
+| `display` | Hardware | Explicit Apply button | Available; tessera output model and direct DRM backend |
+| `input` | Hardware | Instant | Available; tessera input policy and libinput backend (keyboard repeat, mouse and touchpad speed/scrolling) |
+| `appearance` | Personalization | Explicit Apply button | Available; Tessera desktop-preference authority and portal projection |
+| `dock` | Personalization | Instant | Available; Tessera `[dock]` configuration authority |
+| `power` | System | Explicit Apply button | Available; Tessera idle policy, session lock, output power, and logind sleep coordination |
 | `users` | System | Explicit | Not available yet; AccountsService and authorization adapter required |
 | `window-rules` | System | Explicit | Not available yet; revisioned window-rule settings backend required |
 

@@ -8,7 +8,7 @@ preference remain incomplete.
 
 ## Type scale
 
-`aegis-design::TypeScale` defines scheme-invariant logical sizes.
+`tessera-design::TypeScale` defines scheme-invariant logical sizes.
 
 | Role | Size | Use |
 |-----|------|-----|
@@ -30,7 +30,7 @@ Desktop preferences carry interface and monospace font names plus a text
 scale in the validated range `0.5..=3.0`. The current chrome type scale is
 widely consumed, but those preferences are not yet propagated through every
 rendering path. Until that integration is complete, the settings surface
-must not imply that all Aegis chrome already follows the selected typeface or
+must not imply that all Tessera chrome already follows the selected typeface or
 scale.
 
 ## Composition rules

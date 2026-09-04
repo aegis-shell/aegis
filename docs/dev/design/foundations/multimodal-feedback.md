@@ -2,7 +2,7 @@
 
 Status: **Draft**.
 
-Aegis has no shared product sound-effect or haptic implementation. This page
+Tessera has no shared product sound-effect or haptic implementation. This page
 reserves the semantic contract so later feedback does not become a set of
 component-local noises or device assumptions.
 

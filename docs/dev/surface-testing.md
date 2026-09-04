@@ -3,7 +3,7 @@
 How the interactive shell surfaces are tested: the test model, the
 code-organization rules every layer follows, and the commands for each
 surface — the command panel (compositor chrome, ADR-0080) and the lock screen
-(the `aegis-lock` production surface). A result from one layer does not stand
+(the `tessera-lock` production surface). A result from one layer does not stand
 in for a result from another.
 
 ## Test Model
@@ -12,7 +12,7 @@ in for a result from another.
 |-------|-------------|--------|----------------|
 | Unit and logic | In-crate tests, no GPU or live sources | Layout bounds, reduced-motion snapping, backdrop-effect constraints, formatting helpers, persona resolution | Rendering, live sources, interaction |
 | Preview | Development-only harness binary, ordinary Wayland window | Full rendering and interaction of one surface, isolated from the session | Session integration, exclusive input, PAM, physical outputs |
-| Nested integration | Production binaries inside a nested Aegis compositor | Real chrome and lock surfaces, input routing, protocols, fail-closed behavior | Physical output power, VT ownership, suspend |
+| Nested integration | Production binaries inside a nested Tessera compositor | Real chrome and lock surfaces, input routing, protocols, fail-closed behavior | Physical output power, VT ownership, suspend |
 | Physical | Packaged direct DRM/KMS session | Installed PAM policy, every physical output, capture refusal, display-off, suspend and resume | Safe unattended iteration |
 
 Start with the cheapest layer that can fail for the change: unit tests for
@@ -38,7 +38,7 @@ tests never open windows or devices.
 
 A production binary may expose debug-gated environment variables that change
 **presentation only** — which surface is open at startup, what demo content is
-seeded. `AEGIS_COMMAND_PANEL_OPEN` is the example: it opens the panel at
+seeded. `TESSERA_COMMAND_PANEL_OPEN` is the example: it opens the panel at
 startup in debug builds and seeds demo notifications. Environment variables
 must never alter authentication, authorization, or capture behavior. See
 [Development Environment Variables](environment-variables.md) for the complete
@@ -48,7 +48,7 @@ reference.
 
 When a surface needs parameterized inspection — held states, compositions,
 sizes — build it as a separate binary target in the package, gated by a
-non-default feature (`aegis-lock-preview`, `required-features =
+non-default feature (`tessera-lock-preview`, `required-features =
 ["dev-preview"]`). The production binary compiles no harness code and carries
 no `cfg` branches for it: both binaries are thin hosts over the shared
 library, which is what makes the preview render exactly what production
@@ -75,20 +75,20 @@ path only when a script needs a stable path across many invocations.
 
 ### One Isolation Block
 
-Every nested start of `aegis` uses the same session-scoped isolation block:
+Every nested start of `tessera` uses the same session-scoped isolation block:
 
 ```bash
-mkdir -p /tmp/aegis-dev/aegis
-AEGIS_BACKEND=nested \
-XDG_DATA_HOME=/tmp/aegis-dev \
+mkdir -p /tmp/tessera-dev/tessera
+TESSERA_BACKEND=nested \
+XDG_DATA_HOME=/tmp/tessera-dev \
 XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share \
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```
 
 The fresh data directory keeps the nested instance off the live session's
 exclusive audit journal and application caches. `mkdir -p` is idempotent; the
-recipes below repeat it so each block stands alone. Only one Aegis process can
-own `aegis.sock`: a nested instance started beside a live session logs an
+recipes below repeat it so each block stands alone. Only one Tessera process can
+own `tessera.sock`: a nested instance started beside a live session logs an
 address-in-use warning and runs without IPC.
 
 ## Test the Command Panel
@@ -99,8 +99,8 @@ Panel presentation logic follows the unit-layer rule: pure logic, no GPU or
 live sources. Run the suite:
 
 ```bash
-cargo check --locked -p aegis-command-panel
-cargo nextest run --locked -p aegis-command-panel --lib
+cargo check --locked -p tessera-command-panel
+cargo nextest run --locked -p tessera-command-panel --lib
 ```
 
 The suite covers cluster bounds on small displays, reduced-motion reveal
@@ -121,12 +121,12 @@ Auto-open on startup (zero keystrokes) — the shared isolation block plus one
 toggle, debug builds only:
 
 ```bash
-mkdir -p /tmp/aegis-dev/aegis
-AEGIS_COMMAND_PANEL_OPEN=1 \
-AEGIS_BACKEND=nested \
-XDG_DATA_HOME=/tmp/aegis-dev \
+mkdir -p /tmp/tessera-dev/tessera
+TESSERA_COMMAND_PANEL_OPEN=1 \
+TESSERA_BACKEND=nested \
+XDG_DATA_HOME=/tmp/tessera-dev \
 XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share \
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```
 
 Debug builds seed a few demo notifications so the stream has content without a
@@ -154,19 +154,19 @@ Keep the physical session unlocked. Start the nested compositor with the panel
 auto-opened, then drive the outer session's CLI from another terminal:
 
 ```bash
-windows=$(cargo run --locked -p aegis -- window -j)
+windows=$(cargo run --locked -p tessera -- window -j)
 
 nested_id=$(printf '%s' "$windows" | jq -r \
-  'map(select(.app_id == "aegis" and .title == "aegis")) | last | .id')
+  'map(select(.app_id == "tessera" and .title == "tessera")) | last | .id')
 
 nested_region=$(printf '%s' "$windows" | jq -r \
-  'map(select(.app_id == "aegis" and .title == "aegis")) | last |
+  'map(select(.app_id == "tessera" and .title == "tessera")) | last |
     "\(.position.x),\(.position.y),\(.size.w),\(.size.h)"')
 
-cargo run --locked -p aegis -- window focus "$nested_id"
-cargo run --locked -p aegis -- display capture \
+cargo run --locked -p tessera -- window focus "$nested_id"
+cargo run --locked -p tessera -- display capture \
   --region "$nested_region" \
-  /tmp/aegis-nested-panel.png
+  /tmp/tessera-nested-panel.png
 ```
 
 Focus before capture so the terminal does not raise itself above the target.
@@ -179,20 +179,20 @@ dimensions are the physical-pixel equivalent of the logical region.
 ### Run the Development Preview
 
 The lock preview follows the inspection-harness rule: a development-only
-binary target in the `aegis-lock` package, selected by the non-default
+binary target in the `tessera-lock` package, selected by the non-default
 `dev-preview` feature:
 
 ```bash
-cargo run --locked -p aegis-lock \
+cargo run --locked -p tessera-lock \
   --features dev-preview \
-  --bin aegis-lock-preview -- [OPTIONS]
+  --bin tessera-lock-preview -- [OPTIONS]
 ```
 
 Use `cargo build --locked` with the same package, feature, and target when a
-script needs the stable path `target/debug/aegis-lock-preview`.
+script needs the stable path `target/debug/tessera-lock-preview`.
 
 The Preview creates an ordinary `xdg_toplevel` with app ID
-`dev.aegis.LockPreview`. It uses the production `LockState`, identity loader,
+`dev.tessera.LockPreview`. It uses the production `LockState`, identity loader,
 avatar resources, and renderer, but it never creates an `ext_session_lock_v1`
 object or calls PAM. Enter any nonempty text and press `Enter` to simulate an
 accepted result; press `Escape` to close without submitting. `Backspace` and
@@ -212,17 +212,17 @@ Preview options:
 
 `--password` and `--result` are mutually exclusive. Never pass a real account
 password: command-line arguments may be retained in shell history and visible
-in the process list. The fake value never reaches PAM or Aegis configuration.
+in the process list. The fake value never reaches PAM or Tessera configuration.
 
-The Preview reads `[lock_screen]` from the normal Aegis configuration; the
+The Preview reads `[lock_screen]` from the normal Tessera configuration; the
 options above scope a single process instead of editing that file. For
 translated lock copy, set the process locale:
 
 ```bash
 LC_ALL=zh_CN.UTF-8 \
-cargo run --locked -p aegis-lock \
+cargo run --locked -p tessera-lock \
   --features dev-preview \
-  --bin aegis-lock-preview -- --state unavailable
+  --bin tessera-lock-preview -- --state unavailable
 ```
 
 Interactive submissions retain the checking state briefly so the selected
@@ -251,7 +251,7 @@ shared typography, identity, credential, or status rendering:
   typing, a static verifying line while checking, and zero after rejection —
   and a rejected attempt also updates the stop code in the support block.
 
-Production `aegis-lock` uses the independent `[lock_screen.background]`
+Production `tessera-lock` uses the independent `[lock_screen.background]`
 configuration described in the
 [Configuration Reference](../reference/config.md#lock-screen).
 
@@ -261,19 +261,19 @@ Keep the physical session unlocked. Start the Preview in one terminal, then
 drive the outer session's CLI from another:
 
 ```bash
-windows=$(cargo run --locked -p aegis -- window -j)
+windows=$(cargo run --locked -p tessera -- window -j)
 
 preview_id=$(printf '%s' "$windows" | jq -r \
-  'map(select(.app_id == "dev.aegis.LockPreview")) | last | .id')
+  'map(select(.app_id == "dev.tessera.LockPreview")) | last | .id')
 
 preview_region=$(printf '%s' "$windows" | jq -r \
-  'map(select(.app_id == "dev.aegis.LockPreview")) | last |
+  'map(select(.app_id == "dev.tessera.LockPreview")) | last |
     "\(.position.x),\(.position.y),\(.size.w),\(.size.h)"')
 
-cargo run --locked -p aegis -- window focus "$preview_id"
-cargo run --locked -p aegis -- display capture \
+cargo run --locked -p tessera -- window focus "$preview_id"
+cargo run --locked -p tessera -- display capture \
   --region "$preview_region" \
-  /tmp/aegis-lock-preview.png
+  /tmp/tessera-lock-preview.png
 ```
 
 The capture readiness and HiDPI notes from the panel recipe apply unchanged.
@@ -281,15 +281,15 @@ The capture readiness and HiDPI notes from the panel recipe apply unchanged.
 ### Nested Integration: the Production Lock
 
 Use Preview results only for presentation. Validate session-lock behavior with
-the unmodified production target inside nested Aegis, using the shared
+the unmodified production target inside nested Tessera, using the shared
 isolation block:
 
 ```bash
-mkdir -p /tmp/aegis-dev/aegis
-AEGIS_BACKEND=nested \
-XDG_DATA_HOME=/tmp/aegis-dev \
+mkdir -p /tmp/tessera-dev/tessera
+TESSERA_BACKEND=nested \
+XDG_DATA_HOME=/tmp/tessera-dev \
 XDG_DATA_DIRS=$HOME/.local/share:/usr/local/share:/usr/share \
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```
 
 Copy the inner socket name from the startup log:
@@ -302,16 +302,16 @@ Start the production locker on that socket:
 
 ```bash
 WAYLAND_DISPLAY=wayland-N \
-cargo run --locked -p aegis-lock --bin aegis-lock --no-default-features
+cargo run --locked -p tessera-lock --bin tessera-lock --no-default-features
 ```
 
 The inner compositor is now genuinely locked. The unlocked outer compositor
-can capture the nested Aegis window for review without weakening the inner
+can capture the nested Tessera window for review without weakening the inner
 capture policy.
 
 Enter the account password to test the complete PAM transition. For a visual
 or protocol-only test, stop the entire nested compositor to recover. Do not
-kill only `aegis-lock` after secure confirmation: the inner compositor must
+kill only `tessera-lock` after secure confirmation: the inner compositor must
 retain its fail-closed frame. Follow
 [Nested Backend Development](nested-backend.md) for socket discovery, process
 isolation, and nested-backend limits.
@@ -343,7 +343,7 @@ can only observe. For the full hardware procedure, see
 | Independent lock background or artwork scrim | Preview with `--background`, then start a fresh production lock using `[lock_screen.background]` |
 | Stop-screen (`bsod`) composition | Preview engaged, typing, checking, and rejected states at compact, desktop, and ultra sizes; confirm the keystroke counter and stop code track each state |
 | Avatar image, VRM or animation | Preview initial frame, motion, hot reload and fallback avatar |
-| Credential state machine or authentication feedback | `aegis-lock` unit tests plus Preview submission results |
+| Credential state machine or authentication feedback | `tessera-lock` unit tests plus Preview submission results |
 | Lock-surface lifecycle or input routing | Nested lock, including client exit and outer capture |
 | PAM service or account policy | `pamtester` followed by physical lock and unlock |
 | Capture or ScreenCast policy | Nested policy check followed by physical-session verification |
@@ -356,15 +356,15 @@ logic. Build the production target explicitly in a fresh target directory and
 assert that only it exists:
 
 ```bash
-aegis_prod_target=$(mktemp -d)
+tessera_prod_target=$(mktemp -d)
 cargo build --locked --release \
-  --target-dir "$aegis_prod_target" \
-  -p aegis-lock --bin aegis-lock --no-default-features
+  --target-dir "$tessera_prod_target" \
+  -p tessera-lock --bin tessera-lock --no-default-features
 
-test -x "$aegis_prod_target/release/aegis-lock"
-test ! -e "$aegis_prod_target/release/aegis-lock-preview"
+test -x "$tessera_prod_target/release/tessera-lock"
+test ! -e "$tessera_prod_target/release/tessera-lock-preview"
 ```
 
 Distribution builds must not enable `dev-preview`, and install manifests must
-name `target/release/aegis-lock` explicitly. Do not install binaries through a
-`target/release/aegis-*` wildcard.
+name `target/release/tessera-lock` explicitly. Do not install binaries through a
+`target/release/tessera-*` wildcard.

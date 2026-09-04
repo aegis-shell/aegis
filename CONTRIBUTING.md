@@ -1,6 +1,6 @@
-# Contributing to Aegis
+# Contributing to Tessera
 
-Thank you for your interest in contributing to **aegis** (*autonomous surface shell*)!
+Thank you for your interest in contributing to **tessera** (*autonomous surface shell*)!
 
 ## Quick Orientation
 

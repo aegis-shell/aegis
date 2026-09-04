@@ -1,7 +1,7 @@
 # IPC Reference
 
-The aegis IPC is protocol version 31, carried as length-framed JSON over the
-owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
+The tessera IPC is protocol version 31, carried as length-framed JSON over the
+owner-only Unix socket at `$XDG_RUNTIME_DIR/tessera.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
 payloads use a separate sealed-file-descriptor transfer described under
@@ -183,7 +183,7 @@ durable records, so steady-state audit growth is independent of session
 length.
 
 The live journal is backed by
-`$XDG_DATA_HOME/aegis/audit/events-v2.jsonl` (or the equivalent default data
+`$XDG_DATA_HOME/tessera/audit/events-v2.jsonl` (or the equivalent default data
 directory). The owner-only append store synchronizes successful writes and
 verifies monotonic sequence numbers, record bounds, and a SHA-256 hash chain.
 An owner-only local key authenticates an atomic replay checkpoint at
@@ -211,7 +211,7 @@ authorization refusals are persisted before their IPC response is returned.
 An append, flush, or sync failure fail-stops the entire compositor, including
 when detected on a connection worker.
 
-Aegis never deletes or silently rotates this authority history. Before each
+Tessera never deletes or silently rotates this authority history. Before each
 append it enforces the `[audit]` hard history ceiling (2048 MiB by default)
 and filesystem reserve (512 MiB by default). When the active stream reaches
 `[audit] segment_max_mib` it is sealed into a compressed immutable segment;
@@ -219,7 +219,7 @@ an HMAC-authenticated manifest records every sealed segment's chain
 identity, and startup verifies each segment against it
 ([ADR-0137](../adr/0137-audit-segment-manifest-and-retention.md)).
 Retention is explicit: pruning requires a configured `retain_segments`
-plus an export acknowledgement recorded by `aegis audit export`, and every
+plus an export acknowledgement recorded by `tessera audit export`, and every
 removal is preserved in the manifest's pruned history. Production
 deployments must monitor those bounds and provide an operator-controlled,
 lossless archive/export policy; archival must preserve complete records,
@@ -347,7 +347,7 @@ chrome and external IPC clients:
 | `SetBluetooth` | `enabled` | Unblock or block Bluetooth radios. |
 | `SetDoNotDisturb` | `enabled` | Change notification suppression. |
 | `SetTiling` | `enabled` | Set the current workspace layout mode. |
-| `SetOutputPower` | `powered` | Power all physical outputs on or off. Power-off is accepted only after a secure lock frame is confirmed; wake is always safe. Used by `aegis-idle`. |
+| `SetOutputPower` | `powered` | Power all physical outputs on or off. Power-off is accepted only after a secure lock frame is confirmed; wake is always safe. Used by `tessera-idle`. |
 | `SetIdleInhibit` | `inhibit` | Legacy single-bit shape (ADR-0140): maps onto the session power mode — `true` selects `awake`, `false` selects `balanced`. |
 | `SetPowerMode` | `mode` | Select the session power mode (`balanced`, `awake`, `secure`; ADR-0140): which idle stages stay armed. Session runtime state, not persisted; manual locking and lock-before-sleep are unaffected. |
 
@@ -578,10 +578,10 @@ description and bounded value, application id, Interaction Domain-output
 bounds, target-local extent, state, declared actions, and content revision.
 The compositor does not infer semantic nodes from pixels.
 
-In a production direct session, the compositor supervises `aegis-atspi` as a
+In a production direct session, the compositor supervises `tessera-atspi` as a
 separate process with a compositor-lifetime principal. Its credential crosses
 an inherited stdin pipe, not argv, environment, or disk. The adapter maps
-AT-SPI trees into complete bounded revisions; `aegis-semantic` rejects an
+AT-SPI trees into complete bounded revisions; `tessera-semantic` rejects an
 invalid graph, oversized text/tree, escaping geometry, stale revision, or
 provider takeover. Nested sessions do not attach to the host AT-SPI bus,
 because that could confuse outer-desktop objects with inner windows. The
@@ -651,7 +651,7 @@ checks. GPU readback and PNG encoding therefore do not consume the advertised
 
 ## Capture
 
-aegis exposes pixel capture through fail-closed operations that share one
+tessera exposes pixel capture through fail-closed operations that share one
 same-frame presentation readback path (ADR-0037), plus per-window offscreen
 capture. All are refused while the
 session is locked or the seat is inactive. The request copies the exact frame
@@ -660,7 +660,7 @@ change the detached snapshot. Captures include the overview grid while
 overview mode is active.
 
 `Command::Screenshot { path, region }` is a journaled `control` command that writes
-the focused output as a PNG file; `aegis display capture` is its reference
+the focused output as a PNG file; `tessera display capture` is its reference
 frontend. `Request::CaptureOutput` is a synchronous query returning
 `Response::CaptureOutput { width, height, png_bytes }` followed by one sealed
 PNG `memfd` transferred with `SCM_RIGHTS`. The request requires the `control`
@@ -878,19 +878,19 @@ executable allowlist, or the claim is refused with
 `scope 'X' is not available to this process` and journaled as a
 `ScopeClaim` refusal; an unreadable identity fails closed. The same match
 governs the `[agent] lockdown` exemption, so the exemption can never be
-name-only. Compiled-in allowlists map `aegis-portal` to
-`xdg-desktop-portal-aegis` and the admin scopes to the `aegis` CLI in the
+name-only. Compiled-in allowlists map `atrium-portal` to
+`xdg-desktop-portal-atrium` and the admin scopes to the `tessera` CLI in the
 usual install prefixes; the additive `[ipc.scope_executables]` config
 table replaces them per scope (see the
 [configuration reference](config.md#ipc)). Anonymous connections and
 paired agents are unaffected: peer identity binds platform components,
 never agents (ADR-0088).
 
-Native `aegis` commands use separate `aegis-owner-admin`,
-`aegis-interaction-domain-admin`, and `aegis-agent-admin` scopes for ordinary
+Native `tessera` commands use separate `tessera-owner-admin`,
+`tessera-interaction-domain-admin`, and `tessera-agent-admin` scopes for ordinary
 owner mutations, Interaction Domain recovery, and agent-registry administration.
 
-`xdg-desktop-portal-aegis` uses the built-in owner-only `aegis-portal`
+`xdg-desktop-portal-atrium` uses the built-in owner-only `atrium-portal`
 scope, which grants exactly these operations: `CaptureOutput` for Screenshot,
 `StreamOutput` for ScreenCast, `IdleInhibit` for Inhibit, `PickTarget` for
 user-confirmed Screenshot and ScreenCast selection, `PickApp` for AppChooser,
@@ -909,7 +909,7 @@ allowlists.
 
 Protocol 20 removes the former `PickFile` request, response, types, and scope
 operation. FileChooser and its path data now stay inside the independent
-portal package; Aegis participates only through xdg-foreign-v2 window
+portal package; Tessera participates only through xdg-foreign-v2 window
 parenting.
 
 Protocol 21 separates authenticated Actor observation families, filters query
@@ -920,7 +920,7 @@ records authenticated Actor origins, and rejects unguarded Interaction Domain in
 Protocol 22 adopts the `InteractionDomain`, `ActorCapability`,
 `AuthorizationDecision`, and `ConnectionCapabilities` vocabulary and moves
 capability and observation-transaction policy into the authority module of
-`aegis-security`. It is a major-version boundary; older clients are refused
+`tessera-security`. It is a major-version boundary; older clients are refused
 at `Hello`.
 
 Protocol 23 adds explicit Actor sessions, dynamic exact-resource grants, and
@@ -979,5 +979,5 @@ Principal and grant management requires the agent-admin scope (plus
 | `RevokeAgentGrant { principal, op }` | `Ok` | Drop one recorded grant; the next use asks again. |
 
 See the [Configuration Reference](config.md#agent-authorization) for the
-`[agent]` policy table, and the [aegis-mcp Bridge Reference](aegis-mcp.md)
+`[agent]` policy table, and the [tessera-mcp Bridge Reference](tessera-mcp.md)
 for the agent-side contract.

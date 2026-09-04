@@ -2,7 +2,7 @@
 
 Status: **Partial**.
 
-Aegis-owned UI targets Web Content Accessibility Guidelines (WCAG) 2.2 level
+Tessera-owned UI targets Web Content Accessibility Guidelines (WCAG) 2.2 level
 AA where its criteria apply to desktop software. WCAG 2.1 AA remains the
 compatibility floor. Platform semantics, keyboard access, screen-reader
 behavior, and reduced motion are part of the same contract.
@@ -46,7 +46,7 @@ Interactive elements expose role, accessible name, state, value, and action.
 Dynamic errors and status changes are announced without stealing focus.
 Password and secret text is never published through semantic observation.
 
-Aegis has an out-of-process AT-SPI adapter for validated application
+Tessera has an out-of-process AT-SPI adapter for validated application
 accessibility trees and actions. Complete screen-reader exposure for every
 compositor-owned chrome component remains incomplete and is part of this
 guideline's adoption work.

@@ -2,14 +2,14 @@
 
 Status: **Partial**.
 
-Aegis is a Linux Wayland desktop and compositor. Linux desktop behavior is
+Tessera is a Linux Wayland desktop and compositor. Linux desktop behavior is
 the only shipped native platform baseline. Windows, macOS, and mobile
 conventions are comparison inputs for portable applications, not promises
-that the Aegis shell runs on those platforms.
+that the Tessera shell runs on those platforms.
 
 ## Platform baseline
 
-| Concern | Aegis contract |
+| Concern | Tessera contract |
 |--------|----------------|
 | Windowing | Wayland compositor authority, XWayland compatibility where supported |
 | Accessibility | Linux AT-SPI integration with compositor-owned semantic boundaries |
@@ -23,7 +23,7 @@ that the Aegis shell runs on those platforms.
 
 Portable first-party applications preserve the task and information
 architecture while adapting control conventions to their host. They do not
-copy another platform's visual chrome into the Aegis shell.
+copy another platform's visual chrome into the Tessera shell.
 
 | Host context | Adaptation rule |
 |-------------|-----------------|

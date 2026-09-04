@@ -60,9 +60,9 @@ closes Prism.
 ## Start or Focus an Application
 
 1. Select an application in the Dock, launcher, or Prism.
-2. If the application has a running window, wait for aegis to focus and raise
+2. If the application has a running window, wait for tessera to focus and raise
    that window.
-3. If the application is not running, wait for aegis to start it.
+3. If the application is not running, wait for tessera to start it.
 
 Use the application menu when an application has several windows and you
 need to choose one explicitly.

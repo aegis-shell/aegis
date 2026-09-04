@@ -3,7 +3,7 @@
 Status: **Partial**.
 
 Primitive components are the smallest interactive or presentational units in
-the product system. Generic mechanics belong in Optics `lens`; Aegis adds
+the product system. Generic mechanics belong in Optics `lens`; Tessera adds
 semantic themes, product roles, and composition only when multiple product
 surfaces need the same contract.
 
@@ -11,14 +11,14 @@ surfaces need the same contract.
 
 | Primitive | Current state | Shared owner |
 |-----------|---------------|--------------|
-| Button | Generic widget exists; dialog action-button composition is shared | `lens`, then `aegis-ui::dialog` |
+| Button | Generic widget exists; dialog action-button composition is shared | `lens`, then `tessera-ui::dialog` |
 | Text input | Generic widget and bounded product buffers exist; product variants are not cataloged | `lens`, then the owning flow |
 | Checkbox and switch | Generic widgets are used in settings; state matrix is not yet documented centrally | `lens` |
-| Slider | Shared theme roles exist; labeling and validation remain flow-owned | `lens` and `aegis-design` |
+| Slider | Shared theme roles exist; labeling and validation remain flow-owned | `lens` and `tessera-design` |
 | Tooltip | Glass material role exists; trigger, delay, and dismissal are not centralized | Owning chrome component |
 | Icon view | Application icon loading and vector drawing exist; no single product wrapper exists | Asset resolver and `lens` |
 
-This inventory does not require Aegis wrappers around every `lens` widget.
+This inventory does not require Tessera wrappers around every `lens` widget.
 A wrapper is justified only by repeated product anatomy or behavior.
 
 ## Required state contract
@@ -61,7 +61,7 @@ meet the accessibility target documented in
 
 ## Adoption work
 
-- Build a state catalog for the generic primitives used by Aegis.
+- Build a state catalog for the generic primitives used by Tessera.
 - Centralize tooltip trigger and dismissal behavior after current consumers
   are inventoried.
 - Define icon-size and focus-indicator roles.

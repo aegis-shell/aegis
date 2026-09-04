@@ -1,0 +1,10 @@
+# Local-only fixtures; keep the source files out of Git.
+# Expected model: avatar.vrm. Motions may use the legacy avatar.vrma or the
+# motions/{idle,actions} library layout.
+# Enable with TESSERA_AVATAR_DEBUG_ASSETS=1. Set
+# TESSERA_AVATAR_DEBUG_DUMP=/tmp/tessera-avatar.png to save one preview frame.
+# TESSERA_AVATAR_DEBUG_MOTION=greeting selects a named library motion.
+# TESSERA_AVATAR_DEBUG_TIME=2.5 selects the sampled animation time in seconds.
+*
+!.gitignore
+!README.md

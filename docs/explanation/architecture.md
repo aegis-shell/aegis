@@ -1,6 +1,6 @@
 # Architecture
 
-aegis is a Wayland compositor for Linux, written in Rust. It composites
+tessera is a Wayland compositor for Linux, written in Rust. It composites
 client windows and draws its own shell chrome through
 [flux](https://github.com/ming2k/optics/tree/main/libs/flux), a Vulkan-first
 rendering engine, and
@@ -14,62 +14,62 @@ the structure, see the [Architecture Decision Records](../adr/index.md).
 
 ## Responsibility Boundary
 
-aegis owns the server and platform halves of a compositor; flux and lens
+tessera owns the server and platform halves of a compositor; flux and lens
 own rendering and UI. The split is fixed in
 [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
 
 | Concern | Owner |
 |---------|-------|
-| Wayland server protocol, globals, object lifecycle | aegis |
-| Input, output, session and seat management | aegis |
-| Window management, surface and scene model, focus | aegis |
+| Wayland server protocol, globals, object lifecycle | tessera |
+| Input, output, session and seat management | tessera |
+| Window management, surface and scene model, focus | tessera |
 | GPU rendering, client buffer import as textures | flux |
 | Compositor chrome (panels, overview, notifications) | lens |
 
 flux is a client-side renderer: it presents into a caller-supplied
 `VkSurfaceKHR` and has no windowing code. lens consumes input as a data
-snapshot and emits draw calls. aegis supplies both the surface and the
+snapshot and emits draw calls. tessera supplies both the surface and the
 input.
 
 ## Crate Layout
 
-aegis is a Cargo workspace under `crates/`. The split keeps the server,
+tessera is a Cargo workspace under `crates/`. The split keeps the server,
 backend, renderer, and shell behind clear seams so the
 [AI-adaptation phase](#roadmap) can grow a semantic model from
-`aegis-model`. The crates group by responsibility:
+`tessera-model`. The crates group by responsibility:
 
 | Role | Crate | Responsibility |
 |------|-------|----------------|
-| **Model** | `aegis-model` | Backend-, protocol-, and renderer-agnostic state plus deterministic model rules |
-| | `aegis-security` | Transport-neutral Actor authority plus bounded, integrity-checked audit persistence |
-| | `aegis-semantic` | Bounded accessibility-tree validation, window-local identity namespacing, provider ownership, and semantic action routing |
-| | `aegis-wayland-protocols` | Wayland extension interface tables, generated once and shared |
-| **Server / window management** | `aegis-compositor` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Interaction Domain seats and outputs, focus, authority transfer, tiling, and workspaces |
-| | `aegis-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
-| | `aegis-render` | Compositing: client buffers to flux textures, scene to the output via flux |
-| **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, shared components, and the feature-gated `persona` profile/portrait domain |
-| | `aegis-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
-| | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
-| | `aegis-settings` | Settings module library: module contract, registry, and built-in pages hosted by the command panel |
-| | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
-| | `aegis-command-panel` | Full-screen modal command panel: the display-and-control surface for desktop-computer behavior (quick settings, hosted settings modules, tray activation, notification dismissal) — scoped by [ADR-0115](../adr/0115-command-panel-desktop-behavior-scope.md) |
-| | `aegis-wallpaper` | Background layer: image, video, 3D, and multi-plane parallax wallpaper |
-| | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
-| **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
-| | `aegis-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |
-| | `aegis-atspi` | Supervised out-of-process AT-SPI tree and semantic-action adapter with a session-only system principal |
-| **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
-| | `aegis-launcher` | Ordinary app detachment and fail-closed Interaction Domain namespace/cgroup launch |
-| | `aegis-ipc` | Native capability broker contract: versioned identity, scopes, leases, Interaction Domain authority, sealed capture transport, and introspection over a Unix socket |
-| | `aegis-ipc-client` | Rich client library for the capability broker: pairing discipline, credential policies, state recovery, and observation leases for out-of-process consumers (ADR-0125) |
-| | `aegis-commands` | Domain-oriented parser and IPC dispatcher behind native `aegis` management commands |
-| **AI integration** | `aegis-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Interaction Domain per connector instance (ADR-0090) |
+| **Model** | `tessera-model` | Backend-, protocol-, and renderer-agnostic state plus deterministic model rules |
+| | `tessera-security` | Transport-neutral Actor authority plus bounded, integrity-checked audit persistence |
+| | `tessera-semantic` | Bounded accessibility-tree validation, window-local identity namespacing, provider ownership, and semantic action routing |
+| | `tessera-wayland-protocols` | Wayland extension interface tables, generated once and shared |
+| **Server / window management** | `tessera-compositor` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Interaction Domain seats and outputs, focus, authority transfer, tiling, and workspaces |
+| | `tessera-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
+| | `tessera-render` | Compositing: client buffers to flux textures, scene to the output via flux |
+| **Shell / interaction** | `tessera-shell` | Compositor chrome host and `Chrome` contract on lens, shared components, and the feature-gated `persona` profile/portrait domain |
+| | `tessera-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
+| | `tessera-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
+| | `tessera-settings` | Settings module library: module contract, registry, and built-in pages hosted by the command panel |
+| | `tessera-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
+| | `tessera-command-panel` | Full-screen modal command panel: the display-and-control surface for desktop-computer behavior (quick settings, hosted settings modules, tray activation, notification dismissal) — scoped by [ADR-0115](../adr/0115-command-panel-desktop-behavior-scope.md) |
+| | `tessera-wallpaper` | Background layer: image, video, 3D, and multi-plane parallax wallpaper |
+| | `tessera-config` | Declarative configuration: versioned TOML schema, loader, live reload |
+| **Session services** | `tessera-lock` | Multi-output session-lock presentation and PAM authentication |
+| | `tessera-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |
+| | `tessera-atspi` | Supervised out-of-process AT-SPI tree and semantic-action adapter with a session-only system principal |
+| **Convenience channels** | `tessera-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
+| | `tessera-launcher` | Ordinary app detachment and fail-closed Interaction Domain namespace/cgroup launch |
+| | `tessera-ipc` | Native capability broker contract: versioned identity, scopes, leases, Interaction Domain authority, sealed capture transport, and introspection over a Unix socket |
+| | `tessera-ipc-client` | Rich client library for the capability broker: pairing discipline, credential policies, state recovery, and observation leases for out-of-process consumers (ADR-0125) |
+| | `tessera-commands` | Domain-oriented parser and IPC dispatcher behind native `tessera` management commands |
+| **AI integration** | `tessera-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Interaction Domain per connector instance (ADR-0090) |
 
-| **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
+| **Binary** | `tessera` | The binary: wires the parts together and runs the event loop |
 
 The optional xdg-desktop-portal backend is developed in the independent
-[xdg-desktop-portal-aegis repository](https://github.com/aegis-shell/xdg-desktop-portal-aegis).
-It remains an explicitly version-pinned Aegis companion because its scoped
+[xdg-desktop-portal-atrium repository](https://github.com/aegis-shell/xdg-desktop-portal-atrium).
+It remains an explicitly version-pinned Tessera companion because its scoped
 IPC mechanisms move with the compositor, while its D-Bus, PipeWire,
 encrypted-secret, and PAM dependencies evolve outside the core source
 workspace. See
@@ -100,14 +100,14 @@ Wayland compositor
         └── storage/network: isolated sandbox + grant-consuming brokers
 ```
 
-`aegis-model` owns durable semantic and Interaction Domain models;
-`aegis-security` owns Actor sessions, capabilities, resource grants,
+`tessera-model` owns durable semantic and Interaction Domain models;
+`tessera-security` owns Actor sessions, capabilities, resource grants,
 observation leases, transaction preconditions, and integrity-checked audit
-persistence; `aegis-semantic` validates
-untrusted application accessibility trees; `aegis-ipc` carries those
-contracts; and `aegis-compositor` derives the view and routes each independent
+persistence; `tessera-semantic` validates
+untrusted application accessibility trees; `tessera-ipc` carries those
+contracts; and `tessera-compositor` derives the view and routes each independent
 seat. The binary runtime assembles and revokes the live facets, while the
-security audit module persists privacy-minimized decisions. `aegis-atspi`
+security audit module persists privacy-minimized decisions. `tessera-atspi`
 performs D-Bus/toolkit work outside the compositor and rechecks target state
 immediately before dispatch. It binds AT-SPI applications to Wayland windows
 by equal kernel/D-Bus process identity plus an exact title; ordinary observers
@@ -128,33 +128,33 @@ The crate names are *mechanism-oriented*, which can make the product roles
 hard to read at a glance. For the most common "I want to change what the
 user sees or can do" tasks:
 
-- **"Manage windows"** (focus, close, move, tile, workspace) → `aegis-compositor`.
-- **"Change the chrome / interactions"** (dock, launcher, HUD, panel) → `aegis-shell`
+- **"Manage windows"** (focus, close, move, tile, workspace) → `tessera-compositor`.
+- **"Change the chrome / interactions"** (dock, launcher, HUD, panel) → `tessera-shell`
   for the host and contract; the HUD and command panel live in the
-  `aegis-hud` and `aegis-command-panel` component crates. The command panel
+  `tessera-hud` and `tessera-command-panel` component crates. The command panel
   is scoped to desktop-computer behavior — the user's computer, not
   compositor internals
   ([ADR-0115](../adr/0115-command-panel-desktop-behavior-scope.md)) — and
   owns live-system controls, the display-only Agent Workspaces status row,
-  and the persistent settings pages hosted from the `aegis-settings`
+  and the persistent settings pages hosted from the `tessera-settings`
   module library
   ([ADR-0114](../adr/0114-panel-hosted-settings-and-hud-command-panel.md),
   [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
-- **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
-  native `aegis` resource commands; agents consume that same IPC through the
-  `aegis-mcp` bridge
+- **"Add an external control path"** (CLI or scripts) → `tessera-ipc` +
+  native `tessera` resource commands; agents consume that same IPC through the
+  `tessera-mcp` bridge
   without entering the compositor process
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-  [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)). The
+  [ADR-0087](../adr/0087-tessera-mcp-standalone-platform-bridge-crate.md)). The
   command panel's Agent Workspaces status row reports generic Interaction Domain
   authority; it does not infer any external agent's process state
   ([ADR-0074](../adr/0074-generic-agent-workspaces-status-surface.md)).
-- **"Start or discover apps"** → `aegis-desktop-entries` (discovery) + `aegis-launcher`
-  (spawn). `aegis-launcher` is intentionally narrow: process detachment and
+- **"Start or discover apps"** → `tessera-desktop-entries` (discovery) + `tessera-launcher`
+  (spawn). `tessera-launcher` is intentionally narrow: process detachment and
   environment, not window management.
-- **"Lock or handle inactivity"** → `aegis-lock` owns presentation and
-  authentication, while `aegis-idle` owns staged policy. The compositor
+- **"Lock or handle inactivity"** → `tessera-lock` owns presentation and
+  authentication, while `tessera-idle` owns staged policy. The compositor
   retains protocol, input, inhibitor, output-power, and fail-closed authority
   ([ADR-0078](../adr/0078-out-of-process-idle-and-session-lock.md)).
 
@@ -172,7 +172,7 @@ A module owns one visible settings domain and its draft editor state. It does
 not own the configuration file or the host service. This distinction keeps
 the module catalog broad without pretending all settings belong to the
 compositor: account modules use system account and authorization services.
-The power module persists Aegis inactivity policy, while the supervised
+The power module persists Tessera inactivity policy, while the supervised
 policy client coordinates the host's backlight and logind services.
 Compositor-owned display/input policy uses the same commit path whether the
 edit arrives from the panel or from an external IPC client.
@@ -182,7 +182,7 @@ immediate service or session controls rather than persistent settings. The
 command panel presents them on its System tab, external clients use the
 live-system IPC, and both paths converge on one runtime handler. Interaction
 Domain lifecycle is authority management rather than configuration and is
-managed through the `aegis interaction-domain *` CLI and the
+managed through the `tessera interaction-domain *` CLI and the
 `interaction_domain_*` MCP tools. The command panel is the canonical
 persistent-settings UI. See
 [ADR-0114](../adr/0114-panel-hosted-settings-and-hud-command-panel.md),
@@ -221,7 +221,7 @@ power, and suspend to the outer desktop. See
 ## Backend Abstraction
 
 A backend owns the presentation target and the raw input stream. The
-nested backend runs aegis as a client of an existing Wayland session and
+nested backend runs tessera as a client of an existing Wayland session and
 presents into a host window; the DRM/KMS backend drives the display
 hardware directly with libinput input and libseat session ownership. Both
 implement one `Backend` trait so the server, renderer, and shell are written
@@ -276,7 +276,7 @@ instance.
 
 The cursor plane is the one KMS plane whose contents do not depend on the
 composited scene, so pointer motion must not queue behind primary-plane
-work. Aegis issues cursor updates through a dedicated cursor-only atomic
+work. Tessera issues cursor updates through a dedicated cursor-only atomic
 commit that touches no primary-plane property and requests no page-flip
 event; KMS executes commits from one file description in submission order,
 and the request restates the complete cursor-plane state, so consecutive
@@ -341,7 +341,7 @@ compositor-owned payloads use the standard Wayland data-device path; an
 interactive screenshot may publish PNG and file-URI representations to the
 physical seat without affecting an agent Interaction Domain.
 
-aegis deliberately does not advertise the X11-style Primary Selection. In this
+tessera deliberately does not advertise the X11-style Primary Selection. In this
 interaction model, publishing text merely because it was highlighted is an
 implicit global side effect and a duplicate clipboard channel. Capability
 absence is reported honestly through the Wayland registry rather than through
@@ -402,8 +402,8 @@ dependencies. Each is placed by responsibility per
 | Import client dmabuf as a texture | flux | dmabuf import API ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)) |
 | Render target not tied to `VkSurfaceKHR` presentation (for DRM/KMS) | flux | Offscreen dma-buf render path (`flux::Surface::offscreen_dmabuf` + export) |
 | Rust bindings to flux and lens | bindings | `flux-rs` / `lens-rs` crates ([ADR-0023](../adr/0023-split-flux-lens-stack.md)) |
-| Reusable-buffer acquire synchronization and release | flux and aegis | Aegis transports each commit's acquire fence; Flux waits it per frame on cached imports; direct scanout uses KMS fences ([ADR-0076](../adr/0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md)) |
-| Wayland server, DRM/KMS, libinput, seat and session | aegis | Implemented in aegis ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md)) |
+| Reusable-buffer acquire synchronization and release | flux and tessera | Tessera transports each commit's acquire fence; Flux waits it per frame on cached imports; direct scanout uses KMS fences ([ADR-0076](../adr/0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md)) |
+| Wayland server, DRM/KMS, libinput, seat and session | tessera | Implemented in tessera ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md)) |
 
 flux does not auto-enable `VK_KHR_swapchain`; the nested backend requests it
 explicitly, with the `VK_KHR_surface` and `VK_KHR_wayland_surface` instance
@@ -416,7 +416,7 @@ DRM/KMS backend, configuration and IPC, workspaces and layout, multi-output,
 polish, and the agent phase — lives in
 [Roadmap](roadmap.md). XWayland is descoped from the supported
 configuration. The product direction behind it is
-[Vision and Scope](vision.md), and the systems aegis borrows from are surveyed
+[Vision and Scope](vision.md), and the systems tessera borrows from are surveyed
 in [Comparative Survey](comparative-survey.md).
 
 The summary table has been retired: it duplicated the

@@ -1,0 +1,33 @@
+[package]
+name = "tessera-config"
+description = "Declarative configuration for tessera: versioned TOML schema, loader, live reload"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Pure: no flux, lens, or Wayland dependency. The schema is shared types from
+# `tessera-model` (Mods, Keybind, Keymap, and the name resolvers), so configuration
+# stays unit-testable in isolation — mirroring `tessera-model::keybind`. ADR-0026.
+tessera-model = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+toml = { workspace = true }
+# Preserving edits to the user-editable TOML file (e.g. dock pins). Kept on
+# the same 0.25 line as the rest of the workspace TOML stack (toml 1.x) so
+# only one parser copy is compiled.
+toml_edit = "0.25"
+# `$XDG_CONFIG_HOME` / `~/.config` resolution for the default config path.
+# Already a workspace dependency (tessera-desktop-entries uses it for XDG data dirs).
+dirs = { workspace = true }
+libc.workspace = true
+
+# Typed errors without handwritten Display/From impls (matches tessera-shell).
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

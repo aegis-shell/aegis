@@ -49,18 +49,18 @@ jobs:
       - name: Clippy (flux-free crates)
         run: >-
           cargo clippy --locked
-          -p aegis-model -p aegis-security -p aegis-semantic
-          -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-commands -p aegis-mcp -p aegis-idle
-          -p aegis-atspi -p aegis-wayland-protocols -p aegis-compositor
+          -p tessera-model -p tessera-security -p tessera-semantic
+          -p tessera-config -p tessera-ipc -p tessera-desktop-entries
+          -p tessera-launcher -p tessera-commands -p tessera-mcp -p tessera-idle
+          -p tessera-atspi -p tessera-wayland-protocols -p tessera-compositor
           --all-targets -- -D warnings
       - name: Doc check (flux-free crates)
         run: >-
           cargo doc --locked --no-deps
-          -p aegis-model -p aegis-security -p aegis-semantic
-          -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-commands -p aegis-mcp -p aegis-idle
-          -p aegis-atspi -p aegis-wayland-protocols -p aegis-compositor
+          -p tessera-model -p tessera-security -p tessera-semantic
+          -p tessera-config -p tessera-ipc -p tessera-desktop-entries
+          -p tessera-launcher -p tessera-commands -p tessera-mcp -p tessera-idle
+          -p tessera-atspi -p tessera-wayland-protocols -p tessera-compositor
 
   flux-free-tests:
     runs-on: ubuntu-24.04
@@ -81,12 +81,12 @@ jobs:
       - name: Test flux-free crates
         run: >-
           cargo nextest run --profile ci --locked
-          -p aegis-model -p aegis-security -p aegis-semantic
-          -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-commands -p aegis-mcp -p aegis-idle
-          -p aegis-atspi -p aegis-compositor
-      - name: Build aegis-wayland-protocols
-        run: cargo build --locked -p aegis-wayland-protocols
+          -p tessera-model -p tessera-security -p tessera-semantic
+          -p tessera-config -p tessera-ipc -p tessera-desktop-entries
+          -p tessera-launcher -p tessera-commands -p tessera-mcp -p tessera-idle
+          -p tessera-atspi -p tessera-compositor
+      - name: Build tessera-wayland-protocols
+        run: cargo build --locked -p tessera-wayland-protocols
 
   # Exercise the downstream contract: Rust bindings come from the locked
   # optics Git source, while native libraries come from a system install.
@@ -137,10 +137,10 @@ jobs:
           cargo test --doc --locked --workspace
       - name: Check selective chrome builds
         run: |
-          cargo check --locked -p aegis --no-default-features
-          cargo check --locked -p aegis --no-default-features --features chrome-hud
-          cargo check --locked -p aegis --no-default-features --features chrome-command-panel
-          cargo check --locked -p aegis --no-default-features \
+          cargo check --locked -p tessera --no-default-features
+          cargo check --locked -p tessera --no-default-features --features chrome-hud
+          cargo check --locked -p tessera --no-default-features --features chrome-command-panel
+          cargo check --locked -p tessera --no-default-features \
             --features chrome-dock,chrome-prism
       - name: Build release binaries
         run: cargo build --locked --release --workspace

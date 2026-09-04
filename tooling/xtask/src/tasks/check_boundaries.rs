@@ -30,7 +30,7 @@ pub fn run_check_boundaries(_args: CheckBoundariesArgs) -> Result<()> {
                 let mut internal = HashSet::new();
                 if let Some(deps) = toml.get("dependencies").and_then(|d| d.as_table()) {
                     for (dep_name, _) in deps {
-                        if dep_name == "aegis" || dep_name.starts_with("aegis-") {
+                        if dep_name == "tessera" || dep_name.starts_with("tessera-") {
                             internal.insert(dep_name.clone());
                         }
                     }
@@ -41,25 +41,25 @@ pub fn run_check_boundaries(_args: CheckBoundariesArgs) -> Result<()> {
     }
 
     let rules: Vec<(&str, &[&str])> = vec![
-        ("aegis-model", &[]),
-        ("aegis-wayland-protocols", &[]),
-        ("aegis-security", &["aegis-model"]),
-        ("aegis-semantic", &["aegis-model"]),
-        ("aegis-config", &["aegis-model"]),
+        ("tessera-model", &[]),
+        ("tessera-wayland-protocols", &[]),
+        ("tessera-security", &["tessera-model"]),
+        ("tessera-semantic", &["tessera-model"]),
+        ("tessera-config", &["tessera-model"]),
         (
-            "aegis-ipc",
-            &["aegis-model", "aegis-security", "aegis-semantic"],
+            "tessera-ipc",
+            &["tessera-model", "tessera-security", "tessera-semantic"],
         ),
-        ("aegis-ipc-client", &["aegis-model", "aegis-ipc"]),
+        ("tessera-ipc-client", &["tessera-model", "tessera-ipc"]),
         (
-            "aegis-commands",
-            &["aegis-model", "aegis-config", "aegis-ipc", "aegis-security"],
+            "tessera-commands",
+            &["tessera-model", "tessera-config", "tessera-ipc", "tessera-security"],
         ),
-        ("aegis-backend", &["aegis-model", "aegis-wayland-protocols"]),
-        ("aegis-render", &["aegis-model"]),
+        ("tessera-backend", &["tessera-model", "tessera-wayland-protocols"]),
+        ("tessera-render", &["tessera-model"]),
         (
-            "aegis-compositor",
-            &["aegis-model", "aegis-semantic", "aegis-wayland-protocols"],
+            "tessera-compositor",
+            &["tessera-model", "tessera-semantic", "tessera-wayland-protocols"],
         ),
     ];
 

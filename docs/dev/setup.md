@@ -1,6 +1,6 @@
 # Setup
 
-How to build and run aegis for development.
+How to build and run tessera for development.
 
 ## Prerequisites
 
@@ -17,17 +17,17 @@ How to build and run aegis for development.
 
 ## Choose your workflow
 
-Aegis development splits into two roles. Pick the row that describes you;
+Tessera development splits into two roles. Pick the row that describes you;
 everything below this table follows from it.
 
 | You are… | Workflow | Why |
 |----------|----------|-----|
-| **Contributing to Aegis only** | [Canonical workflow](#canonical-workflow-contributor) | You never touch Optics, so the locked `v<OPTICS_VERSION>` bindings and the system-installed native libraries are all you need. No sibling checkout, no Cargo patch. |
-| **Maintaining Aegis and Optics together** | [Local workflow](#local-workflow-dual-maintainer) | You isolate the live sibling Optics patch, lockfile, and target directory in a linked Aegis worktree. |
+| **Contributing to Tessera only** | [Canonical workflow](#canonical-workflow-contributor) | You never touch Optics, so the locked `v<OPTICS_VERSION>` bindings and the system-installed native libraries are all you need. No sibling checkout, no Cargo patch. |
+| **Maintaining Tessera and Optics together** | [Local workflow](#local-workflow-dual-maintainer) | You isolate the live sibling Optics patch, lockfile, and target directory in a linked Tessera worktree. |
 
 ### How the two roles differ
 
-Aegis deliberately keeps Rust source selection separate from native library
+Tessera deliberately keeps Rust source selection separate from native library
 discovery. That separation is what makes both roles coexist on the same
 checkout without one forcing its setup on the other:
 
@@ -42,19 +42,19 @@ checkout without one forcing its setup on the other:
 
 The root `Cargo.toml` always records the canonical Git dependencies.
 `.cargo/optics-local.toml` is an explicit, opt-in development override, so an
-independent Aegis checkout never requires a sibling repository. Distribution
+independent Tessera checkout never requires a sibling repository. Distribution
 packaging and CI always use the canonical workflow; see
 [Distribution Packaging](packaging.md).
 
 ### Local workflow (dual maintainer)
 
-For maintainers who edit Aegis and Optics together. Keep the primary Aegis
+For maintainers who edit Tessera and Optics together. Keep the primary Tessera
 worktree in canonical mode and create one long-lived linked development
 worktree:
 
 ```bash
-git worktree add -b dev ../aegis-dev main
-cd ../aegis-dev
+git worktree add -b dev ../tessera-dev main
+cd ../tessera-dev
 cp .cargo/optics-local.toml .cargo/config.toml
 git config core.hooksPath .githooks
 ```
@@ -94,22 +94,22 @@ Resolve the patched graph once without `--locked`, then use locked commands
 until an Optics manifest changes:
 
 ```bash
-cargo check -p aegis
+cargo check -p tessera
 cargo check --locked --workspace
 cargo test --locked --workspace
 ```
 
 The local lockfile and target directory remain inside the linked worktree.
 Follow
-[Aegis and Optics Cross-Repository Development](cross-repository-development.md)
+[Tessera and Optics Cross-Repository Development](cross-repository-development.md)
 for daily commits, rebases, release promotion, and merging `dev` into
 `main`.
 
 ### Canonical workflow (contributor)
 
-For everyone contributing to Aegis only. You do **not** need a sibling
+For everyone contributing to Tessera only. You do **not** need a sibling
 `optics` checkout. Build the matching Optics `<OPTICS_VERSION>` once so its native
-libraries, headers, and `.pc` files land in the system paths, then drive Aegis
+libraries, headers, and `.pc` files land in the system paths, then drive Tessera
 with ordinary `cargo` commands against the locked bindings.
 
 **One-time Optics install** (or upgrade it whenever a project bump moves to a
@@ -132,7 +132,7 @@ pkg-config --modversion flux flux-scene-graph lens iris   # sanity check
 **Daily development** needs no further Optics work — just Cargo:
 
 ```bash
-cargo run --locked -p aegis          # build & run (see Build and run below)
+cargo run --locked -p tessera          # build & run (see Build and run below)
 cargo test --locked --workspace
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
@@ -152,23 +152,23 @@ apply them to contributor development; see
 Run the compositor from a terminal in an existing Wayland session:
 
 ```bash
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```
 
-The default `AEGIS_BACKEND=auto` selects nested presentation when
+The default `TESSERA_BACKEND=auto` selects nested presentation when
 `$WAYLAND_DISPLAY` is present and direct DRM/KMS otherwise. Set
-`AEGIS_BACKEND=nested` or `AEGIS_BACKEND=drm` only when a test must force one
+`TESSERA_BACKEND=nested` or `TESSERA_BACKEND=drm` only when a test must force one
 backend.
 
 The development commands have distinct responsibilities:
 
 | Command | Role |
 |---------|------|
-| `cargo run --locked -p aegis` | Build and run the compositor with automatic backend selection |
-| `AEGIS_BACKEND=drm cargo run --locked -p aegis` | Force direct-display testing |
+| `cargo run --locked -p tessera` | Build and run the compositor with automatic backend selection |
+| `TESSERA_BACKEND=drm cargo run --locked -p tessera` | Force direct-display testing |
 
 Persistent settings have no separate binary: the settings pages are tabs in
-the command panel (`Super+S`), hosted in-process from the `aegis-settings`
+the command panel (`Super+S`), hosted in-process from the `tessera-settings`
 module library. Distribution installation,
 which owns systemd units, D-Bus services, and portal metadata, is documented
 separately in [Distribution Packaging](packaging.md).
@@ -186,8 +186,8 @@ The compositor logs through the `log` facade; `RUST_LOG` controls verbosity
 (default `info`):
 
 ```bash
-RUST_LOG=debug cargo run --locked -p aegis
-RUST_LOG=warn cargo run --locked -p aegis
+RUST_LOG=debug cargo run --locked -p tessera
+RUST_LOG=warn cargo run --locked -p tessera
 ```
 
 ## Tests
@@ -196,7 +196,7 @@ RUST_LOG=warn cargo run --locked -p aegis
 cargo test --locked --workspace
 ```
 
-`aegis-model` and `aegis-compositor` unit tests run without the flux dependency;
+`tessera-model` and `tessera-compositor` unit tests run without the flux dependency;
 the rest need either the sibling Optics Meson tree in the local workflow or
 the installed libraries in the canonical workflow.
 
@@ -208,7 +208,7 @@ in the production topology with:
 scripts/test-interaction-domain-sandbox.sh
 ```
 
-The script starts the compiled `aegis-launcher` test binary as a transient
+The script starts the compiled `tessera-launcher` test binary as a transient
 systemd user service with delegated `cpu`, `memory`, and `pids` controllers.
 It verifies mount-scoped multi-connection Wayland portals, mandatory resource
 limits, cgroup freeze/resume, and `cgroup.kill` against a worker that escapes
@@ -224,11 +224,11 @@ its process group.
 | Missing a `flux`, `flux-scene-graph`, `lens`, or `iris` pkg-config file | In the local workflow, build the sibling tree; in the canonical workflow, install the matching Optics release |
 | `vkCreateSwapchainKHR: function pointer was NULL` | `VK_KHR_swapchain` not enabled; the backend requests it, so check the flux device extensions |
 | `error while loading shared libraries: libflux*.so` / `liblens*.so` / `libiris*.so` | In the local workflow, rebuild after moving the Meson tree; in the canonical workflow, refresh the loader cache or configure the installed prefix |
-| `Interaction Domain cgroup isolation is unavailable` | Run Aegis in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
+| `Interaction Domain cgroup isolation is unavailable` | Run Tessera in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
 
 ## See Also
 
-- [Aegis and Optics Cross-Repository Development](cross-repository-development.md)
+- [Tessera and Optics Cross-Repository Development](cross-repository-development.md)
 - [Project Layout](project-layout.md)
 - [First-Party Application Development](first-party-applications.md)
 - [VT/DRM Manual Testing](vt-drm-testing.md)

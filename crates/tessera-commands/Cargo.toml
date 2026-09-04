@@ -1,0 +1,29 @@
+[package]
+name = "tessera-commands"
+description = "Domain-oriented management commands for a running Tessera session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tessera_commands"
+path = "src/lib.rs"
+
+[dependencies]
+tessera-ipc = { workspace = true }
+tessera-model = { workspace = true, features = ["serde"] }
+tessera-config = { workspace = true }
+tessera-security = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zeroize.workspace = true
+clap = { version = "4", features = ["derive", "wrap_help", "string"] }
+clap_complete = "4"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

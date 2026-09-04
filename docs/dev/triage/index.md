@@ -1,7 +1,7 @@
 # Issue Triage
 
 Case-based debugging knowledge for attributing bug reports between
-aegis and everything around it — clients, toolkits, drivers, the
+tessera and everything around it — clients, toolkits, drivers, the
 session stack. This directory collects triage know-how so a familiar
 symptom resolves in minutes instead of reopening a finished
 investigation.
@@ -12,10 +12,10 @@ Each page covers one symptom class and captures:
   class,
 - a fast diagnostic recipe (protocol traces, logs, reproduction),
 - the attribution conclusion and where a fix belongs,
-- confirmed third-party behaviors that aegis must not work around.
+- confirmed third-party behaviors that tessera must not work around.
 
 The shared policy: land a compositor change only when evidence shows
-aegis violating the protocol or its own invariants; report confirmed
+tessera violating the protocol or its own invariants; report confirmed
 client bugs upstream and record them here. See
 [ADR-0001](../../adr/0001-scope-and-responsibility-boundary.md) for the
 responsibility boundary this follows.

@@ -1,0 +1,20 @@
+[package]
+name = "tessera-tray"
+description = "StatusNotifierItem system tray service for the tessera compositor: watcher/host on the session bus, shared by shell chrome components"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# SNI IconName resolution through the freedesktop icon theme: the same
+# lookup (tessera-desktop-entries) and decode (image + rsvg-convert) path as
+# the compositor's app icon cache.
+tessera-desktop-entries = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }
+zbus = { workspace = true }
+
+[lints]
+workspace = true

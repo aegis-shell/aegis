@@ -1,6 +1,6 @@
 # Local-only source patches for cross-repository development.
 #
-# Enable this file only in a linked Aegis worktree:
+# Enable this file only in a linked Tessera worktree:
 #   cp .cargo/optics-local.toml .cargo/config.toml
 #   git config core.hooksPath .githooks
 #

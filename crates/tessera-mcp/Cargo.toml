@@ -1,0 +1,35 @@
+[package]
+name = "tessera-mcp"
+description = "Tessera MCP platform bridge: scoped desktop and Agent Interaction Domain tools over MCP for any agent"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tessera_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tessera-mcp"
+path = "src/bin/tessera-mcp.rs"
+
+[dependencies]
+# The public Tessera model, catalog, and IPC crates, plus the shared agent
+# client layer (ADR-0125). Never an agent runtime.
+tessera-model = { workspace = true, features = ["serde"] }
+tessera-ipc = { workspace = true }
+tessera-ipc-client = { workspace = true }
+tessera-desktop-entries = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

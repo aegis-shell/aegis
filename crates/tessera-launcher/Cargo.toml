@@ -1,0 +1,21 @@
+[package]
+name = "tessera-launcher"
+description = "Detached, XDG-environment-aware launching of desktop applications"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tessera-model = { workspace = true }
+tessera-desktop-entries = { workspace = true }
+log.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

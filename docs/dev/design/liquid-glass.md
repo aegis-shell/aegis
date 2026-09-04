@@ -1,6 +1,6 @@
 # Liquid Glass
 
-Liquid Glass is the signature aegis material for the floating control
+Liquid Glass is the signature tessera material for the floating control
 layer: the Dock, HUD chips, and any chrome body that floats above client
 content. It behaves as a thin convex lens — optically flat in its
 interior, curved at its rim — rendered analytically from a signed

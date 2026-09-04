@@ -1,18 +1,18 @@
 # Observability
 
-How aegis logs, how to control it, and the level discipline contributors are
+How tessera logs, how to control it, and the level discipline contributors are
 expected to follow. The architectural decision is
 [ADR-0079](../adr/0079-tracing-based-observability-seam.md).
 
 ## The seam
 
 Crates emit through the standard `log` facade. Each first-party binary
-installs a `tracing`-based subscriber through the shared `aegis-logging`
+installs a `tracing`-based subscriber through the shared `tessera-logging`
 crate before doing anything else:
 
 ```rust
 fn main() {
-    aegis_logging::init("info");
+    tessera_logging::init("info");
     // ...
 }
 ```
@@ -28,17 +28,17 @@ where request or lifecycle correlation is worth it (see
 All output is written to stderr so journal capture is uniform.
 
 - `RUST_LOG` — a `tracing_subscriber::EnvFilter` directive. Examples:
-  `info`, `debug`, `info,aegis_backend::drm=trace`,
-  `warn,aegis_portal=debug`.
-- `AEGIS_LOG_FORMAT=json` — emit machine-readable JSON for log aggregation.
+  `info`, `debug`, `info,tessera_backend::drm=trace`,
+  `warn,tessera_portal=debug`.
+- `TESSERA_LOG_FORMAT=json` — emit machine-readable JSON for log aggregation.
   Any other value (or unset) selects the human-readable text formatter.
 - `NO_COLOR` — disable ANSI color, matching the convention honored by
   `env_logger` and most CLI tooling. Color is also auto-disabled when stderr
   is not a TTY.
 
 Each binary passes a sensible default used when `RUST_LOG` is unset: `info`
-for long-running services (`aegis`, `aegis-idle`, `aegis-lock`,
-`xdg-desktop-portal-aegis`) and `warn` when `aegis` runs a
+for long-running services (`tessera`, `tessera-idle`, `tessera-lock`,
+`xdg-desktop-portal-atrium`) and `warn` when `tessera` runs a
 one-shot management command.
 
 ## Nested workflow
@@ -46,14 +46,14 @@ one-shot management command.
 The default nested loop is quiet enough to read:
 
 ```bash
-cargo run --locked -p aegis
+cargo run --locked -p tessera
 ```
 
 To trace the DRM backend or a specific subsystem without flooding the
 console, scope the filter:
 
 ```bash
-RUST_LOG="info,aegis_backend::drm=debug" cargo run --locked -p aegis
+RUST_LOG="info,tessera_backend::drm=debug" cargo run --locked -p tessera
 ```
 
 ## Log levels

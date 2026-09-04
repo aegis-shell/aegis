@@ -1,0 +1,21 @@
+[package]
+name = "tessera-model"
+description = "Shared Tessera model: state, identities, geometry, and deterministic rules"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

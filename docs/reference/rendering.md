@@ -144,5 +144,5 @@ fullscreen configure round trip merely to display compositor chrome.
 | `direct scanout failed; compositing instead` | A non-policy backend error rejected the direct attempt and composition was selected |
 | `cursor-plane ... rejected` | KMS rejected the cursor portion of the request; the next frame uses a software cursor |
 
-Follow [How to Run aegis on Bare Metal](../how-to/bare-metal-drm.md) to verify
+Follow [How to Run tessera on Bare Metal](../how-to/bare-metal-drm.md) to verify
 these transitions on real hardware.

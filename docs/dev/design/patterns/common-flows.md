@@ -8,7 +8,7 @@ source of truth.
 
 ## Authentication and consent
 
-Aegis currently has lock authentication, secret prompts, confirmation
+Tessera currently has lock authentication, secret prompts, confirmation
 prompts, capability grants, and application picking. These surfaces share
 modal scaffolding but retain distinct authority and outcomes.
 

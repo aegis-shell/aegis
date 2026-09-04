@@ -1,13 +1,13 @@
 # How to Run a Wayland Input Method
 
-aegis supports native Wayland input methods on the physical seat. Applications
+tessera supports native Wayland input methods on the physical seat. Applications
 publish editor state through `zwp_text_input_manager_v3`; an input-method
 daemon consumes that state through `zwp_input_method_manager_v2` and may use
 `zwp_virtual_keyboard_manager_v1` for unhandled keys.
 
 ## Check Protocol Availability
 
-Run the registry inspection inside the aegis session:
+Run the registry inspection inside the tessera session:
 
 ```bash
 wayland-info | rg \
@@ -15,7 +15,7 @@ wayland-info | rg \
 ```
 
 The output must contain all three interfaces. If the input-method or
-virtual-keyboard manager is absent after updating aegis, restart the compositor.
+virtual-keyboard manager is absent after updating tessera, restart the compositor.
 Wayland globals belong to the running compositor process and do not appear
 through live configuration reload.
 
@@ -39,7 +39,7 @@ Only one input method can own a seat. A second daemon receives the protocol's
 ## Check Application Compatibility
 
 Use a native Wayland application that implements
-`zwp_text_input_manager_v3`. X11 applications are outside aegis's supported
+`zwp_text_input_manager_v3`. X11 applications are outside tessera's supported
 scope, and a native application without text-input-v3 continues to receive
 ordinary keyboard events but cannot provide caret or surrounding-text state
 to the input method.

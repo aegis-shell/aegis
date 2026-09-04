@@ -105,8 +105,8 @@ action in `[[keybind]]`; see the
 another window without focusing it first, use the command line:
 
 ```console
-aegis window fullscreen 42 on
-aegis window fullscreen 42 off
+tessera window fullscreen 42 on
+tessera window fullscreen 42 off
 ```
 
 ## Keep a Window on Top
@@ -152,7 +152,7 @@ are never buried below existing windows; they simply wait for you.
 
 ## Pick a Window in the Overview
 
-Press `Super+O` (or run `aegis overview`) to open the overview: every
+Press `Super+O` (or run `tessera overview`) to open the overview: every
 window on the current workspace appears as a live thumbnail, with a
 workspace rail on the left. Click a thumbnail to focus that window and
 close the overview; click a rail tile to switch workspaces while the
@@ -176,12 +176,12 @@ when `Super` is released.
 Query the current ids, then issue a control command:
 
 ```bash
-aegis window
-aegis window focus 42
-aegis window minimize 42
-aegis window always-on-top 42 on
-aegis window fullscreen 42 on
-aegis window close 42
+tessera window
+tessera window focus 42
+tessera window minimize 42
+tessera window always-on-top 42 on
+tessera window fullscreen 42 on
+tessera window close 42
 ```
 
 See the [Command-Line Reference](../reference/cli.md) for the complete command

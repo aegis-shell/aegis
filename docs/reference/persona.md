@@ -1,6 +1,6 @@
 # Persona
 
-The `aegis_shell::persona` domain keeps account-backed profile defaults,
+The `tessera_shell::persona` domain keeps account-backed profile defaults,
 personalized still or VRM content, motion behavior, and live reload consistent
 across presentation surfaces. Authenticated Actor principals are separate and
 never derive from these display fields.
@@ -10,7 +10,7 @@ initials, and group labels. These are presentation defaults, not proof of
 identity. A future personalization store may replace display fields without
 changing the security principal.
 
-The lightweight `Profile` API is available with default `aegis-shell`
+The lightweight `Profile` API is available with default `tessera-shell`
 features. The remaining APIs on this page require the shell's optional
 `persona` feature.
 
@@ -20,15 +20,15 @@ features. The remaining APIs on this page require the shell's optional
 
 | Priority | Source | Kind |
 |----------|--------|------|
-| 1 | `$XDG_DATA_HOME/aegis/avatars/face.png` | Still image |
-| 2 | `$XDG_DATA_HOME/aegis/avatars/face.jpg` | Still image |
-| 3 | `$XDG_DATA_HOME/aegis/avatars/face.webp` | Still image |
-| 4 | `$XDG_DATA_HOME/aegis/avatars/face` | Still image |
+| 1 | `$XDG_DATA_HOME/tessera/avatars/face.png` | Still image |
+| 2 | `$XDG_DATA_HOME/tessera/avatars/face.jpg` | Still image |
+| 3 | `$XDG_DATA_HOME/tessera/avatars/face.webp` | Still image |
+| 4 | `$XDG_DATA_HOME/tessera/avatars/face` | Still image |
 | 5 | `~/.face` | Freedesktop-compatible still image |
 | 6 | `~/.face.icon` | Freedesktop-compatible still image |
-| 7 | `$XDG_DATA_HOME/aegis/avatars/avatar.vrm` | VRM 0.x or 1.0 model |
+| 7 | `$XDG_DATA_HOME/tessera/avatars/avatar.vrm` | VRM 0.x or 1.0 model |
 
-`AEGIS_AVATAR_DEBUG_ASSETS=1` adds the source-tree debug VRM before priority
+`TESSERA_AVATAR_DEBUG_ASSETS=1` adds the source-tree debug VRM before priority
 1 in debug builds. It never changes release behavior. `PortraitConfig::new`
 accepts an explicit ordered list for an embedder that must replace the
 canonical policy.
@@ -49,15 +49,15 @@ interface.
 
 The canonical model is:
 
-- `$XDG_DATA_HOME/aegis/avatars/avatar.vrm`
+- `$XDG_DATA_HOME/tessera/avatars/avatar.vrm`
 
 Motion libraries live beside it:
 
-- `$XDG_DATA_HOME/aegis/avatars/motions/idle/*.vrma`
-- `$XDG_DATA_HOME/aegis/avatars/motions/actions/*.vrma`
+- `$XDG_DATA_HOME/tessera/avatars/motions/idle/*.vrma`
+- `$XDG_DATA_HOME/tessera/avatars/motions/actions/*.vrma`
 
 Lowercase ASCII stems beginning with a letter are stable motion names. A
-legacy `$XDG_DATA_HOME/aegis/avatars/avatar.vrma` acts as one looping idle
+legacy `$XDG_DATA_HOME/tessera/avatars/avatar.vrma` acts as one looping idle
 clip only when neither motion-library directory supplies clips.
 
 ## VRM Camera Contract

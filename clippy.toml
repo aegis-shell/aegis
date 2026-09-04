@@ -1,5 +1,5 @@
 # clippy.toml
-# Architectural constraints and lints for Aegis workspace.
+# Architectural constraints and lints for Tessera workspace.
 
 avoid-breaking-exported-api = false
 

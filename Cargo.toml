@@ -9,7 +9,7 @@ edition = "2024"
 # art under assets/cursors/Aegis (original, generated in-tree).
 license = "MIT"
 rust-version = "1.88"
-repository = "https://github.com/ming2k/aegis"
+repository = "https://github.com/atrium-desktop/tessera"
 
 [workspace.dependencies]
 # flux (rendering engine) + lens (immediate-mode UI engine) Rust bindings.
@@ -33,7 +33,7 @@ prism = { git = "https://github.com/ming2k/optics", tag = "v0.0.32" }
 prism-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.32" }
 
 # Observability: crates emit through the `log` facade; each binary installs a
-# `tracing`-based subscriber through the shared `aegis-logging` crate, which
+# `tracing`-based subscriber through the shared `tessera-logging` crate, which
 # bridges `log::` records into structured spans and fields (ADR-0079).
 # Long-term this seam is also how the AI-adaptation phase subscribes to
 # compositor events.
@@ -48,7 +48,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "registry",
 ] }
 
-# aegis-mcp is the platform's MCP bridge. aegis exposes the bridge so any
+# tessera-mcp is the platform's MCP bridge. tessera exposes the bridge so any
 # agent can discover scoped desktop and Interaction Domain tools without
 # linking an agent stack into the compositor (ADR-0047, ADR-0087).
 base64 = "0.22"
@@ -61,8 +61,8 @@ sha2 = "0.10"
 atspi = { version = "0.30", features = ["zbus"] }
 async-io = "2"
 
-# Session D-Bus for the StatusNotifierItem system tray (aegis-tray, shared by
-# aegis-hud and aegis-command-panel).
+# Session D-Bus for the StatusNotifierItem system tray (tessera-tray, shared by
+# tessera-hud and tessera-command-panel).
 # Pure-Rust zbus (no libdbus system dep) with the blocking API so the tray
 # worker stays a plain `std::thread`; `async-io` is zbus's smol-based
 # internal executor — tokio stays out of the dependency graph.
@@ -88,65 +88,65 @@ input = { version = "0.10", default-features = false, features = [
 udev = "0.9"
 libc = "0.2"
 
-# Launcher (aegis-desktop-entries): XDG base-directory resolution and .desktop / index.theme
+# Launcher (tessera-desktop-entries): XDG base-directory resolution and .desktop / index.theme
 # INI parsing. Kept off every other crate.
 dirs = "5"
 ini = { package = "rust-ini", version = "0.20" }
 
-# Shared, effect-free Aegis state and deterministic model rules.
-aegis-model = { path = "crates/aegis-model" }
+# Shared, effect-free Tessera state and deterministic model rules.
+tessera-model = { path = "crates/tessera-model" }
 # Transport-neutral Actor authority plus hash-chained audit persistence.
-aegis-security = { path = "crates/aegis-security" }
+tessera-security = { path = "crates/tessera-security" }
 # Validated application accessibility trees and semantic dispatch routing.
-aegis-semantic = { path = "crates/aegis-semantic" }
+tessera-semantic = { path = "crates/tessera-semantic" }
 # Out-of-process AT-SPI accessibility adapter for semantic observations.
-aegis-atspi = { path = "crates/aegis-atspi" }
+tessera-atspi = { path = "crates/tessera-atspi" }
 # Shared tracing-based observability init installed once by every binary.
-aegis-logging = { path = "crates/aegis-logging" }
-aegis-wayland-protocols = { path = "crates/aegis-wayland-protocols" }
-aegis-compositor = { path = "crates/aegis-compositor" }
-aegis-backend = { path = "crates/aegis-backend" }
-aegis-render = { path = "crates/aegis-render" }
-aegis-shell = { path = "crates/aegis-shell" }
+tessera-logging = { path = "crates/tessera-logging" }
+tessera-wayland-protocols = { path = "crates/tessera-wayland-protocols" }
+tessera-compositor = { path = "crates/tessera-compositor" }
+tessera-backend = { path = "crates/tessera-backend" }
+tessera-render = { path = "crates/tessera-render" }
+tessera-shell = { path = "crates/tessera-shell" }
 # Product-specific design tokens, themes, and materials shared by chrome.
-aegis-design = { path = "crates/aegis-design" }
+tessera-design = { path = "crates/tessera-design" }
 # Composite UI patterns, dialog scaffolding, and chrome widgets.
-aegis-ui = { path = "crates/aegis-ui" }
-# Chrome components promoted out of aegis-shell (ADR-0044).
-aegis-dock = { path = "crates/aegis-dock" }
-aegis-prism = { path = "crates/aegis-prism" }
+tessera-ui = { path = "crates/tessera-ui" }
+# Chrome components promoted out of tessera-shell (ADR-0044).
+tessera-dock = { path = "crates/tessera-dock" }
+tessera-prism = { path = "crates/tessera-prism" }
 # Display-only floating HUD status chips (ADR-0080).
-aegis-hud = { path = "crates/aegis-hud" }
+tessera-hud = { path = "crates/tessera-hud" }
 # SNI system tray service shared by shell chrome (ADR-0080).
-aegis-tray = { path = "crates/aegis-tray" }
+tessera-tray = { path = "crates/tessera-tray" }
 # Modal command panel (ADR-0080).
-aegis-command-panel = { path = "crates/aegis-command-panel" }
-aegis-wallpaper = { path = "crates/aegis-wallpaper" }
+tessera-command-panel = { path = "crates/tessera-command-panel" }
+tessera-wallpaper = { path = "crates/tessera-wallpaper" }
 # First-party session products. The compositor retains the protocol and
 # fail-closed authority; these packages are ordinary Wayland clients.
-aegis-lock = { path = "crates/aegis-lock" }
-aegis-idle = { path = "crates/aegis-idle" }
+tessera-lock = { path = "crates/tessera-lock" }
+tessera-idle = { path = "crates/tessera-idle" }
 # Settings module library hosted by the command panel (ADR-0056).
-aegis-settings = { path = "crates/aegis-settings" }
+tessera-settings = { path = "crates/tessera-settings" }
 # Configuration: versioned TOML schema, loader, and live reload (ADR-0026).
-aegis-config = { path = "crates/aegis-config" }
+tessera-config = { path = "crates/tessera-config" }
 # IPC: versioned schema over a unix socket (ADR-0027).
-aegis-ipc = { path = "crates/aegis-ipc" }
+tessera-ipc = { path = "crates/tessera-ipc" }
 # Rich client library for the capability broker: pairing, credentials,
 # state recovery, and observation leases for out-of-process consumers
 # (ADR-0125).
-aegis-ipc-client = { path = "crates/aegis-ipc-client" }
-# Domain-oriented native command implementation used by the `aegis` binary.
-aegis-commands = { path = "crates/aegis-commands" }
+tessera-ipc-client = { path = "crates/tessera-ipc-client" }
+# Domain-oriented native command implementation used by the `tessera` binary.
+tessera-commands = { path = "crates/tessera-commands" }
 # Remote interaction gateway for the Universal Interaction Protocol (UIP).
-aegis-remote = { path = "crates/aegis-remote" }
+tessera-remote = { path = "crates/tessera-remote" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
-aegis-desktop-entries = { path = "crates/aegis-desktop-entries" }
-aegis-launcher = { path = "crates/aegis-launcher" }
-# aegis-mcp: the scoped Aegis platform bridge over MCP — the standard agent
+tessera-desktop-entries = { path = "crates/tessera-desktop-entries" }
+tessera-launcher = { path = "crates/tessera-launcher" }
+# tessera-mcp: the scoped Tessera platform bridge over MCP — the standard agent
 # access point (ADR-0047, ADR-0087). It is an out-of-process adapter any MCP
 # client can spawn; the compositor never links it.
-aegis-mcp = { path = "crates/aegis-mcp" }
+tessera-mcp = { path = "crates/tessera-mcp" }
 
 # Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is
 # the chosen file format over KDL/YAML/INI for tooling maturity and an
@@ -154,7 +154,7 @@ aegis-mcp = { path = "crates/aegis-mcp" }
 # human-debuggable and schema-driven, distinct from adopting the i3 protocol.
 serde = { version = "1", features = ["derive"] }
 # toml 1.x shares the toml_parser/toml_datetime/winnow 1.x stack with the
-# toml_edit 0.25 line used by aegis-config, so the old toml_edit 0.22 /
+# toml_edit 0.25 line used by tessera-config, so the old toml_edit 0.22 /
 # toml_datetime 0.6 / winnow 0.7 copies drop out of the graph.
 toml = "1"
 serde_json = "1"
@@ -183,7 +183,7 @@ tiny-skia = "0.12"
 include_dir = "0.7"
 
 # Standalone first-party Wayland clients. The system backend is required by
-# aegis-lock because Vulkan needs the native wl_display/wl_surface pointers.
+# tessera-lock because Vulkan needs the native wl_display/wl_surface pointers.
 wayland-client = { version = "0.31.14", features = ["system"] }
 wayland-protocols = { version = "0.32.13", features = [
     "client",
@@ -228,8 +228,8 @@ resvg = { opt-level = 3 }
 tiny-skia = { opt-level = 3 }
 usvg = { opt-level = 3 }
 image = { opt-level = 3 }
-aegis-design = { codegen-units = 1 }
-aegis-logging = { codegen-units = 1 }
+tessera-design = { codegen-units = 1 }
+tessera-logging = { codegen-units = 1 }
 
 # Keep the compositor responsive without applying full release optimization to
 # workspace crates on every edit. Dependencies change less often, so their

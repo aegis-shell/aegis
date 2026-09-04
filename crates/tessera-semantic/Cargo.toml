@@ -1,0 +1,18 @@
+[package]
+name = "tessera-semantic"
+description = "Validated accessibility-tree ingestion and semantic action routing for Tessera"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tessera-model = { workspace = true, features = ["serde"] }
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

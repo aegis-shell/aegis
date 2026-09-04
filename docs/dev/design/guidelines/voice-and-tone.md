@@ -2,7 +2,7 @@
 
 Status: **Partial**.
 
-Aegis speaks directly, calmly, and precisely. Product copy names the object,
+Tessera speaks directly, calmly, and precisely. Product copy names the object,
 state, and available action without personality filler or blame. Security and
 system messages become firmer as consequence increases, not more dramatic.
 

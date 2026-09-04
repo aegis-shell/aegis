@@ -1,10 +1,10 @@
-# Aegis Design Language
+# Tessera Design Language
 
-The design language is the shared product contract for every Aegis-owned UI
+The design language is the shared product contract for every Tessera-owned UI
 surface: compositor chrome, first-party system applications, the Dock, HUD,
 launcher, command panel, menus, and toasts. Components built by different
 crates must read as one product, so the rules in this directory are normative
-for contributor-written Aegis UI.
+for contributor-written Tessera UI.
 
 The language takes its material cues from Apple's Liquid Glass (WWDC 2025)
 and adapts them to a Wayland compositor: chrome is a floating functional
@@ -78,8 +78,8 @@ implemented; deleting a local literal is not sufficient by itself.
 | Layer | Owner |
 |------|-------|
 | Generic drawing, widgets, layout, and input mechanics | Optics `lens` and `flux` |
-| Product tokens, palettes, themes, and material recipes | `aegis-design` |
-| Reusable product composition, geometry, and motion vocabulary | `aegis-ui` |
+| Product tokens, palettes, themes, and material recipes | `tessera-design` |
+| Reusable product composition, geometry, and motion vocabulary | `tessera-ui` |
 | Domain state and interaction intent | The owning chrome or application crate |
 | Compositor integration and pixel-effect plumbing | The compositor and Optics boundary defined by ADR-0139 |
 
@@ -90,7 +90,7 @@ local until repeated use demonstrates a product-wide role.
 ## Related Documentation
 
 - [Design system crate decision](../../adr/0046-design-system-crate.md)
-- [Composite component library decision](../../adr/0132-aegis-ui-composite-component-library.md)
+- [Composite component library decision](../../adr/0132-tessera-ui-composite-component-library.md)
 - [Animation and effect placement](../../adr/0139-animation-effect-placement.md)
 - [Liquid glass lens model and full-resolution capture](../../adr/0094-liquid-glass-lens-model-and-full-resolution-capture.md)
 - [Single-body liquid-glass interaction focus](../../adr/0105-single-body-liquid-glass-interaction-focus.md)

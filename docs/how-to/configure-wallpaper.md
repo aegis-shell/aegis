@@ -1,11 +1,11 @@
 # How to Configure the Wallpaper
 
 Use the `[wallpaper]` table in
-`$XDG_CONFIG_HOME/aegis/config.toml`. A valid save replaces the live scene;
+`$XDG_CONFIG_HOME/tessera/config.toml`. A valid save replaces the live scene;
 an invalid schema or an asset that cannot be loaded leaves the previous
 wallpaper visible.
 
-Unset `AEGIS_WALLPAPER` while testing persistent configuration. That variable
+Unset `TESSERA_WALLPAPER` while testing persistent configuration. That variable
 is a process-start source override and takes precedence over the table.
 
 ## Select a Single-Source Mode
@@ -97,9 +97,9 @@ A source checkout includes an original three-plane Alpine scene and a complete
 configuration. From the repository root, run:
 
 ```bash
-env -u AEGIS_WALLPAPER -u AEGIS_WALLPAPER_MODEL \
+env -u TESSERA_WALLPAPER -u TESSERA_WALLPAPER_MODEL \
   XDG_CONFIG_HOME="$PWD/examples/parallax-wallpaper" \
-  cargo run --locked -p aegis
+  cargo run --locked -p tessera
 ```
 
 The example config references the three images under

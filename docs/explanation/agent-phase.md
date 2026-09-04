@@ -1,6 +1,6 @@
 # The Agent Phase
 
-aegis is built in two phases. The first is a desktop for human users. The
+tessera is built in two phases. The first is a desktop for human users. The
 second adapts the same compositor so an agent can understand and operate
 the machine through it. This page is the blueprint for the second phase:
 how the pieces fit, why the shape is what it is, and how the result meets
@@ -16,10 +16,10 @@ The compositor's job in the agent phase is the same as in the desktop
 phase: own the desktop model, own the IPC, present frames. It does not gain
 an inference model, a prompt, a tool runtime, or a skill layer. Everything
 AI-specific lives out of process, on the other side of the introspection
-IPC. The `aegis-mcp` integration follows this boundary while shipping
+IPC. The `tessera-mcp` integration follows this boundary while shipping
 the platform adapter in the same distribution
 ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-[ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)).
+[ADR-0087](../adr/0087-tessera-mcp-standalone-platform-bridge-crate.md)).
 Agent products themselves live out of tree
 ([ADR-0113](../adr/0113-platform-ai-backend-and-agent-product-removal.md)).
 
@@ -28,14 +28,14 @@ The stack, from the rendering layer up:
 | Layer | Owner | What lives here |
 |-------|-------|-----------------|
 | Rendering and UI | flux, lens (out of tree) | Vulkan presentation; immediate-mode chrome drawing |
-| The model | `aegis-model` | Windows, workspaces, outputs, Interaction Domains, seats, semantics, and layout — the one truth |
-| Security kernel | `aegis-security` | Actor authority policy and privacy-minimized, hash-chained audit mechanisms without a transport dependency |
-| Semantic trust seam | `aegis-semantic` | Bounded application accessibility trees, provider ownership, window-namespaced node identities, and action routing |
-| The compositor | `aegis-compositor`, `aegis-backend`, `aegis-render`, `aegis-shell` | Wayland, per-Interaction Domain input and output, the chrome host |
-| The seam | `aegis-ipc` | Versioned JSON and sealed descriptors over a Unix socket; transport admission, scopes, capture, and the journal |
-| Accessibility adapter | `aegis-atspi` (supervised separate process) | AT-SPI discovery, tree publication, live precondition recheck, and toolkit action dispatch |
-| IPC clients | any number, all equal | Native `aegis` commands, the agent, future bridges |
-| Platform adapter | `aegis-mcp` (separate process and crate) | Scoped Aegis tools and one bridge-managed Agent Interaction Domain over MCP |
+| The model | `tessera-model` | Windows, workspaces, outputs, Interaction Domains, seats, semantics, and layout — the one truth |
+| Security kernel | `tessera-security` | Actor authority policy and privacy-minimized, hash-chained audit mechanisms without a transport dependency |
+| Semantic trust seam | `tessera-semantic` | Bounded application accessibility trees, provider ownership, window-namespaced node identities, and action routing |
+| The compositor | `tessera-compositor`, `tessera-backend`, `tessera-render`, `tessera-shell` | Wayland, per-Interaction Domain input and output, the chrome host |
+| The seam | `tessera-ipc` | Versioned JSON and sealed descriptors over a Unix socket; transport admission, scopes, capture, and the journal |
+| Accessibility adapter | `tessera-atspi` (supervised separate process) | AT-SPI discovery, tree publication, live precondition recheck, and toolkit action dispatch |
+| IPC clients | any number, all equal | Native `tessera` commands, the agent, future bridges |
+| Platform adapter | `tessera-mcp` (separate process and crate) | Scoped Tessera tools and one bridge-managed Agent Interaction Domain over MCP |
 | Agent product | out of tree | Providers, credentials, sessions, skills, permissions, and the agent-facing CLI or frontend |
 | Other skill and tool layers | external projects | Other model-specific adapters, prompts, and schemas |
 
@@ -51,7 +51,7 @@ The canonical boundary and vocabulary are recorded in
 [ADR-0103](../adr/0103-actor-authority-and-interaction-domain-architecture.md).
 
 This is the deliberate inversion of most "AI desktop" projects, which bake
-the model into the shell. aegis bets the other way: the compositor is the
+the model into the shell. tessera bets the other way: the compositor is the
 slowest-moving, most stability-critical layer; models and tool protocols
 are the fastest-moving; coupling them either freezes the agent or
 destabilizes the compositor.
@@ -143,18 +143,18 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 
 | Current pattern | Representatives | Bridge shape |
 |-----------------|-----------------|--------------|
-| Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and aegis's JSON. |
-| Model Context Protocol | Claude Desktop, Cline, Cursor, and other MCP clients | `aegis-mcp` exposes snapshots, journals, and operations as scoped tools, with Interaction Domain pixels as MCP image content. |
+| Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and tessera's JSON. |
+| Model Context Protocol | Claude Desktop, Cline, Cursor, and other MCP clients | `tessera-mcp` exposes snapshots, journals, and operations as scoped tools, with Interaction Domain pixels as MCP image content. |
 | Vision-based computer use | Claude Computer Use, OpenAI Operator | Damage-driven Interaction Domain capture supplies separately authorized pixels plus a semantic observation; bounded actions must consume its precondition token. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
 | Multi-agent orchestration | CrewAI, AutoGen, sub-agents | Each Agent has a separate principal, connection, Interaction Domain, capability context, and filtered journal. Deliberate cooperation uses an explicit higher-level channel. |
 
-The fit with the Model Context Protocol is unusually clean. aegis's
+The fit with the Model Context Protocol is unusually clean. tessera's
 introspection surface and MCP converged independently on the same shape:
 the versioned schema against tool schemas; capabilities and scope against
 authorization; and the typed model and journal against structured tool
-results. The `aegis-mcp` adapter uses tools and image content rather than
+results. The `tessera-mcp` adapter uses tools and image content rather than
 MCP resources or subscriptions. It is still a thin translation, not a
 re-architecture. This is not coincidence: both are answers to the same
 question — how does an out-of-process agent address a system it did not
@@ -191,7 +191,7 @@ models and tool protocols churn above it.**
 
 This is the same bet Wayland made against X11 — stable protocol, competing
 compositors — applied to agents. If the Model Context Protocol becomes the
-standard, aegis is already the right shape. If something replaces it, the
+standard, tessera is already the right shape. If something replaces it, the
 adapter changes; the compositor does not. If vision models become good
 enough that structured APIs look obsolete, the journal, the scope, and the
 durable identifiers still matter: a vision model also needs to know what
@@ -203,14 +203,14 @@ its surface bounded — is most of what an agent needs. Model adapters,
 semantic element bridges, and streaming integrations remain on the other side
 of the seam.
 
-## What aegis Does Not Do
+## What tessera Does Not Do
 
 The shape is defined as much by what it refuses as by what it adds.
 
 - **No model inside the compositor.** The compositor never calls a model.
   Inference, prompt assembly, and tool selection live out of process.
 - **No prompt storage in the compositor.** Product prompts live in the
-  out-of-tree agent product or another out-of-process skill layer. Aegis
+  out-of-tree agent product or another out-of-process skill layer. Tessera
   ships only the platform tool contract.
 - **No retrieval index inside the compositor.** If the agent needs semantic
   search over its history, the agent indexes the journal; the compositor
@@ -239,8 +239,8 @@ without committing to.
   decision.
 - [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md) — the MCP
   platform bridge that remains outside the compositor.
-- [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) —
-  the bridge as the standalone `aegis-mcp` platform crate.
+- [ADR-0087](../adr/0087-tessera-mcp-standalone-platform-bridge-crate.md) —
+  the bridge as the standalone `tessera-mcp` platform crate.
 - [ADR-0113](../adr/0113-platform-ai-backend-and-agent-product-removal.md) —
   the platform-only scope: AI interfaces and the authority backend, never an
   agent product.
@@ -257,4 +257,4 @@ without committing to.
   [ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md)
   — the authority, observation, and isolation follow-ons.
 - [Comparative Survey — Extension and Automation](comparative-survey.md#extension-and-automation)
-  — the systems whose patterns aegis borrows from and rejects.
+  — the systems whose patterns tessera borrows from and rejects.

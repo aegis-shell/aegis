@@ -1,4 +1,4 @@
-# How to Run aegis on Bare Metal (DRM/KMS)
+# How to Run tessera on Bare Metal (DRM/KMS)
 
 The DRM/KMS backend drives display hardware directly from a TTY, with no
 host session. The nested backend stays the development default; this guide
@@ -18,7 +18,7 @@ is the bare-metal bring-up and smoke checklist.
 Build the release binary before leaving the graphical session:
 
 ```bash
-cargo build --locked --release -p aegis
+cargo build --locked --release -p tessera
 ```
 
 ## Start
@@ -27,16 +27,16 @@ Switch to a free TTY (`Ctrl+Alt+F3`), log in as the normal user, change to the
 repository root, and run the prebuilt compositor:
 
 ```bash
-AEGIS_BACKEND=drm RUST_LOG=info target/release/aegis
+TESSERA_BACKEND=drm RUST_LOG=info target/release/tessera
 ```
 
-`AEGIS_DRM_DEVICE=/dev/dri/card1` selects the KMS GPU when there is more than
-one. The Vulkan renderer is strictly bound to the same physical GPU; Aegis
+`TESSERA_DRM_DEVICE=/dev/dri/card1` selects the KMS GPU when there is more than
+one. The Vulkan renderer is strictly bound to the same physical GPU; Tessera
 does not silently select another render device. The log shows both DRM
 identities along with the seat, connector, and modifier choices. Prebuilding
 keeps compiler latency and failures outside the hardware session.
 
-Use the packaged `aegis.service` instead of the direct binary when testing
+Use the packaged `tessera.service` instead of the direct binary when testing
 Interaction Domain application launch. The service delegates the cgroup controllers that
 mandatory memory, process, CPU, freeze, and revoke boundaries require. It
 also binds to `graphical-session.target`, so session services such as
@@ -46,19 +46,19 @@ is exported and the Wayland socket listens, so `--wait` and ordered units
 cannot race startup.
 
 ```bash
-systemctl --user start --wait aegis.service
+systemctl --user start --wait tessera.service
 ```
 
 For a complete login session — from a greeter or straight from the TTY —
-start the compositor through the `aegis-session` wrapper instead. It imports
-the login environment into the systemd user manager, starts `aegis.service`,
+start the compositor through the `tessera-session` wrapper instead. It imports
+the login environment into the systemd user manager, starts `tessera.service`,
 waits for the compositor to exit, then stops `graphical-session.target`
-through `aegis-shutdown.target` and unsets the session environment.
+through `tessera-shutdown.target` and unsets the session environment.
 
 ## Session environment
 
 At startup the compositor sets `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE=wayland`,
-and `XDG_CURRENT_DESKTOP=aegis`, then exports them to the D-Bus activation
+and `XDG_CURRENT_DESKTOP=tessera`, then exports them to the D-Bus activation
 environment and the systemd --user manager with
 `dbus-update-activation-environment --systemd`. Services activated later —
 xdg-desktop-portal, `flatpak-spawn` helpers — inherit this environment, so
@@ -81,10 +81,10 @@ tab to:
    logical X and Y coordinates.
 6. Select **Apply Display Settings**.
 
-The change is written atomically to `~/.config/aegis/config.toml`. Direct DRM
+The change is written atomically to `~/.config/tessera/config.toml`. Direct DRM
 sessions apply it after the current page flip retires. In a nested session the
 card is read-only because the outer compositor owns the physical monitors.
-Run `aegis display` to inspect exact connector names, advertised modes,
+Run `tessera display` to inspect exact connector names, advertised modes,
 and the effective scale. The DRM startup log includes the validated physical
 size, calculated PPI, output kind, automatic scale, and the assigned primary,
 cursor, and available overlay plane counts. Overlay offload currently remains
@@ -115,22 +115,22 @@ First bare-metal run, in order:
    application and confirm its renderer names the physical GPU rather than
    `llvmpipe`.
 6. **VT switch.** `Ctrl+Alt+F2` away, then back (`Ctrl+Alt+F3` returns to
-   aegis — the compositor forwards these keys to libseat itself). The session
+   tessera — the compositor forwards these keys to libseat itself). The session
    resumes with a fresh modeset; at most one skipped frame is logged at
    warn level.
 7. **Hotplug.** Unplug and replug the monitor (or dock). The display set
    is reprobed, the surface recreated if the modifier set changed, and
    workspaces return to their home connector (ADR-0025).
 8. **Session lock.** Lock, confirm the screen shows only the lock client,
-   and unlock. While locked, native `aegis` management commands are refused.
-9. **Screenshot.** `aegis display capture /tmp/tty.png` produces a PNG of the
+   and unlock. While locked, native `tessera` management commands are refused.
+9. **Screenshot.** `tessera display capture /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
 
 ## Stop
 
 Request a graceful compositor shutdown with one of these methods:
 
-- Run `aegis quit` from a terminal inside aegis.
+- Run `tessera quit` from a terminal inside tessera.
 - Press `Super+Ctrl+Q` or the alternate `Super+Shift+Return` binding.
 
 The compositor disables its outputs, releases the seat and DRM device, and
@@ -143,7 +143,7 @@ returns to the TTY. Switch back to the original graphical VT afterward.
 - Immediate exit after the first frame — report the log; the flip-wait
   path is the first suspect.
 - Black screen with a running log — check the modifier intersection in the
-  log; set `AEGIS_DRM_DEVICE` to the other card on hybrid-GPU machines.
+  log; set `TESSERA_DRM_DEVICE` to the other card on hybrid-GPU machines.
 - `cannot create a Vulkan renderer for KMS device` — the selected card has no
   matching Vulkan physical device that satisfies Flux. Install the Vulkan ICD
   for that GPU or select the card backed by the available ICD.

@@ -1,5 +1,5 @@
 # .config/nextest.toml
-# Nextest execution and scheduling configuration for Aegis workspace.
+# Nextest execution and scheduling configuration for Tessera workspace.
 
 [profile.default]
 # Kill hung tests after 30s to prevent infinite deadlocks in local test runs
@@ -18,11 +18,11 @@ failure-output = "immediate-final"
 exclusive-system-tests = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(aegis-backend) or package(aegis-ipc)'
+filter = 'package(tessera-backend) or package(tessera-ipc)'
 test-group = 'exclusive-system-tests'
 
 # Prioritize heavy/long-running compositor and renderer test suites first
 # to maximize multi-core worker pool utilization and minimize the tail latency.
 [[profile.default.overrides]]
-filter = 'package(aegis-compositor) or package(aegis-render) or package(aegis-shell)'
+filter = 'package(tessera-compositor) or package(tessera-render) or package(tessera-shell)'
 priority = 100

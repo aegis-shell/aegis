@@ -1,6 +1,6 @@
 # Actor and Interaction Glossary
 
-Canonical terms for Aegis authority, automation, and Agent integration.
+Canonical terms for Tessera authority, automation, and Agent integration.
 
 | Term | Meaning | Not the same as |
 |---|---|---|

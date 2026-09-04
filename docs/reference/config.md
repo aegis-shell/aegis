@@ -1,7 +1,7 @@
 # Configuration Reference
 
-Exact reference for the aegis configuration file at
-`$XDG_CONFIG_HOME/aegis/config.toml` (defaulting to `~/.config/aegis/config.toml`).
+Exact reference for the tessera configuration file at
+`$XDG_CONFIG_HOME/tessera/config.toml` (defaulting to `~/.config/tessera/config.toml`).
 For the design behind it, the loader, and the live-reload contract, see
 [ADR-0026](../adr/0026-configuration-system.md).
 
@@ -17,7 +17,7 @@ settings transactions to the compositor, which validates authority, serializes
 all configuration writes, and applies live state. Dock pin changes use the
 same serialized path.
 
-`aegis-config::ConfigStore` translates the accepted dock, input, output,
+`tessera-config::ConfigStore` translates the accepted dock, input, output,
 desktop-preference, and idle-policy edits into TOML. Each edit preserves
 comments and unrelated keys, validates the complete resulting schema, flushes
 a temporary file in the same directory, and atomically replaces the
@@ -28,7 +28,7 @@ untouched.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `schema_version` | integer | required | Schema major version. Must be `2`. A different value is rejected with a diagnostic; supported migrations are explicit through `aegis config migrate`. |
+| `schema_version` | integer | required | Schema major version. Must be `2`. A different value is rejected with a diagnostic; supported migrations are explicit through `tessera config migrate`. |
 | `[[keybind]]` | array of tables | built-in defaults | Global key bindings. See [Key Bindings](#key-bindings) and [System Shortcuts](keyboard-shortcuts.md). |
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
@@ -56,11 +56,11 @@ not written back to TOML.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AEGIS_ICON_THEME` | `[ui] icon_theme`, then `hicolor` | Highest-precedence icon theme override used by the Dock, launcher, and exported toolkit preference. No GNOME or KDE settings database is consulted. |
+| `TESSERA_ICON_THEME` | `[ui] icon_theme`, then `hicolor` | Highest-precedence icon theme override used by the Dock, launcher, and exported toolkit preference. No GNOME or KDE settings database is consulted. |
 | `XCURSOR_THEME` | `[ui] cursor_theme`, then `default` | Highest-precedence cursor-theme override used by compositor rendering and exported toolkit preferences. |
 | `XCURSOR_SIZE` | `[ui] cursor_size`, then `24` | Highest-precedence cursor size override. Values outside 8–128 are ignored. |
-| `AEGIS_WALLPAPER` | `[wallpaper]`, then bundled image | Process-start source override. Accepts an image, animated image, short video, or model-only `.glb` and disables the configured source mode for that process. |
-| `AEGIS_WALLPAPER_MODEL` | configured model, then unset | Process-start 3D-model override. Set to `builtin` for the procedural knot or to a `.glb` path. Ignored when `AEGIS_WALLPAPER` is a `.glb` or the configured mode is parallax. |
+| `TESSERA_WALLPAPER` | `[wallpaper]`, then bundled image | Process-start source override. Accepts an image, animated image, short video, or model-only `.glb` and disables the configured source mode for that process. |
+| `TESSERA_WALLPAPER_MODEL` | configured model, then unset | Process-start 3D-model override. Set to `builtin` for the procedural knot or to a `.glb` path. Ignored when `TESSERA_WALLPAPER` is a `.glb` or the configured mode is parallax. |
 
 The launcher captures image/video, 3D, and client layers into one quarter-scale
 RGBA8 offscreen scene and updates a fixed-cost Dual-Kawase backdrop every
@@ -121,7 +121,7 @@ four mode examples.
 ## Lock Screen
 
 The `[lock_screen]` table selects the lock presentation independently from
-the desktop `[wallpaper]` table. `aegis-lock` reads it when a new lock client
+the desktop `[wallpaper]` table. `tessera-lock` reads it when a new lock client
 starts; saving the file changes the next lock screen, not an already secured
 one.
 
@@ -205,10 +205,10 @@ Applied live on reload.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `reduced_motion` | boolean | `false` | Accessibility reduced-motion switch. When `true`, every chrome and lens transition (dock magnification, launcher reveal, fades, slides) resolves to its end state in at most one frame. |
-| `icon_theme` | string | `"hicolor"` | Freedesktop application icon theme used by the launcher, Dock, and themed shell symbols. `$AEGIS_ICON_THEME` wins when set. Changes apply live. |
-| `cursor_theme` | string | `"default"` | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. The theme must ship `cursors/<name>.svg` files; a conventional Xcursor binary theme resolves but contributes nothing, logs a warning, and every shape falls back to the bundled art. `$XCURSOR_THEME` wins when set. When the selected theme is not installed, the bundled Aegis art is the final fallback. |
+| `icon_theme` | string | `"hicolor"` | Freedesktop application icon theme used by the launcher, Dock, and themed shell symbols. `$TESSERA_ICON_THEME` wins when set. Changes apply live. |
+| `cursor_theme` | string | `"default"` | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. The theme must ship `cursors/<name>.svg` files; a conventional Xcursor binary theme resolves but contributes nothing, logs a warning, and every shape falls back to the bundled art. `$XCURSOR_THEME` wins when set. When the selected theme is not installed, the bundled Tessera art is the final fallback. |
 | `cursor_size` | integer | `24` | Cursor size in logical pixels, 8–128. `$XCURSOR_SIZE` wins when set. |
-| `window_decorations` | string | `"borderless"` | Decoration ownership for Wayland toplevels. `"borderless"` makes Aegis own window controls without drawing per-window title bars; `"client-side"` asks applications to draw their own frames. |
+| `window_decorations` | string | `"borderless"` | Decoration ownership for Wayland toplevels. `"borderless"` makes Tessera own window controls without drawing per-window title bars; `"client-side"` asks applications to draw their own frames. |
 | `window_shadow` | string | `"resize"` | Compositor drop-shadow style for floating windows (ADR-0139). `"resize"` draws the historic 4-px stroke shadow; `"soft"` renders a blurred shadow through the Optics shadow operator (rounded-rect mask, Gaussian blur, downward offset; focus raises its opacity); `"none"` disables shadows. Tiled, maximized, fullscreen, and minimized windows never cast one. |
 
 ```toml
@@ -304,7 +304,7 @@ applied after hotplug when a compatible touchpad appears.
 ## Idle and Locking
 
 The `[idle]` table is the staged inactivity policy used by the supervised
-`aegis-idle` session client. Saving a valid change replaces the running policy
+`tessera-idle` session client. Saving a valid change replaces the running policy
 without restarting the compositor. The lock screen uses
 `ext-session-lock-v1`; display power-off and suspend wait until the compositor
 has confirmed the secure lock.
@@ -313,7 +313,7 @@ has confirmed the secure lock.
 |-------|------|---------|-------------|
 | `enabled` | boolean | `true` | Allow inactivity to trigger configured stages. Manual locking and lock-before-sleep remain active when `false`. |
 | `dim_after_seconds` | integer | `300` | Seconds after the last activity to set the hardware backlight to `dim_percent`; `0` disables the stage. |
-| `lock_after_seconds` | integer | `600` | Seconds after the last activity to start `aegis-lock`; `0` disables automatic locking. |
+| `lock_after_seconds` | integer | `600` | Seconds after the last activity to start `tessera-lock`; `0` disables automatic locking. |
 | `display_off_after_seconds` | integer | `660` | Seconds after the last activity to power down displays after lock confirmation; `0` disables the stage. |
 | `suspend_after_seconds` | integer | `1800` | Seconds after the last activity to request logind suspend after lock confirmation; `0` disables the stage. |
 | `dim_percent` | integer | `30` | Hardware backlight target, 1–100 percent. |
@@ -352,7 +352,7 @@ and the two session switches compose into the session power mode
 The mode is a session toggle; it is not persisted to this file. Manual
 locking (`Super+L`, Lock Now) and lock-before-sleep apply in every mode.
 Switching modes changes which stages are armed without restarting the idle
-coordinator. `aegis system power-mode <mode>` selects the same mode from
+coordinator. `tessera system power-mode <mode>` selects the same mode from
 the CLI.
 
 In a nested session, locking remains active but the outer desktop retains
@@ -478,7 +478,7 @@ Nested sessions retain the scale reported by the outer compositor.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `connector` | string | required | The backend's connector name, as shown by `aegis display` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
+| `connector` | string | required | The backend's connector name, as shown by `tessera display` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
 | `scale` | float | automatic on DRM; host-reported when nested | Output scale override, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
 | `mode` | string | highest pixel count and refresh rate | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the highest-refresh mode of that size is used. A mode the connector does not advertise falls back to the highest-pixel mode at its highest refresh rate with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
@@ -501,7 +501,7 @@ mode = "1920x1080"
 position = { x = 1707, y = 0 }
 ```
 
-Run `aegis display` to see the modes each connector advertises; the
+Run `tessera display` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
 
@@ -544,7 +544,7 @@ applies the requested change, and returns to explicit user-owned pins.
 
 The application catalog is rescanned every five seconds. Installed, removed,
 or edited desktop entries, including Flatpak exports, appear without
-restarting aegis. The same refresh detects icon-theme, output-scale, and icon
+restarting tessera. The same refresh detects icon-theme, output-scale, and icon
 file changes. Raster icons decode in process; SVG icons use `rsvg-convert`
 when it is installed and otherwise fall back to the generic application
 glyph.
@@ -652,8 +652,8 @@ alone cannot make the resource reachable.
 
 ### Migrating Schema 1
 
-Run `aegis config migrate [path]`; the path defaults to the standard XDG
-Aegis configuration file. Migration is explicit and comment-preserving. It
+Run `tessera config migrate [path]`; the path defaults to the standard XDG
+Tessera configuration file. Migration is explicit and comment-preserving. It
 creates a synchronized, non-overwriting `config.toml.schema-v1.bak`-style
 backup with mode `0600` before atomically replacing the active file.
 
@@ -665,7 +665,7 @@ with an exact runtime resource grant, then rerun migration. Loading and live
 reload never perform migrations implicitly.
 
 Interaction Domain launch requires `/usr/bin/bwrap`,
-cgroup v2, and an Aegis systemd user service with delegated `cpu`, `memory`,
+cgroup v2, and an Tessera systemd user service with delegated `cpu`, `memory`,
 and `pids` controllers. Missing isolation or controller support rejects the
 launch.
 
@@ -674,8 +674,8 @@ launch.
 The `[agent]` table holds runtime authorization policy for
 capability-borrowing agents (ADR-0088). Capability ceilings, pairing
 records, and remembered grants live in the compositor-held principal
-registry and grant store under `$XDG_DATA_HOME/aegis/` — never in this
-file. Manage them with `aegis permissions`; the Agent Workspaces
+registry and grant store under `$XDG_DATA_HOME/tessera/` — never in this
+file. Manage them with `tessera permissions`; the Agent Workspaces
 application shows the same state. The `[[agent.scope]]` declarations from
 earlier versions were removed in protocol v18 and are rejected as unknown
 fields.
@@ -690,13 +690,13 @@ lockdown = true
 ```
 
 Pairing prompts, capability ceilings, and runtime grants are enforced per
-request by the IPC server. See the [aegis-mcp Bridge
-Reference](aegis-mcp.md) for the agent-side contract.
+request by the IPC server. See the [tessera-mcp Bridge
+Reference](tessera-mcp.md) for the agent-side contract.
 
 ## Audit Storage
 
 The startup-only `[audit]` table bounds the active durable authority history
-at `$XDG_DATA_HOME/aegis/audit/events-v2.jsonl`. Saving valid changes does not
+at `$XDG_DATA_HOME/tessera/audit/events-v2.jsonl`. Saving valid changes does not
 reconfigure an already-open stream; they apply on the next compositor start.
 See the [IPC Reference](ipc.md) for durability, verification, archival, and
 fail-stop behavior.
@@ -707,7 +707,7 @@ fail-stop behavior.
 | `min_free_mib` | integer | `512` | Filesystem space reserved from audit growth, 64–1048576 MiB. An append is refused while preserving at least this much space. |
 | `checkpoint_interval_mib` | integer | `8` | Maximum uncheckpointed byte tail, 1–256 MiB and no larger than `max_store_mib`. A checkpoint is also refreshed after 4096 events. |
 | `segment_max_mib` | integer | `64` | Active-stream size that triggers sealing into a compressed immutable segment, 1–256 MiB and no larger than `max_store_mib` ([ADR-0137](../adr/0137-audit-segment-manifest-and-retention.md)). |
-| `retain_segments` | integer | `0` | Sealed segments kept on disk (the newest); `0` keeps everything. Pruning also requires an export acknowledgement recorded via `aegis audit export`. |
+| `retain_segments` | integer | `0` | Sealed segments kept on disk (the newest); `0` keeps everything. Pruning also requires an export acknowledgement recorded via `tessera audit export`. |
 
 ```toml
 [audit]
@@ -727,7 +727,7 @@ When the active stream reaches `segment_max_mib`, it is sealed into a
 compressed immutable segment under `audit/segments/`, and the chain
 continues in a fresh active file without resetting sequence numbers. Manage
 the lifecycle — status, verification, export acknowledgement, and retention
-pruning — with `aegis audit`; see [How to Manage Audit
+pruning — with `tessera audit`; see [How to Manage Audit
 History](../how-to/manage-audit-history.md).
 
 ## IPC
@@ -741,10 +741,10 @@ naming the scope resolves only when the peer's canonicalized
 
 | Scope | Executables |
 |-------|-------------|
-| `aegis-portal` | `xdg-desktop-portal-aegis` in `/usr/bin`, `/usr/libexec`, `/usr/lib`, `/usr/local/bin` |
-| `aegis-owner-admin` | `aegis` in `/usr/bin`, `/usr/local/bin` |
-| `aegis-agent-admin` | `aegis` in `/usr/bin`, `/usr/local/bin` |
-| `aegis-interaction-domain-admin` | `aegis` in `/usr/bin`, `/usr/local/bin` |
+| `atrium-portal` | `xdg-desktop-portal-atrium` in `/usr/bin`, `/usr/libexec`, `/usr/lib`, `/usr/local/bin` |
+| `tessera-owner-admin` | `tessera` in `/usr/bin`, `/usr/local/bin` |
+| `tessera-agent-admin` | `tessera` in `/usr/bin`, `/usr/local/bin` |
+| `tessera-interaction-domain-admin` | `tessera` in `/usr/bin`, `/usr/local/bin` |
 
 The `[ipc.scope_executables]` sub-table replaces the compiled-in allowlist
 per scope: a scope named there admits exactly the listed paths — an empty
@@ -756,8 +756,8 @@ satisfies an entry.
 
 ```toml
 [ipc.scope_executables]
-aegis-portal = ["/opt/aegis/bin/xdg-desktop-portal-aegis"]
-aegis-owner-admin = ["/usr/bin/aegis"]
+atrium-portal = ["/opt/tessera/bin/xdg-desktop-portal-atrium"]
+tessera-owner-admin = ["/usr/bin/tessera"]
 ```
 
 ## Development Options

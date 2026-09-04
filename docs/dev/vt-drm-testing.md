@@ -10,7 +10,7 @@ repository root:
 
 ```bash
 meson compile -C ../optics/build
-cargo build --locked --release -p aegis
+cargo build --locked --release -p tessera
 ```
 
 Do not compile on the test VT. Building first keeps compiler latency and build
@@ -21,22 +21,22 @@ failures out of the hardware test.
 1. Keep another VT or an SSH connection available in case the display becomes
    unusable.
 2. Switch to a free VT, such as `Ctrl+Alt+F3`, and log in as the normal user.
-3. Change to the aegis repository root.
-4. Confirm that another aegis process is not running with
-   `pgrep -a -x aegis`.
+3. Change to the tessera repository root.
+4. Confirm that another tessera process is not running with
+   `pgrep -a -x tessera`.
 5. Start the DRM backend:
 
 ```bash
-AEGIS_BACKEND=drm RUST_BACKTRACE=1 RUST_LOG=info \
-  target/release/aegis
+TESSERA_BACKEND=drm RUST_BACKTRACE=1 RUST_LOG=info \
+  target/release/tessera
 ```
 
 On a multi-GPU machine, select the intended DRM card explicitly:
 
 ```bash
-AEGIS_DRM_DEVICE=/dev/dri/card1 \
-AEGIS_BACKEND=drm RUST_BACKTRACE=1 RUST_LOG=info \
-  target/release/aegis
+TESSERA_DRM_DEVICE=/dev/dri/card1 \
+TESSERA_BACKEND=drm RUST_BACKTRACE=1 RUST_LOG=info \
+  target/release/tessera
 ```
 
 Replace `/dev/dri/card1` with the card that owns the display connectors being
@@ -50,7 +50,7 @@ For Interaction Domain launch testing, start the installed user service instead 
 direct command:
 
 ```bash
-systemctl --user start --wait aegis.service
+systemctl --user start --wait tessera.service
 ```
 
 `--wait` returns once the compositor reports readiness (`Type=notify`), not
@@ -72,7 +72,7 @@ Check the areas affected by the change. A useful general pass is:
 3. Open a terminal with `Super+A`, launch and close applications, and try the
    dock, launcher, Prism, overview, HUD, and command panel.
 4. Switch to another VT, wait a few seconds, and switch back. Rendering and
-   input should resume without restarting aegis.
+   input should resume without restarting tessera.
 5. If the change affects outputs, test display settings, multiple monitors,
    or hotplug as appropriate. Do not unplug the only recovery display.
 
@@ -88,7 +88,7 @@ For presentation-loop changes, also complete this focused pass:
    must be complete, and press or release edges from before the switch must
    not replay into shell chrome.
 4. On multiple monitors, unplug or reconfigure one display while a frame is
-   in flight. Aegis must wait for every CRTC owned by the old atomic batch,
+   in flight. Tessera must wait for every CRTC owned by the old atomic batch,
    rebuild the output surface, and present one full frame.
 5. When outputs have different refresh rates, expect the current shared
    atomic presentation domain to retire at the slowest active CRTC. Record
@@ -126,16 +126,16 @@ Use the
 [Rendering and KMS Plane Reference](../reference/rendering.md) for the full
 eligibility matrix, rejection-label meanings, and state transitions.
 
-From a terminal running inside aegis, inspect the live state and take a
+From a terminal running inside tessera, inspect the live state and take a
 screenshot:
 
 ```bash
-./target/release/aegis display
-./target/release/aegis window
-./target/release/aegis display capture /tmp/aegis-vt.png
+./target/release/tessera display
+./target/release/tessera window
+./target/release/tessera display capture /tmp/tessera-vt.png
 ```
 
-Open `/tmp/aegis-vt.png` after leaving the session and confirm that it matches
+Open `/tmp/tessera-vt.png` after leaving the session and confirm that it matches
 the visible output.
 
 ## Verify Client GPU Acceleration
@@ -145,7 +145,7 @@ itself a problem: Mesa's Wayland EGL path exports dma-bufs that Flux imports
 with Vulkan. A software renderer means device selection failed before
 compositing.
 
-From a terminal inside aegis, inspect linux-dmabuf:
+From a terminal inside tessera, inspect linux-dmabuf:
 
 ```bash
 wayland-info |
@@ -174,12 +174,12 @@ rg 'GL Version|GL Renderer' "$runtime_log"
 The renderer should name the physical Intel, AMD, or NVIDIA GPU, not
 `llvmpipe`. When comparing against Niri, use the same application build,
 Flatpak runtime, graphics settings, display mode, and frame limiter. If Niri
-reports hardware rendering while aegis reports `llvmpipe`, investigate
-aegis's linux-dmabuf feedback before compositor timing.
+reports hardware rendering while tessera reports `llvmpipe`, investigate
+tessera's linux-dmabuf feedback before compositor timing.
 
 Use the following fault split:
 
-- No linux-dmabuf v4 or no main device: inspect the Aegis startup log for the
+- No linux-dmabuf v4 or no main device: inspect the Tessera startup log for the
   selected Vulkan DRM node and feedback-table errors.
 - Version 4 is correct but the client still uses `llvmpipe`: check
   `flatpak info --show-permissions sh.ppy.osu | rg 'devices|dri'`, the Flatpak
@@ -191,7 +191,7 @@ Use the following fault split:
 
 The warning
 `presentation batch still owns scanout after 1s`
-means the page-flip watchdog fired. Aegis deliberately keeps the ownership
+means the page-flip watchdog fired. Tessera deliberately keeps the ownership
 boundary instead of reusing a buffer that KMS may still scan. Check kernel DRM
 messages, connector state, and whether every CRTC in the atomic batch emitted
 its page-flip event.
@@ -202,28 +202,28 @@ device identity.
 
 ## Quit
 
-Request a normal shutdown from a terminal inside aegis:
+Request a normal shutdown from a terminal inside tessera:
 
 ```bash
-./target/release/aegis quit
+./target/release/tessera quit
 ```
 
 You can also press `Super+Ctrl+Q` (or the alternate
-`Super+Shift+Return` binding). Aegis disables its outputs and releases the
+`Super+Shift+Return` binding). Tessera disables its outputs and releases the
 seat and DRM device before returning to the TTY. See
 [System Shortcuts](../reference/keyboard-shortcuts.md) for the complete
 shortcut reference.
 
 ## Notes
 
-- Run aegis as the normal user through `seatd` or `logind`; do not use root to
+- Run tessera as the normal user through `seatd` or `logind`; do not use root to
   bypass device permissions.
-- Only one aegis process under the same `$XDG_RUNTIME_DIR` can provide the IPC
-  socket. Stop an existing aegis session before this test.
-- When running aegis on a separate VT while another compositor (e.g. Niri or Sway)
+- Only one tessera process under the same `$XDG_RUNTIME_DIR` can provide the IPC
+  socket. Stop an existing tessera session before this test.
+- When running tessera on a separate VT while another compositor (e.g. Niri or Sway)
   is actively running under the same user account, wrap the command in
   `dbus-run-session` (e.g.
-  `dbus-run-session env AEGIS_BACKEND=drm target/release/aegis`).
+  `dbus-run-session env TESSERA_BACKEND=drm target/release/tessera`).
   This creates an isolated D-Bus session bus so Flatpak apps
   (`flatpak-session-helper`), D-Bus portals, and single-instance applications
   (like Firefox) do not route their windows back to the other compositor's
@@ -231,8 +231,8 @@ shortcut reference.
 - Nested mode does not test atomic modesetting, libinput, libseat, physical
   hotplug, or VT suspend and resume.
 - Interaction Domain application isolation must be tested through the packaged
-  `aegis.service`, not a directly started binary.
+  `tessera.service`, not a directly started binary.
 - If the screen becomes unusable, switch to the reserved VT or connect over
-  SSH. Run `pgrep -a -x aegis`, verify the exact PID, then use
+  SSH. Run `pgrep -a -x tessera`, verify the exact PID, then use
   `kill -TERM <pid>`. Use `kill -KILL <pid>` only if that verified process does
   not stop.

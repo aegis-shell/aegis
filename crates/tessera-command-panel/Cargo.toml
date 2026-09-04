@@ -1,0 +1,43 @@
+[package]
+name = "tessera-command-panel"
+description = "Modal command panel for the tessera compositor: quick settings, hosted settings modules, tray interaction, and notifications in dark glass VR/AR HUD panels (ADR-0080)"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+tessera-model = { workspace = true }
+tessera-design = { workspace = true }
+tessera-ui = { workspace = true }
+libc.workspace = true
+# Settings module registry hosted in the main panel's module tabs.
+tessera-settings = { workspace = true }
+# Shared personalized profile plus the optional still/VRM portrait runtime.
+tessera-shell = { workspace = true, features = ["persona"] }
+tessera-tray = { workspace = true }
+# Direct dep purely so this crate's build script receives
+# DEP_FLUX_SCENE_GRAPH_RPATHS (the persona VRM path links the scene graph)
+# and can re-emit the rpaths for the test harness — `rustc-link-arg` does
+# not propagate across crates.
+flux-scene-graph-sys = { workspace = true }
+# SNI tray icon upload: borrowed flux device + texture cache (same pixel ->
+# GPU path as the compositor's app icon cache).
+flux = { workspace = true }
+lens = { workspace = true }
+# Direct dep purely so this crate's build script receives DEP_LENS_RPATHS
+# (published via the -sys crate's `links` metadata) and can re-emit the rpaths
+# for the test harness — `rustc-link-arg` does not propagate across crates.
+lens-sys = { workspace = true }
+log = { workspace = true }
+# MPRIS media-session snapshot and transport controls run on a blocking
+# session-bus worker; the render thread only reads its shared snapshot.
+zbus = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["flux-scene-graph-sys", "lens-sys"]
+
+[lints]
+workspace = true

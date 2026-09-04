@@ -1,11 +1,11 @@
 # How to Configure Locking and Idle
 
-Aegis can dim the backlight, lock the session, turn displays off, and suspend
+Tessera can dim the backlight, lock the session, turn displays off, and suspend
 after increasing periods without keyboard, pointer, or touch activity.
 
 ## Lock Immediately
 
-Press `Super+L`. Aegis covers every output and sends keyboard, pointer, and
+Press `Super+L`. Tessera covers every output and sends keyboard, pointer, and
 touch input only to the lock screen. Enter the current account password and
 press `Enter`, or select the arrow in the password field.
 
@@ -51,11 +51,11 @@ session-scoped — it resets to `balanced` on the next session — and manual
 locking (`Super+L`) plus lock-before-sleep apply in every mode. Switching
 modes takes effect immediately, without restarting the idle coordinator.
 
-The CLI equivalent is `aegis system power-mode <mode>`.
+The CLI equivalent is `tessera system power-mode <mode>`.
 
 ## Configure the Policy as TOML
 
-Edit `$XDG_CONFIG_HOME/aegis/config.toml`:
+Edit `$XDG_CONFIG_HOME/tessera/config.toml`:
 
 ```toml
 [idle]
@@ -78,7 +78,7 @@ for exact bounds and defaults.
 ## Understand Session Differences
 
 A direct DRM/KMS session owns the physical backlight, displays, and system
-sleep transition. A nested Aegis session locks inside its own window but
+sleep transition. A nested Tessera session locks inside its own window but
 leaves brightness, display power, and suspend to the outer desktop.
 
 Display power-off and suspend wait until the compositor has confirmed a

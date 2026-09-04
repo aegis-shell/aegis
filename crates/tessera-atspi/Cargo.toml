@@ -1,0 +1,24 @@
+[package]
+name = "tessera-atspi"
+description = "Out-of-process AT-SPI adapter for Tessera semantic observation and actions"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tessera-model = { workspace = true, features = ["serde"] }
+tessera-ipc.workspace = true
+tessera-ipc-client.workspace = true
+tessera-semantic.workspace = true
+async-io.workspace = true
+atspi.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+log.workspace = true
+tessera-logging.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true

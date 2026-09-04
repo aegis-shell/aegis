@@ -2,8 +2,8 @@
 
 Status: **Partial**.
 
-Current tests in `aegis-design` enforce exact token values and relationships,
-and `aegis-ui` tests shared geometry, state calculations, and motion math.
+Current tests in `tessera-design` enforce exact token values and relationships,
+and `tessera-ui` tests shared geometry, state calculations, and motion math.
 There is no complete design lint, automated WCAG suite, component visual
 catalog, or token-coverage report.
 
@@ -11,8 +11,8 @@ catalog, or token-coverage report.
 
 | Gate | Purpose | Current status |
 |-----|---------|----------------|
-| Token invariant tests | Preserve role values and cross-appearance relationships | Adopted in `aegis-design` |
-| Component behavior tests | Preserve geometry, motion, and interaction calculations | Partial across `aegis-ui` and consumers |
+| Token invariant tests | Preserve role values and cross-appearance relationships | Adopted in `tessera-design` |
+| Component behavior tests | Preserve geometry, motion, and interaction calculations | Partial across `tessera-ui` and consumers |
 | Design lint | Reject literals or variants that bypass an adopted role | Not implemented |
 | Accessibility tests | Check semantics, keyboard paths, focus, targets, and contrast | Partial and mostly manual |
 | Visual regression | Compare deterministic component and material scenarios | Material-specific harnesses only |
@@ -43,7 +43,7 @@ is explicit. “Looks close enough” is not a waiver reason.
 
 ## Initial automation work
 
-- Generate a literal and token-consumer inventory for Aegis-owned UI.
+- Generate a literal and token-consumer inventory for Tessera-owned UI.
 - Add semantic contrast tests for opaque role pairs and backdrop scenario
   tests for translucent text surfaces.
 - Add keyboard and focus tests to shared component scenarios.

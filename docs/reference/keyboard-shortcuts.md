@@ -1,6 +1,6 @@
 # System Shortcuts
 
-Aegis handles global shortcuts in the compositor before delivering input to
+Tessera handles global shortcuts in the compositor before delivering input to
 the focused client. A matched key press and its release are consumed, so an
 application does not also receive the shortcut.
 
@@ -20,11 +20,11 @@ application does not also receive the shortcut.
 | `Super+F11` | Toggle the focused toplevel between fullscreen and its prior state |
 | `Super+L` | Lock the session |
 | `Print` | Open the interactive screenshot region selector |
-| `Super+Ctrl+Q` | Gracefully quit the current Aegis instance |
-| `Super+Shift+Return` | Gracefully quit the current Aegis instance |
+| `Super+Ctrl+Q` | Gracefully quit the current Tessera instance |
+| `Super+Shift+Return` | Gracefully quit the current Tessera instance |
 | `Ctrl+Alt+Escape` | Force every open modal dialog (consent prompts, the low-battery alert) to its cancel/deny exit |
 
-The quit shortcuts stop only the Aegis process that receives the input. The
+The quit shortcuts stop only the Tessera process that receives the input. The
 normal shutdown path disables its outputs, releases the seat and Direct
 Rendering Manager (DRM) device, and returns control to the terminal. This is
 the preferred exit path during VT testing.
@@ -40,7 +40,7 @@ is compositor-owned and not a configurable `[[keybind]]` entry.
 
 The launcher, Prism, and command-panel toggles, `Super+L`, `Print`, and the quit
 shortcuts
-remain available while trusted Aegis chrome owns the keyboard. No global
+remain available while trusted Tessera chrome owns the keyboard. No global
 shortcut runs while the session is locked or while the focused client has
 active keyboard-shortcut inhibition. The development-only
 `[dev] allow_quit_while_locked` option lifts the lock-screen exclusion for
@@ -82,7 +82,7 @@ does not perform VT switching.
 
 Three- and four-finger swipes are compositor-owned (ADR-0080, ADR-0082,
 ADR-0119):
-they are claimed by Aegis and never forwarded to client
+they are claimed by Tessera and never forwarded to client
 `zwp_pointer_gestures_v1` objects. A three-finger swipe latches its axis
 once it travels 30 px, then fires one step per 120 px of travel. Swipes
 with any other finger count forward to clients unchanged.

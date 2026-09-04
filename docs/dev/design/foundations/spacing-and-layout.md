@@ -2,7 +2,7 @@
 
 Status: **Partial**.
 
-Aegis has shared component metrics and layout helpers, but it does not yet
+Tessera has shared component metrics and layout helpers, but it does not yet
 have one complete spacing scale, responsive grid, or breakpoint vocabulary.
 Existing shared values remain authoritative for their components; this page
 defines how they grow into a system without relabeling local constants as
@@ -12,7 +12,7 @@ global tokens.
 
 | Space | Use | Rule |
 |------|-----|------|
-| Logical pixels | Component size, gaps, padding, pointer targets | Default unit for `lens` layout and Aegis tokens. |
+| Logical pixels | Component size, gaps, padding, pointer targets | Default unit for `lens` layout and Tessera tokens. |
 | Physical pixels | Raster coverage, optical sampling, hairline verification | Derive from logical values at the output scale. |
 | Output space | Chrome placement and work areas | Respect output geometry, usable area, and scale. |
 | Content space | Client buffers and captured previews | Convert explicitly; do not reuse chrome coordinates by accident. |
@@ -22,8 +22,8 @@ snap during rendering, but the solved logical geometry remains stable.
 
 ## Current shared metrics
 
-`aegis-design::materials::surface_layout` preserves a 4 px child gap and a
-6 px surface pad where that legacy surface contract applies. `aegis-ui`
+`tessera-design::materials::surface_layout` preserves a 4 px child gap and a
+6 px surface pad where that legacy surface contract applies. `tessera-ui`
 centralizes repeated menu, dialog, picker, chip, and settings metrics. Other
 screen and surface layouts remain with their owning components.
 

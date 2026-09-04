@@ -1,0 +1,100 @@
+[package]
+name = "tessera"
+description = "autonomous surface shell — a Wayland compositor"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+# The compositor binary embeds the original MIT-licensed cursor theme under
+# assets/cursors/Aegis.
+license.workspace = true
+rust-version.workspace = true
+default-run = "tessera"
+
+[[bin]]
+name = "tessera"
+path = "src/main.rs"
+
+[features]
+# Packaged builds retain the complete compositor chrome. Integrators can
+# disable the default and select only the independently compiled components
+# required by their product without changing the shared shell contract.
+default = ["full-chrome"]
+full-chrome = [
+    "chrome-dock",
+    "chrome-prism",
+    "chrome-hud",
+    "chrome-command-panel",
+]
+chrome-dock = ["dep:tessera-dock"]
+chrome-prism = ["dep:tessera-prism"]
+# The composition root owns the single tray service used by either surface.
+chrome-hud = ["dep:tessera-hud", "dep:tessera-tray"]
+chrome-command-panel = ["dep:tessera-command-panel", "dep:tessera-tray"]
+
+[dependencies]
+tessera-security.workspace = true
+tessera-semantic.workspace = true
+tessera-model = { workspace = true }
+# Design tokens: scene colors and glass material policy (single source).
+tessera-design = { workspace = true }
+tessera-compositor = { workspace = true }
+tessera-backend = { workspace = true }
+tessera-render = { workspace = true }
+tessera-shell = { workspace = true }
+# Chrome components split out of tessera-shell (ADR-0044); only the binary
+# composes them into the shell.
+tessera-dock = { workspace = true, optional = true }
+tessera-prism = { workspace = true, optional = true }
+tessera-hud = { workspace = true, optional = true }
+# SNI tray service shared by the HUD and the command panel (ADR-0080).
+tessera-tray = { workspace = true, optional = true }
+# Modal command panel (ADR-0080).
+tessera-command-panel = { workspace = true, optional = true }
+tessera-wallpaper = { workspace = true }
+# Declarative configuration: TOML schema + live reload (ADR-0026).
+tessera-config = { workspace = true }
+# IPC and introspection surface (ADR-0027).
+tessera-ipc = { workspace = true }
+# Native resource commands dispatched through the same executable.
+tessera-commands = { workspace = true }
+# Launcher: enumerate `.desktop` entries and spawn them detached (ADR-0022).
+# Only the binary wires these; tessera-shell and tessera-render stay free of them.
+tessera-desktop-entries = { workspace = true }
+tessera-launcher = { workspace = true }
+flux = { workspace = true }
+lens = { workspace = true }
+# Liquid-glass material compositor (ADR-0063 moved it out of flux).
+prism = { workspace = true }
+image = { workspace = true }
+libc = { workspace = true }
+# SVG cursor rasterization for the software cursor (ADR-0070). Pure Rust,
+# with text/raster-image features off since the bundled cursor art is
+# path/fill/stroke only.
+resvg = { workspace = true }
+usvg = { workspace = true }
+tiny-skia = { workspace = true }
+# Embeds the bundled Aegis cursor theme as the default fallback.
+include_dir = { workspace = true }
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+log.workspace = true
+tracing.workspace = true
+tessera-logging.workspace = true
+# Direct deps purely so this binary's build script receives DEP_FLUX_RPATHS /
+# DEP_LENS_RPATHS (published via the -sys crates' `links` metadata) and can
+# re-emit the rpaths — `rustc-link-arg` does not propagate across crates.
+flux-sys = { workspace = true }
+flux-scene-graph-sys = { workspace = true }
+lens-sys = { workspace = true }
+prism-sys = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["flux-scene-graph-sys", "lens-sys", "prism-sys"]
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

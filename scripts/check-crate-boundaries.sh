@@ -10,7 +10,7 @@ internal_dependencies() {
     | select(.name == $package)
     | .dependencies[]
     | select(.kind == null or .kind == "normal")
-    | select(.name == "aegis" or (.name | startswith("aegis-")))
+    | select(.name == "tessera" or (.name | startswith("tessera-")))
     | .name
   ' <<<"$metadata" | sort -u
 }
@@ -38,25 +38,25 @@ assert_internal_dependencies() {
 # Foundation crates stay effect-free or transport-neutral. Higher layers may
 # depend downward, but server, renderer, shell, and binary crates never leak
 # back into these contracts.
-assert_internal_dependencies aegis-model
-assert_internal_dependencies aegis-wayland-protocols
-assert_internal_dependencies aegis-security aegis-model
-assert_internal_dependencies aegis-semantic aegis-model
-assert_internal_dependencies aegis-config aegis-model
-assert_internal_dependencies aegis-ipc aegis-model aegis-security aegis-semantic
-assert_internal_dependencies aegis-ipc-client aegis-model aegis-ipc
+assert_internal_dependencies tessera-model
+assert_internal_dependencies tessera-wayland-protocols
+assert_internal_dependencies tessera-security tessera-model
+assert_internal_dependencies tessera-semantic tessera-model
+assert_internal_dependencies tessera-config tessera-model
+assert_internal_dependencies tessera-ipc tessera-model tessera-security tessera-semantic
+assert_internal_dependencies tessera-ipc-client tessera-model tessera-ipc
 
 # Native management commands remain independently buildable and testable.
-# aegis-security is allowed for the local durable-audit operations (ADR-0137):
-# `aegis audit status|verify|ack-export` open the sealed audit store directly,
+# tessera-security is allowed for the local durable-audit operations (ADR-0137):
+# `tessera audit status|verify|ack-export` open the sealed audit store directly,
 # never through a running compositor.
-assert_internal_dependencies aegis-commands aegis-model aegis-config aegis-ipc aegis-security
+assert_internal_dependencies tessera-commands tessera-model tessera-config tessera-ipc tessera-security
 
 # Core compositor mechanisms do not depend on one another through the binary
 # or through presentation-layer crates.
-assert_internal_dependencies aegis-backend aegis-model aegis-wayland-protocols
-assert_internal_dependencies aegis-render aegis-model
+assert_internal_dependencies tessera-backend tessera-model tessera-wayland-protocols
+assert_internal_dependencies tessera-render tessera-model
 assert_internal_dependencies \
-  aegis-compositor aegis-model aegis-semantic aegis-wayland-protocols
+  tessera-compositor tessera-model tessera-semantic tessera-wayland-protocols
 
 printf 'crate dependency boundaries: ok\n'

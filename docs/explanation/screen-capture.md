@@ -1,10 +1,10 @@
 # Screen Capture and Streaming
 
 How pixels travel from a recording or casting application to compositor
-frames, and why aegis deliberately does not expose the standard Wayland
+frames, and why tessera deliberately does not expose the standard Wayland
 capture protocols. The frame path spans two repositories; this page is the
 compositor-side view. The portal backend's own reference is
-[its documentation](https://github.com/aegis-shell/xdg-desktop-portal-aegis).
+[its documentation](https://github.com/aegis-shell/xdg-desktop-portal-atrium).
 
 ## The Four Processes
 
@@ -15,22 +15,22 @@ differs from the standard XDG desktop in one place only:
 |---------|------|
 | Consumer (OBS, a browser, a remote-desktop agent) | Talks ScreenCast D-Bus and PipeWire only |
 | `xdg-desktop-portal` | Frontend: source picker, consent, PipeWire node id |
-| `xdg-desktop-portal-aegis` | Backend: a PipeWire stream node **and** a compositor IPC client |
-| aegis compositor | The only frame source; owns pacing, capture, and authorization |
+| `xdg-desktop-portal-atrium` | Backend: a PipeWire stream node **and** a compositor IPC client |
+| tessera compositor | The only frame source; owns pacing, capture, and authorization |
 
 PipeWire never talks to the compositor. The portal backend is the bridge,
 playing the same two roles `xdg-desktop-portal-wlr` plays on wlroots — a
 Wayland-side client of the compositor and a PipeWire node for the consumer.
-The difference is the client side: a scoped aegis IPC connection instead of
+The difference is the client side: a scoped tessera IPC connection instead of
 `wlr-screencopy-unstable-v1` or `ext-image-copy-capture-v1`.
 
 ```text
-[consumer] --D-Bus--> [xdg-desktop-portal] --(backend API)--> [portal-aegis]
+[consumer] --D-Bus--> [xdg-desktop-portal] --(backend API)--> [portal-tessera]
      |                                                            |  scoped IPC
      |                     PipeWire (distribution bus only)      |
      +------------------------- frames <-------------------------+----------+
                                                                 |
-                                                    [aegis compositor]
+                                                    [tessera compositor]
 ```
 
 ## Frame Source and Pacing
@@ -111,7 +111,7 @@ The deliberate trade, recorded in
   `ext-image-copy-capture-v1` — and scheduling integrated with the frame
   loop (ADR-0130's stream-paced presentation has no protocol equivalent).
 - **Cost**: capture tools that only speak the standard protocols (grim,
-  wf-recorder, wayvnc) do not work against aegis, and the two repositories
+  wf-recorder, wayvnc) do not work against tessera, and the two repositories
   evolve the shared IPC contract in lockstep.
 
 Adopting `ext-image-copy-capture-v1` later as an additional, scope-gated

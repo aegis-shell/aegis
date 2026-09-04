@@ -9,7 +9,7 @@ extend-ignore-identifiers-re = [
 
 [default.extend-words]
 # Project-specific terms, acronyms and abbreviations
-aegis = "aegis"
+tessera = "tessera"
 optics = "optics"
 atspi = "atspi"
 subcompositor = "subcompositor"

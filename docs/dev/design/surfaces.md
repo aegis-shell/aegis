@@ -3,7 +3,7 @@
 Chrome surfaces pick one material each, by role. The analytic
 [Liquid Glass](liquid-glass.md) material renders in the compositor's SDF
 pass; other surfaces are painted Lens overlays and may be opaque or sit over
-the shared frosted backdrop blur. Tokens live in `aegis-design` (see
+the shared frosted backdrop blur. Tokens live in `tessera-design` (see
 [ADR-0046](../../adr/0046-design-system-crate.md)); components read them
 through material factories instead of hard-coding values.
 
@@ -17,7 +17,7 @@ through material factories instead of hard-coding values.
 | Command panel | Solid grouped surface | Opaque light/dark canvas, elevated panels, recessed cards, and system-blue interaction states |
 
 Do not improvise new materials per component. If none of the rows fits,
-extend `aegis-design` with a semantic factory and document it here.
+extend `tessera-design` with a semantic factory and document it here.
 
 Selection markers are not surfaces. A region selection, window highlight,
 or other marquee over pixels the user is about to capture never takes a
@@ -79,7 +79,7 @@ frost and adaptive tint, damp the backdrop's surviving chroma, and pin
 the plate polarity against their text tone (smoke under the dark
 appearance's light text, pearl under the light appearance's dark text).
 The other roles keep the reference recipe and the shader's per-pixel
-polarity. The exact strengths are tokens in `aegis-design`.
+polarity. The exact strengths are tokens in `tessera-design`.
 
 The current role-to-component mapping:
 

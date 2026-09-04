@@ -1,6 +1,6 @@
 # Roadmap
 
-The milestone sequence aegis follows from its current state to a desktop a
+The milestone sequence tessera follows from its current state to a desktop a
 human uses daily, and onward to the agent phase described in
 [Vision and Scope](vision.md). Each milestone is verifiable before the next
 begins. This page replaces the inline roadmap that used to live in
@@ -35,7 +35,7 @@ committed; the verification criteria are.
 
 ## M0: Nested Bring-up
 
-**Outcome.** aegis runs as a client of an existing Wayland session and flux
+**Outcome.** tessera runs as a client of an existing Wayland session and flux
 presents cleared frames into the host window, with lens chrome visible.
 
 **Status.** Complete. See [ADR-0003](../adr/0003-nested-first-bring-up.md).
@@ -107,14 +107,14 @@ their application's saved main-window geometry.
 
 ## M4: DRM/KMS Backend
 
-**Outcome.** aegis drives display hardware directly from a bare TTY through a
+**Outcome.** tessera drives display hardware directly from a bare TTY through a
 DRM/KMS backend, with libinput for input and libseat for session and device
 ownership. The nested backend remains for development. Both implement the
 `Backend` trait, so the server, renderer, and shell are unchanged.
 
 **Status.** In progress — code complete, pending hardware verification. The
 backend abstraction ships in
-([`aegis-backend`](../../crates/aegis-backend)) with two implementations behind
+([`tessera-backend`](../../crates/tessera-backend)) with two implementations behind
 the `Backend` trait: nested (development) and DRM/KMS. The DRM backend does
 atomic modesetting with a TEST_ONLY preflight, scans out Flux offscreen
 dma-bufs (GBM-less) through a two-slot page-flip ring with explicit-sync
@@ -122,10 +122,10 @@ dma-bufs (GBM-less) through a two-slot page-flip ring with explicit-sync
 (pointer, keyboard, touch, touchpad gestures, tablet tools), owns the session
 through libseat with VT switch suspend/resume, and handles udev hotplug with
 per-connector workspace restore (ADR-0025) and surface recreation when the
-modifier set changes. `AEGIS_BACKEND=auto|drm|nested` selects the target at
+modifier set changes. `TESSERA_BACKEND=auto|drm|nested` selects the target at
 startup.
 
-**Verification.** aegis starts from a TTY on a single monitor, lights the
+**Verification.** tessera starts from a TTY on a single monitor, lights the
 display, and runs M3's chrome against real clients without a host session.
 The known-risk paths to exercise first are live event dispatch while an
 atomic batch waits for every CRTC, a VT round-trip with a flip in flight, and
@@ -142,11 +142,11 @@ shell reads, so external programs can query and mutate windows, workspaces,
 outputs, and inputs.
 
 **Status.** Complete. The configuration system shipped
-(ADR-0026): one TOML file at `$XDG_CONFIG_HOME/aegis/config.toml`, schema
+(ADR-0026): one TOML file at `$XDG_CONFIG_HOME/tessera/config.toml`, schema
 version 1, mtime live reload, and structured diagnostics. The IPC shipped its
 full
 seed surface (ADR-0027): versioned length-framed JSON over
-`$XDG_RUNTIME_DIR/aegis.sock`, capability-gated handshake, `query`
+`$XDG_RUNTIME_DIR/tessera.sock`, capability-gated handshake, `query`
 (`GetWindows`, `GetWorkspaces`, `GetOutputs`, `GetNotifications`),
 `control`/`session` commands (`Focus`/`Close`/`Move`/`Cycle`/
 `SwitchWorkspace[To]`/`MoveToWorkspace`/`ToggleTiling`/`Quit`) applied on the
@@ -175,7 +175,7 @@ base and an optional, policy-driven tiling layer applied on top. Window
 rules from the configuration file drive placement and layout policy.
 
 **Status.** In progress. The pure workspace/output model landed in
-`aegis-model::workspace` (`WorkspaceModel`, `Workspace`, `Output`,
+`tessera-model::workspace` (`WorkspaceModel`, `Workspace`, `Output`,
 `WorkspaceId`/`OutputId`): dynamic per-output workspaces, the trailing-empty
 invariant, empty-workspace reaping, toplevel place/remove/move, switch and
 switch-to, and output-removal relocation — fully unit-tested in isolation.
@@ -185,10 +185,10 @@ switching (`Super+Left`/`Super+Right`) drops keyboard focus from a now-hidden
 window, and removal reaps the emptied workspace. The IPC exposes
 `GetWorkspaces`, `SwitchWorkspace`/`SwitchWorkspaceTo`, and a
 `WorkspaceChanged` event (ADR-0027). A top-center workspace indicator
-(HUD chrome component, hosted by the `aegis-hud` crate)
+(HUD chrome component, hosted by the `tessera-hud` crate)
 shows one numbered tile per workspace,
 highlights the current, and switches on click. The tiling policy is
-implemented end to end: a pure `aegis-model::layout` module (`LayoutRole`,
+implemented end to end: a pure `tessera-model::layout` module (`LayoutRole`,
 `LayoutParams`, the `Layout` trait, a `MasterStack` policy), a `layout_role`
 field on `Window`, and server application — `Super+T` or the IPC
 `ToggleTiling` command flips the current workspace to tiled, the master-stack
@@ -221,7 +221,7 @@ with per-output mapping, and basic color management land with the libinput
 backend.
 
 **Status.** In progress. The per-output geometry model landed in
-`aegis-model::output` (`OutputMode`, `Scale`, `OutputGeometry`) — see
+`tessera-model::output` (`OutputMode`, `Scale`, `OutputGeometry`) — see
 [ADR-0028](../adr/0028-output-and-monitor-model.md) — and is now wired end to
 end: backends report real connectors and geometry, the server advertises
 per-connector `wl_output` (v4, with name/description) and `zxdg_output_v1`,
@@ -281,11 +281,11 @@ itself: non-interactive window geometry changes (tiling, IPC geometry)
 record previous and target rectangles, publish them in the snapshot, and
 interpolate at draw time, with subsurface trees glued to their root. The
 unified overview (window grid + workspace rail, live thumbnails, click to
-focus, `Super+O` or `aegis overview`) is in daily use, and a screenshot
-path (`aegis display capture`, scoped `CaptureOutput` pixel capture per
+focus, `Super+O` or `tessera overview`) is in daily use, and a screenshot
+path (`tessera display capture`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
 single-frame half of the capture story. The independently developed and
-packaged `xdg-desktop-portal-aegis` backend now serves Settings v1,
+packaged `xdg-desktop-portal-atrium` backend now serves Settings v1,
 Screenshot v3, ScreenCast v6, Secret v1 with an at-rest vault, Lockdown,
 FileChooser, Email, and Account. Inhibit, AppChooser, Notification,
 DynamicLauncher, and Wallpaper route to the GTK backend until their complete
@@ -302,9 +302,9 @@ producer; consumers that negotiate it get the zero-copy dmabuf slot-ring
 transport of IPC protocol 25 (ADR-0055's shipped successor), while
 window-target streams and the nested backend keep the sealed-memfd SHM
 transport. The backend does not advertise Background or persistent ScreenCast
-grants until Aegis has the required policy UI, application tracking, and
-PermissionStore integration; the routing default is `aegis;gtk`, so the
-frontend selects Aegis only for advertised interfaces and otherwise uses GTK.
+grants until Tessera has the required policy UI, application tracking, and
+PermissionStore integration; the routing default is `tessera;gtk`, so the
+frontend selects Tessera only for advertised interfaces and otherwise uses GTK.
 Window open/close fade transitions landed
 ([ADR-0124](../adr/0124-window-open-close-fade-transitions.md)): windows fade
 in on map and leave a bounded compositor-owned ghost on close, both
@@ -340,15 +340,15 @@ desktop-dependent semantic surface (semantic element trees) stays open;
 per-window content capture landed with protocol 26
 ([ADR-0117](../adr/0117-per-window-content-capture.md)).
 
-The `aegis-mcp` integration closes the client-side Interaction Domain loop:
+The `tessera-mcp` integration closes the client-side Interaction Domain loop:
 an MCP-compatible agent discovers scoped tools through the bridge, while the
 bridge manages one recoverable Agent Interaction Domain across application
 launch, authority transfer, directed capture, bounded input, and revocation.
-Agent products live out of tree; Aegis ships the platform bridge and the
+Agent products live out of tree; Tessera ships the platform bridge and the
 authority backend, never an agent runtime or frontend. Voice activation and
 shell-native conversation chrome remain follow-up product surfaces
 ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-[ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md),
+[ADR-0087](../adr/0087-tessera-mcp-standalone-platform-bridge-crate.md),
 [ADR-0113](../adr/0113-platform-ai-backend-and-agent-product-removal.md)).
 
 ## Sequencing Rationale

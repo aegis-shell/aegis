@@ -2,7 +2,7 @@
 
 Status: **Partial**.
 
-Aegis shell chrome currently negotiates English (`en-US`) and Simplified
+Tessera shell chrome currently negotiates English (`en-US`) and Simplified
 Chinese (`zh-CN`) from POSIX locale variables or BCP 47 tags. Unknown locales
 and Traditional Chinese fall back to English. The shell catalog is strongly
 typed and embedded so missing keys fail during startup or tests rather than
@@ -61,7 +61,7 @@ layout direction mirrors reading-order relationships:
 
 ## Adoption work
 
-- Move all Aegis-owned UI copy behind one catalog contract.
+- Move all Tessera-owned UI copy behind one catalog contract.
 - Add parameterized messages, plural support, and locale-aware formatting.
 - Introduce layout direction into shared component and geometry APIs.
 - Add pseudo-localized expansion and RTL examples to the component catalog.

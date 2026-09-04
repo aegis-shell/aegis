@@ -2,7 +2,7 @@
 
 Status: **Draft**.
 
-Aegis has no adopted product-wide data grid, tree, chart, or rich editor.
+Tessera has no adopted product-wide data grid, tree, chart, or rich editor.
 This page defines the boundary and intake criteria so feature work does not
 grow incompatible component families.
 
@@ -18,7 +18,7 @@ grow incompatible component families.
 ## Boundary
 
 Generic selection, text editing, accessibility roles, and virtualized layout
-mechanics belong in Optics `lens`. Aegis owns product-specific columns,
+mechanics belong in Optics `lens`. Tessera owns product-specific columns,
 commands, semantic colors, empty states, and domain actions. A feature must
 not implement a private editor engine or data-grid interaction model merely
 to ship a single screen.

@@ -1,6 +1,6 @@
 # Session Service Commands
 
-`aegis` supervises `aegis-idle`, and `aegis-idle` starts `aegis-lock`.
+`tessera` supervises `tessera-idle`, and `tessera-idle` starts `tessera-lock`.
 Installed session binaries must be siblings. The session path does not search
 `PATH` for replacements.
 
@@ -8,10 +8,10 @@ Installed session binaries must be siblings. The session path does not search
 
 | Command or option | Result |
 |-------------------|--------|
-| `aegis-lock` | Lock the Wayland session connected by `WAYLAND_DISPLAY`. |
-| `aegis-lock --ready-fd FD` | Write one byte after the compositor confirms that the secure frame was presented on every output. `FD` must be an inherited, writable descriptor. |
-| `aegis-lock --help` | Print local usage without connecting to Wayland. |
-| `aegis-lock --version` | Print the package version. |
+| `tessera-lock` | Lock the Wayland session connected by `WAYLAND_DISPLAY`. |
+| `tessera-lock --ready-fd FD` | Write one byte after the compositor confirms that the secure frame was presented on every output. `FD` must be an inherited, writable descriptor. |
+| `tessera-lock --help` | Print local usage without connecting to Wayland. |
+| `tessera-lock --version` | Print the package version. |
 
 The command exits with status `0` after authenticated unlock. A setup,
 protocol, or rendering failure exits nonzero. An unavailable authentication
@@ -23,7 +23,7 @@ restarting a different locker cannot take over that lock.
 
 | Command or option | Default | Result |
 |-------------------|---------|--------|
-| `aegis-idle` | — | Run one idle coordinator for the current session. |
+| `tessera-idle` | — | Run one idle coordinator for the current session. |
 | `--lock-now` | off | Ask the running coordinator to lock; start the sibling lock screen directly if the coordinator is unavailable. |
 | `--dim-after SECONDS\|off` | `300` | Set or disable the backlight-dim stage. |
 | `--lock-after SECONDS\|off` | `600` | Set or disable the automatic lock stage. |
@@ -31,8 +31,8 @@ restarting a different locker cannot take over that lock.
 | `--suspend-after SECONDS\|off` | `1800` | Set or disable the logind suspend request. |
 | `--dim-percent 1..100` | `30` | Set the dimmed hardware-backlight percentage. |
 | `--mode balanced\|awake\|secure` | `balanced` | Select the session power mode (ADR-0140): which stages stay armed. The running coordinator also accepts a live `MODE <name>` control datagram, which re-arms without a restart. |
-| `--socket PATH` | `$XDG_RUNTIME_DIR/aegis.sock` | Select the compositor IPC socket used for output power. |
-| `--control-socket PATH` | `$XDG_RUNTIME_DIR/aegis-idle.sock` | Select the owner-only datagram control socket. |
+| `--socket PATH` | `$XDG_RUNTIME_DIR/tessera.sock` | Select the compositor IPC socket used for output power. |
+| `--control-socket PATH` | `$XDG_RUNTIME_DIR/tessera-idle.sock` | Select the owner-only datagram control socket. |
 | `--no-logind` | off | Disable lock-before-sleep monitoring, the sleep delay inhibitor, and automatic suspend. |
 | `--help` | — | Print local usage. |
 | `--version` | — | Print the package version. |

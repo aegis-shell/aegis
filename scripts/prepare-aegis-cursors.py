@@ -6,7 +6,7 @@ explicit geometry (polygons, capsules, rounded rects). Nothing is copied,
 traced, or derived from any existing cursor theme, so the generated art is
 covered by the project's MIT license like any other first-party source.
 
-Conventions match the runtime contract in ``crates/aegis/src/cursor.rs``:
+Conventions match the runtime contract in ``crates/tessera/src/cursor.rs``:
 
 - one 256x256 ``viewBox`` SVG per cursor under ``cursors/<name>.svg``;
 - white fill, black outline, round joins — legible on light and dark

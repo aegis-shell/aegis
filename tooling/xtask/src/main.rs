@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "cargo xtask")]
-#[command(about = "Aegis workspace engineering and build automation tool")]
+#[command(about = "Tessera workspace engineering and build automation tool")]
 struct Args {
     #[command(subcommand)]
     command: CliCommand,

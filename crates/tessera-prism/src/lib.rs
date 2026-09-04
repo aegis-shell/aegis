@@ -1,0 +1,728 @@
+//! Prism is a compact, Spotlight-style application search surface.
+//!
+//! The component owns only search presentation and interaction state. It
+//! receives the shared application catalog and borrowed icon handles through
+//! [`ChromeUpdate::AppCatalog`], then emits launch or focus intents through
+//! [`ChromeEvents`]. Process creation and Wayland focus remain in the
+//! compositor composition root.
+
+use std::ffi::c_void;
+use std::ops::Range;
+
+use tessera_design::materials::{chrome_place, surface_layout};
+use tessera_design::{Design, GlassRole, materials};
+use tessera_model::app::Entry;
+use tessera_model::input::{KeyChar, key_action};
+use tessera_model::launcher::{Launch, Launcher as SearchBrain};
+use tessera_model::window::Window;
+use tessera_model::workspace::WorkspaceSnapshot;
+use tessera_shell::{
+    AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
+    IconSet, LiquidGlassRegion, Localizer, Message, ellipsize,
+};
+use tessera_ui::{DEFAULT_BACKDROP_BLUR_SIGMA, contains};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
+
+const PANEL_MAX_WIDTH: f32 = 680.0;
+const PANEL_SIDE_MARGIN: f32 = 20.0;
+const PANEL_TOP_MIN: f32 = 64.0;
+const PANEL_TOP_FRACTION: f32 = 0.14;
+const SEARCH_HEIGHT: f32 = 70.0;
+const RESULT_HEIGHT: f32 = 58.0;
+const EMPTY_HEIGHT: f32 = 72.0;
+const MAX_VISIBLE_RESULTS: usize = 6;
+const ICON_SIZE: f32 = 38.0;
+const BACKDROP_BLUR_SIGMA: f32 = DEFAULT_BACKDROP_BLUR_SIGMA;
+const ANIMATION_SPEED: f32 = 22.0;
+
+/// Spotlight-style application search, opened by the default
+/// `Super+Space` binding.
+pub struct Prism {
+    brain: SearchBrain,
+    icons: IconSet,
+    visibility: f32,
+    anim_active: bool,
+    prev_down: bool,
+    reduced_motion: bool,
+    /// The design snapshot the panel paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`tessera_shell::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
+}
+
+impl Prism {
+    /// Construct an empty Prism component. The shell seeds the catalog when
+    /// the component is registered.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            brain: SearchBrain::new(Vec::new()),
+            icons: IconSet::default(),
+            visibility: 0.0,
+            anim_active: false,
+            prev_down: false,
+            reduced_motion: false,
+            design: Design::dark(),
+        }
+    }
+
+    fn toggle_prism(&mut self, _out: &mut ChromeEvents) {
+        self.brain.toggle();
+        self.anim_active = true;
+    }
+
+    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
+        self.brain.replace_apps(catalog.apps.clone());
+        self.icons = catalog.icons.clone();
+    }
+
+    fn advance_visibility(&mut self, target: f32, dt: f32) -> f32 {
+        if self.reduced_motion {
+            self.visibility = target;
+            self.anim_active = false;
+            return target;
+        }
+        let blend = 1.0 - (-ANIMATION_SPEED * dt.clamp(0.0, 1.0 / 30.0)).exp();
+        self.visibility += (target - self.visibility) * blend;
+        self.anim_active = (self.visibility - target).abs() > 0.002;
+        if !self.anim_active {
+            self.visibility = target;
+        }
+        self.visibility.clamp(0.0, 1.0)
+    }
+
+    fn entry_icon(&self, entry: &Entry) -> Option<*mut c_void> {
+        let get = |key: &str| {
+            let key = key.to_ascii_lowercase();
+            (!key.is_empty()).then(|| self.icons.get(&key)).flatten()
+        };
+        entry
+            .startup_wm_class
+            .as_deref()
+            .and_then(get)
+            .or_else(|| get(entry.id.strip_suffix(".desktop").unwrap_or(&entry.id)))
+            .or_else(|| entry.icon.as_deref().and_then(get))
+            .or_else(|| self.icons.default_icon())
+    }
+
+    fn emit(outcome: Option<Launch>, out: &mut ChromeEvents) {
+        match outcome {
+            Some(Launch::Spawn(entry)) => out.activate_entry(*entry),
+            Some(Launch::Focus(window)) => out.clicked = Some(window),
+            Some(Launch::BuiltIn(app)) => out.open_builtin = Some(app),
+            None => {}
+        }
+    }
+
+    fn top(display: (f32, f32)) -> f32 {
+        (display.1 * PANEL_TOP_FRACTION)
+            .max(PANEL_TOP_MIN)
+            .min((display.1 - SEARCH_HEIGHT - PANEL_SIDE_MARGIN).max(PANEL_SIDE_MARGIN))
+    }
+
+    fn result_capacity(display: (f32, f32)) -> usize {
+        let available =
+            (display.1 - Self::top(display) - SEARCH_HEIGHT - PANEL_SIDE_MARGIN).max(0.0);
+        ((available / RESULT_HEIGHT).floor() as usize).min(MAX_VISIBLE_RESULTS)
+    }
+
+    fn panel_rect(display: (f32, f32), result_count: usize, progress: f32) -> Rect {
+        let width = PANEL_MAX_WIDTH.min((display.0 - PANEL_SIDE_MARGIN * 2.0).max(1.0));
+        let rows = result_count.min(Self::result_capacity(display));
+        let results_height = if rows == 0 {
+            EMPTY_HEIGHT
+        } else {
+            rows as f32 * RESULT_HEIGHT
+        };
+        Rect {
+            x: (display.0 - width) * 0.5,
+            y: Self::top(display) - (1.0 - progress.clamp(0.0, 1.0)) * 12.0,
+            w: width,
+            h: (SEARCH_HEIGHT + results_height)
+                .min((display.1 - Self::top(display) - PANEL_SIDE_MARGIN).max(1.0)),
+        }
+    }
+
+    fn visible_range(total: usize, selection: usize, capacity: usize) -> Range<usize> {
+        if capacity == 0 {
+            return 0..0;
+        }
+        if total <= capacity {
+            return 0..total;
+        }
+        let start = selection
+            .saturating_sub(capacity - 1)
+            .min(total.saturating_sub(capacity));
+        start..start + capacity
+    }
+
+    fn row_rect(panel: Rect, visible_position: usize) -> Rect {
+        Rect {
+            x: panel.x,
+            y: panel.y + SEARCH_HEIGHT + visible_position as f32 * RESULT_HEIGHT,
+            w: panel.w,
+            h: RESULT_HEIGHT,
+        }
+    }
+
+    fn close(&mut self) {
+        if self.brain.is_open() {
+            self.brain.close();
+            self.anim_active = true;
+        }
+    }
+}
+
+impl Default for Prism {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Chrome for Prism {
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        input: &Input,
+        windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+        i18n: &Localizer,
+        out: &mut ChromeEvents,
+    ) {
+        let raw = input.as_raw();
+        let display = raw.display_size;
+        let down = raw.mouse_down.first().copied().unwrap_or(false);
+        let pressed = down && !self.prev_down;
+
+        let running = windows
+            .iter()
+            .filter(|window| window.state.activated)
+            .chain(
+                windows
+                    .iter()
+                    .rev()
+                    .filter(|window| !window.state.activated),
+            )
+            .filter_map(|window| window.app_id.as_ref().map(|id| (id.clone(), window.id)))
+            .collect();
+        self.brain.set_running(running);
+
+        let target = if self.brain.is_open() { 1.0 } else { 0.0 };
+        let progress = self.advance_visibility(target, raw.dt_seconds.max(0.0));
+        if !self.brain.is_open() && progress <= 0.001 {
+            self.prev_down = down;
+            return;
+        }
+
+        let filtered = self.brain.filtered().clone();
+        let selection = self.brain.selection();
+        let capacity = Self::result_capacity((display.x, display.y));
+        let range = Self::visible_range(filtered.len(), selection, capacity);
+        let visible_indices = filtered[range.clone()].to_vec();
+        let panel = Self::panel_rect((display.x, display.y), filtered.len(), progress);
+        let cursor = raw.cursor;
+
+        if pressed && self.brain.is_open() && !contains(panel, cursor.x, cursor.y) {
+            self.close();
+        }
+
+        // The gentle dark veil behind the panel is declared in
+        // `backdrop_regions` as a wash into the frost, beneath the glass —
+        // nothing is painted here for it.
+
+        let design = self.design;
+        let type_scale = design.typography;
+        // The glass-panel material already carries the shared panel radius.
+        let mut panel_material = materials::glass_panel(&design);
+        panel_material.bg = design.colors.glass_surface;
+        frame.place(
+            "tessera-prism-panel",
+            &chrome_place(panel, panel_material),
+            |_| {},
+        );
+
+        let search = Rect {
+            x: panel.x,
+            y: panel.y,
+            w: panel.w,
+            h: SEARCH_HEIGHT,
+        };
+        let query_is_empty = self.brain.query().is_empty();
+        let search_text_width = (search.w - 20.0 * 2.0 - 23.0 - 12.0).max(0.0);
+        let shown_query = ellipsize(
+            frame,
+            self.brain.query(),
+            type_scale.title,
+            search_text_width,
+        );
+        let shown_placeholder = ellipsize(
+            frame,
+            i18n.text(Message::SearchApplications),
+            type_scale.title,
+            search_text_width,
+        );
+        let query_metrics = frame.measure_text(&shown_query, type_scale.title);
+        frame.place(
+            "tessera-prism-search",
+            &chrome_place(
+                search,
+                LayoutOpts {
+                    bg: Color::TRANSPARENT,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..surface_layout()
+                },
+            ),
+            |frame| {
+                frame.row_ex(
+                    &LayoutOpts {
+                        width: search.w,
+                        height: search.h,
+                        gap: 12.0,
+                        pad: 20.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.icon(Icon::Search, 23.0);
+                        if query_is_empty {
+                            frame.label_compact_sized(&shown_placeholder, type_scale.title);
+                        } else {
+                            frame.label_compact_sized(&shown_query, type_scale.title);
+                        }
+                    },
+                );
+            },
+        );
+        if self.brain.is_open() {
+            frame.place(
+                "tessera-prism-caret",
+                &chrome_place(
+                    Rect {
+                        x: (search.x + 55.0 + query_metrics.width).min(search.x + search.w - 20.0),
+                        y: search.y + 22.0,
+                        w: 2.0,
+                        h: 26.0,
+                    },
+                    LayoutOpts {
+                        bg: design.colors.application_text,
+                        radius: 1.0,
+                        pad: 0.0,
+                        ..surface_layout()
+                    },
+                ),
+                |_| {},
+            );
+        }
+        frame.place(
+            "tessera-prism-divider",
+            &chrome_place(
+                Rect {
+                    x: panel.x + 16.0,
+                    y: panel.y + SEARCH_HEIGHT - 1.0,
+                    w: (panel.w - 32.0).max(0.0),
+                    h: 1.0,
+                },
+                LayoutOpts {
+                    bg: design.colors.application_border,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
+            |_| {},
+        );
+
+        let mut clicked = None;
+        if filtered.is_empty() {
+            frame.place(
+                "tessera-prism-empty",
+                &chrome_place(
+                    Rect {
+                        x: panel.x,
+                        y: panel.y + SEARCH_HEIGHT,
+                        w: panel.w,
+                        h: (panel.h - SEARCH_HEIGHT).max(1.0),
+                    },
+                    LayoutOpts {
+                        bg: Color::TRANSPARENT,
+                        pad: 0.0,
+                        cross: Align::Center,
+                        ..surface_layout()
+                    },
+                ),
+                |frame| {
+                    frame.centered(panel.w, EMPTY_HEIGHT, |frame| {
+                        frame.label_compact_sized(
+                            i18n.text(Message::NoApplicationsFound),
+                            type_scale.body,
+                        );
+                    });
+                },
+            );
+        } else {
+            for (visible_position, app_index) in visible_indices.iter().copied().enumerate() {
+                let filtered_position = range.start + visible_position;
+                let entry = &self.brain.apps()[app_index];
+                let row = Self::row_rect(panel, visible_position);
+                let hovered = self.brain.is_open() && contains(row, cursor.x, cursor.y);
+                if pressed && hovered {
+                    clicked = Some(filtered_position);
+                }
+                let selected = filtered_position == selection;
+                let icon = self.entry_icon(entry);
+                let text_width = (row.w - 92.0).max(1.0);
+                let name = ellipsize(frame, &entry.name, type_scale.body, text_width);
+                let subtitle = entry
+                    .generic_name
+                    .as_deref()
+                    .or(entry.comment.as_deref())
+                    .map(|text| ellipsize(frame, text, type_scale.footnote, text_width));
+                let running = self.brain.is_running(app_index);
+                frame.place(
+                    &format!("tessera-prism-result-{filtered_position}"),
+                    &chrome_place(
+                        row,
+                        LayoutOpts {
+                            bg: if selected {
+                                design.colors.application_surface_active
+                            } else if hovered {
+                                design.colors.application_surface_hover
+                            } else {
+                                Color::TRANSPARENT
+                            },
+                            pad: 0.0,
+                            ..surface_layout()
+                        },
+                    ),
+                    |frame| {
+                        frame.row_ex(
+                            &LayoutOpts {
+                                width: row.w,
+                                height: row.h,
+                                gap: 12.0,
+                                pad: 10.0,
+                                cross: Align::Center,
+                                ..Default::default()
+                            },
+                            |frame| {
+                                render_icon(frame, icon, progress);
+                                frame.column_ex(
+                                    &LayoutOpts {
+                                        width: text_width,
+                                        height: 42.0,
+                                        gap: 2.0,
+                                        ..Default::default()
+                                    },
+                                    |frame| {
+                                        frame.label_compact_sized(&name, type_scale.body);
+                                        if let Some(subtitle) = &subtitle {
+                                            frame
+                                                .label_compact_sized(subtitle, type_scale.footnote);
+                                        }
+                                    },
+                                );
+                                frame.flex(1.0);
+                                if running {
+                                    frame.label_compact_sized("●", type_scale.caption);
+                                }
+                            },
+                        );
+                    },
+                );
+            }
+        }
+        frame.set_opacity(1.0);
+
+        if let Some(filtered_position) = clicked {
+            Self::emit(self.brain.launch_filtered(filtered_position), out);
+            self.anim_active = true;
+        }
+        self.prev_down = down;
+    }
+
+    fn captures_keyboard(&self) -> bool {
+        self.brain.is_open()
+    }
+
+    fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
+        if !self.brain.is_open() {
+            return;
+        }
+        let outcome = self.brain.handle(key_action(key.keysym, key.ch));
+        if outcome.is_some() || !self.brain.is_open() {
+            self.anim_active = true;
+        }
+        Self::emit(outcome, out);
+    }
+
+    fn captures_pointer(
+        &self,
+        _x: f32,
+        _y: f32,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> bool {
+        self.brain.is_open() || self.visibility > 0.01
+    }
+
+    fn cursor_shape_at(
+        &self,
+        x: f32,
+        y: f32,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Option<CursorShape> {
+        let count = self.brain.filtered().len();
+        let panel = Self::panel_rect(display, count, self.visibility);
+        if !contains(panel, x, y) {
+            return Some(CursorShape::Default);
+        }
+        if y < panel.y + SEARCH_HEIGHT {
+            Some(CursorShape::Text)
+        } else {
+            Some(CursorShape::Pointer)
+        }
+    }
+
+    fn modal_active(&self) -> bool {
+        self.brain.is_open() || self.visibility > 0.01
+    }
+
+    fn visible_during_modal(&self) -> bool {
+        true
+    }
+
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::TogglePrism => {
+                self.toggle_prism(_out);
+            }
+            ChromeCommand::ClosePrism => {
+                self.brain.close();
+                self.visibility = 0.0;
+                self.anim_active = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn prism_active(&self) -> bool {
+        self.brain.is_open()
+    }
+
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::AppCatalog(catalog) => self.update_app_catalog(catalog),
+            ChromeUpdate::ReducedMotion(reduced) => self.reduced_motion = reduced,
+            ChromeUpdate::Appearance(design) => self.design = *design,
+            _ => {}
+        }
+    }
+
+    fn anim_pending(&self) -> bool {
+        self.anim_active
+            || if self.brain.is_open() {
+                (self.visibility - 1.0).abs() > 0.002
+            } else {
+                self.visibility > 0.002
+            }
+    }
+
+    fn requires_composition(&self) -> bool {
+        self.brain.is_open() || self.visibility > 0.01
+    }
+
+    fn backdrop_blur_sigma(&self) -> f32 {
+        if self.brain.is_open() || self.visibility > 0.01 {
+            BACKDROP_BLUR_SIGMA
+        } else {
+            0.0
+        }
+    }
+
+    fn backdrop_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<BackdropRegion> {
+        if !self.brain.is_open() && self.visibility <= 0.01 {
+            return Vec::new();
+        }
+        // The gentle dark veil behind the panel is a wash INTO the frost,
+        // beneath the panel's glass body — it used to be painted by
+        // `render` above the glass, hiding the lens's refraction. The veil
+        // is fullscreen and dims the whole desktop behind the spotlight.
+        vec![BackdropRegion {
+            x: 0.0,
+            y: 0.0,
+            w: display.0,
+            h: display.1,
+            wash: Some(tessera_shell::backdrop_wash(lens::Color::rgba(4, 6, 14, 54))),
+        }]
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        if !self.brain.is_open() && self.visibility <= 0.01 {
+            return Vec::new();
+        }
+        let panel = Self::panel_rect(display, self.brain.filtered().len(), self.visibility);
+        vec![LiquidGlassRegion::from_role(
+            &self.design,
+            GlassRole::ProminentPanel,
+            BackdropRegion::from(panel),
+            self.design.radii.glass_panel,
+            self.visibility,
+        )]
+    }
+}
+
+fn render_icon(frame: &mut Frame, icon: Option<*mut c_void>, progress: f32) {
+    let size = ICON_SIZE * (0.92 + progress.clamp(0.0, 1.0) * 0.08);
+    frame.centered(ICON_SIZE, ICON_SIZE, |frame| match icon {
+        Some(pointer) => unsafe {
+            frame.image(pointer as *mut lens::sys::flux_image, size, size);
+        },
+        None => {
+            frame.column_ex(
+                &LayoutOpts {
+                    width: size,
+                    height: size,
+                    // Neutral slate tile behind the fallback glyph: a
+                    // content color with no semantic role, identical in
+                    // both appearances.
+                    bg: Color::rgba(78, 88, 120, 230),
+                    radius: 9.0,
+                    ..Default::default()
+                },
+                |frame| {
+                    frame.centered(size, size, |frame| {
+                        frame.icon(Icon::FileText, 20.0);
+                    });
+                },
+            );
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, name: &str) -> Entry {
+        Entry {
+            id: id.into(),
+            name: name.into(),
+            ..Entry::default()
+        }
+    }
+
+    #[test]
+    fn result_window_keeps_selection_visible() {
+        assert_eq!(Prism::visible_range(3, 2, 6), 0..3);
+        assert_eq!(Prism::visible_range(10, 0, 6), 0..6);
+        assert_eq!(Prism::visible_range(10, 6, 6), 1..7);
+        assert_eq!(Prism::visible_range(10, 9, 6), 4..10);
+    }
+
+    #[test]
+    fn panel_stays_inside_small_outputs() {
+        let panel = Prism::panel_rect((320.0, 240.0), 10, 1.0);
+        assert!(panel.x >= 0.0);
+        assert!(panel.y >= 0.0);
+        assert!(panel.x + panel.w <= 320.0);
+        assert!(panel.y + panel.h <= 240.0);
+
+        let tiny = Prism::panel_rect((160.0, 100.0), 10, 1.0);
+        assert!(tiny.x >= 0.0);
+        assert!(tiny.y >= 0.0);
+        assert!(tiny.x + tiny.w <= 160.0);
+        assert!(tiny.y + tiny.h <= 100.0);
+        assert_eq!(Prism::result_capacity((160.0, 100.0)), 0);
+    }
+
+    #[test]
+    fn open_panel_is_one_analytic_glass_body() {
+        let mut prism = Prism::new();
+        prism.toggle_prism(&mut ChromeEvents::default());
+        prism.visibility = 0.75;
+        let display = (1280.0, 720.0);
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+
+        let backdrop = prism.backdrop_regions(display, &[], &workspaces);
+        let glass = prism.liquid_glass_regions(display, &[], &workspaces);
+        assert_eq!(backdrop.len(), 1);
+        assert_eq!(glass.len(), 1);
+        assert!(
+            backdrop[0].wash.is_some(),
+            "the veil is a wash into the frost"
+        );
+        assert_eq!(glass[0].bounds.w, 680.0);
+        assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
+        assert_eq!(glass[0].opacity, 0.75);
+    }
+
+    #[test]
+    fn toggle_and_escape_control_prism_only() {
+        let mut prism = Prism::new();
+        prism.update(ChromeUpdate::AppCatalog(&AppCatalog {
+            apps: vec![entry("alpha.desktop", "Alpha")],
+            ..AppCatalog::default()
+        }));
+        prism.command(&ChromeCommand::TogglePrism, &mut ChromeEvents::default());
+        assert!(prism.prism_active());
+        prism.key_char(
+            &KeyChar {
+                keysym: b'x' as u32,
+                ch: Some('x'),
+                mods: tessera_model::input::Mods::NONE,
+            },
+            &mut ChromeEvents::default(),
+        );
+        assert_eq!(prism.brain.query(), "x");
+        prism.key_char(
+            &KeyChar {
+                keysym: tessera_model::input::XKB_KEY_Escape,
+                ch: None,
+                mods: tessera_model::input::Mods::NONE,
+            },
+            &mut ChromeEvents::default(),
+        );
+        assert!(!prism.prism_active());
+        assert!(prism.brain.query().is_empty());
+    }
+
+    #[test]
+    fn enter_emits_selected_application() {
+        let mut prism = Prism::new();
+        prism.update_app_catalog(&AppCatalog {
+            apps: vec![entry("alpha.desktop", "Alpha")],
+            ..AppCatalog::default()
+        });
+        prism.toggle_prism(&mut ChromeEvents::default());
+        let mut events = ChromeEvents::default();
+        prism.key_char(
+            &KeyChar {
+                keysym: tessera_model::input::XKB_KEY_Return,
+                ch: None,
+                mods: tessera_model::input::Mods::NONE,
+            },
+            &mut events,
+        );
+        assert_eq!(
+            events.spawn.as_ref().map(|entry| entry.id.as_str()),
+            Some("alpha.desktop")
+        );
+        assert!(!prism.prism_active());
+    }
+}

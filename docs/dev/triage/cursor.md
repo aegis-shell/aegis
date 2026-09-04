@@ -2,7 +2,7 @@
 
 How to attribute a cursor appearance or behavior bug between the client
 and the compositor before changing any code, and what to do with the
-result. The rule throughout: fix what aegis gets wrong, never paper over
+result. The rule throughout: fix what tessera gets wrong, never paper over
 what a client gets wrong.
 
 ## Who draws the cursor
@@ -11,11 +11,11 @@ Three sources can produce the pixels under the pointer:
 
 - **`wp_cursor_shape_manager_v1`** — the client asserts a shape
   (`default`, `pointer`, `text`, ...) after each `wl_pointer.enter`;
-  aegis rasterizes the matching themed cursor itself. A wrong *image*
+  tessera rasterizes the matching themed cursor itself. A wrong *image*
   (theme, size, hotspot) here is compositor-side; a wrong *shape value*
   is whatever the client requested.
 - **`wl_pointer.set_cursor`** — the client supplies its own cursor
-  surface; aegis only positions and composites it. The image is entirely
+  surface; tessera only positions and composites it. The image is entirely
   client content.
 - **Compositor-owned overlays** — interactive move/resize and shell
   chrome assert their own shapes, bypassing client state.
@@ -65,8 +65,8 @@ Quick symptom table:
 | Symptom | Likely owner | Why |
 |---------|--------------|-----|
 | Cursor flips to the arrow when a submenu opens while the pointer stays on the parent item (Qt/Telegram menus) | Client | Qt popup windows grab the mouse at the widgets level; the cursor is re-evaluated against the grabbing window, where the mapped position hits no item, so Qt asserts the default cursor. See the worked example below. |
-| Cursor stuck as the arrow after entering a surface | Client | The client must assert a cursor on every `wl_pointer.enter`; aegis can only preserve or reset, never invent one. |
-| Wrong cursor image (theme, size, hotspot) for a shape-protocol client | Compositor | aegis owns rasterization of themed shapes. |
+| Cursor stuck as the arrow after entering a surface | Client | The client must assert a cursor on every `wl_pointer.enter`; tessera can only preserve or reset, never invent one. |
+| Wrong cursor image (theme, size, hotspot) for a shape-protocol client | Compositor | tessera owns rasterization of themed shapes. |
 | Cursor flickers or resets when crossing two surfaces of the *same* client | Compositor | Same-client transitions must preserve the cursor; see the invariants above. |
 | Cursor is stale or wrong after focus moves to another application | Compositor | Cross-client transitions own the reset path. |
 
@@ -78,7 +78,7 @@ the pointer — still on the parent menu item — shows the default arrow.
 
 Trace through the invariants:
 
-1. The submenu `xdg_popup` maps. aegis re-hit-tests the stationary
+1. The submenu `xdg_popup` maps. tessera re-hit-tests the stationary
    pointer, which is over the *parent* menu surface. Pointer focus does
    not change; no `leave`/`enter` pair is sent.
 2. Focus, had it moved, would have moved between two surfaces of the
@@ -87,7 +87,7 @@ Trace through the invariants:
    the client: the new `Qt::Popup` window grabs the mouse inside Qt
    widgets, the cursor is evaluated against the grabbing (submenu)
    window where the mapped position covers no item, and Qt asserts the
-   default cursor with the parent menu's enter serial — a request aegis
+   default cursor with the parent menu's enter serial — a request tessera
    must and does accept.
 
 Conclusion: application-level behavior. No compositor change is
@@ -99,9 +99,9 @@ same flip.
 This follows the responsibility boundary of
 [ADR-0001](../../adr/0001-scope-and-responsibility-boundary.md):
 
-- Land a compositor change only when a trace shows aegis violating the
+- Land a compositor change only when a trace shows tessera violating the
   protocol or the invariants above. Regression coverage for cursor
-  focus behavior lives in `crates/aegis-compositor/src/tests/`
+  focus behavior lives in `crates/tessera-compositor/src/tests/`
   (`popup_e2e.rs`); extend it instead of tuning behavior by hand.
 - Do not add heuristics that second-guess a valid client request — for
   example ignoring a `set_shape(default)` because a submenu "probably"

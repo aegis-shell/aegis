@@ -1,24 +1,24 @@
-# How to Connect an MCP Agent to Aegis
+# How to Connect an MCP Agent to Tessera
 
-Use the `aegis-mcp` platform bridge to give any MCP-compatible agent scoped
+Use the `tessera-mcp` platform bridge to give any MCP-compatible agent scoped
 desktop and Agent Interaction Domain tools. The bridge is a stateless MCP
 stdio server; the agent product owns its provider and session configuration
-on its side of the connection. Aegis remains the authority for every
+on its side of the connection. Tessera remains the authority for every
 desktop action.
 
 ## Build the Bridge
 
-From the Aegis repository:
+From the Tessera repository:
 
 ```bash
-cargo build --locked --release -p aegis-mcp
+cargo build --locked --release -p tessera-mcp
 ```
 
-The binary is `target/release/aegis-mcp`.
+The binary is `target/release/tessera-mcp`.
 
 ## Understand First-Run Pairing
 
-There is nothing to declare in the Aegis configuration. The first time the
+There is nothing to declare in the Tessera configuration. The first time the
 bridge connects — during `check`, `smoke`, or the first agent prompt — the
 compositor opens a **pairing prompt**: one row per requested capability
 family (observation, window control, workspaces, Interaction Domains, …),
@@ -36,17 +36,17 @@ sandboxed launches — ask once more at first use, with
 *Deny / Allow once / Allow session / Always allow* options; "Always" is
 remembered until you revoke it.
 
-Review or change everything later with `aegis permissions list`, revoke a
-remembered grant with `aegis permissions revoke <principal> <op>`, trim
+Review or change everything later with `tessera permissions list`, revoke a
+remembered grant with `tessera permissions revoke <principal> <op>`, trim
 the ceiling with `set-ceiling`, rename the principal, or `forget` it
 entirely to force re-pairing.
 
 ## Check the Grant
 
-With Aegis running:
+With Tessera running:
 
 ```bash
-target/release/aegis-mcp check
+target/release/tessera-mcp check
 ```
 
 The JSON output shows the compositor-granted capabilities, allowlists, and
@@ -58,11 +58,11 @@ the command fails closed; run it again to re-trigger pairing.
 Run a live, reversible smoke test before connecting the agent:
 
 ```bash
-target/release/aegis-mcp smoke
+target/release/tessera-mcp smoke
 ```
 
-Watch for an agent notification and a temporary `Aegis Agent · Active` or
-`Aegis Agent · Paused` label in the command panel's Agent Workspaces status
+Watch for an agent notification and a temporary `Tessera Agent · Active` or
+`Tessera Agent · Paused` label in the command panel's Agent Workspaces status
 row (`Super+S`, **System** tab). The row reports Interaction Domain
 authority, not whether the agent process is online. The first smoke run
 after pairing prompts for the sensitive Interaction Domain operations one
@@ -84,17 +84,17 @@ presence in compositor state. A successful command prints a JSON report
 with `"mode": "live"` and `"status": "passed"`.
 
 To verify the real Agent operation feedback path, first open a disposable
-window and find its id with `aegis window`, then run:
+window and find its id with `tessera window`, then run:
 
 ```bash
-target/release/aegis-mcp smoke --input-window <window-id> --observe-seconds 10
+target/release/tessera-mcp smoke --input-window <window-id> --observe-seconds 10
 ```
 
 This opt-in probe temporarily transfers only that window, retains it as a
 read-only mirror on the physical desktop, and applies one pointer move at
 its center. The user's XDG cursor does not move. Look for a semi-transparent
 mask over the mirror with an arrow cursor at its center and an
-`AGENT · Aegis Agent · Pointer move` label. The command obtains a semantic
+`AGENT · Tessera Agent · Pointer move` label. The command obtains a semantic
 observation, commits the pointer move with its single-use token, waits for
 the matching `ActorAction` journal entry, and returns the window to the
 human Interaction Domain even if the probe fails. It does not click, type,
@@ -106,18 +106,18 @@ changes briefly even though cleanup is automatic.
 Print a client configuration entry:
 
 ```bash
-target/release/aegis-mcp print-config
+target/release/tessera-mcp print-config
 ```
 
-The command prints an `[mcp.aegis]` entry using the current executable
+The command prints an `[mcp.tessera]` entry using the current executable
 path and a random stable connector id:
 
 ```toml
-[mcp.aegis]
-command = ["/absolute/path/to/aegis-mcp"]
+[mcp.tessera]
+command = ["/absolute/path/to/tessera-mcp"]
 enabled = true
 read_only = false
-environment = { AEGIS_MCP_INSTANCE_ID = "stable-random-connector-id" }
+environment = { TESSERA_MCP_INSTANCE_ID = "stable-random-connector-id" }
 ```
 
 Register the bridge as a write-capable stdio MCP server in the agent
@@ -150,7 +150,7 @@ to the model directly. When a client exposes only capture metadata, pass
 the returned `image_path` to an image-reading tool the agent product
 provides. Stop before coordinate input rather than guessing if neither
 route makes pixels model-visible. See
-[Capture Compatibility](../reference/aegis-mcp.md#capture-compatibility).
+[Capture Compatibility](../reference/tessera-mcp.md#capture-compatibility).
 
 ## Observe Human-Desktop Windows
 
@@ -171,7 +171,7 @@ the window's own bounds are clipped from the image.
 ## Recover or Reset
 
 The bridge stores the managed Interaction Domain handle under
-`$XDG_RUNTIME_DIR/aegis-mcp/`. The next process recovers it only when the
+`$XDG_RUNTIME_DIR/tessera-mcp/`. The next process recovers it only when the
 stable instance id, authenticated principal, and live Interaction Domain
 owner all agree; a matching cosmetic label is insufficient.
 
@@ -179,8 +179,8 @@ Have the agent call `interaction_domain_reset` only when you want to end
 the Interaction Domain and return its controlled windows to the human
 Interaction Domain. Normal graceful EOF preserves the Interaction Domain
 so connector refresh is non-destructive. Set
-`AEGIS_MCP_REVOKE_ON_EXIT=true` only when process exit must destroy its
+`TESSERA_MCP_REVOKE_ON_EXIT=true` only when process exit must destroy its
 Interaction Domain.
 
 For the complete scope, environment, tool, and exit-status contract, see
-the [aegis-mcp Bridge Reference](../reference/aegis-mcp.md).
+the [tessera-mcp Bridge Reference](../reference/tessera-mcp.md).
