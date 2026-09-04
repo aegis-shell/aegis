@@ -14,6 +14,18 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.52] - 2026-09-04
+
+### Added
+- Embedded unknown.svg as default fallback icon for apps without desktop icons.
+- Modal focus trapping, transient subtree positioning, and attention pulses.
+- Dynamic proportional re-anchoring on tear-off drag from maximized/fullscreen state.
+
+### Changed
+- Completed project rename from Aegis to Tessera across crates, IPC socket (`tessera-ipc.sock`), systemd services, PAM module, environment variables (`TESSERA_*`), and documentation.
+- Corrected backdrop frost and liquid glass separation across shell components.
+
+
 ## [0.0.51] - 2026-08-30
 
 ### Changed

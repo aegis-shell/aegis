@@ -9,461 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aegis"
-version = "0.0.51"
-dependencies = [
- "aegis-backend",
- "aegis-command-panel",
- "aegis-commands",
- "aegis-compositor",
- "aegis-config",
- "aegis-design",
- "aegis-desktop-entries",
- "aegis-dock",
- "aegis-hud",
- "aegis-ipc",
- "aegis-launcher",
- "aegis-logging",
- "aegis-model",
- "aegis-prism",
- "aegis-render",
- "aegis-security",
- "aegis-semantic",
- "aegis-shell",
- "aegis-tray",
- "aegis-wallpaper",
- "flux",
- "flux-scene-graph-sys",
- "flux-sys",
- "image",
- "include_dir",
- "lens",
- "lens-sys",
- "libc",
- "log",
- "prism",
- "prism-sys",
- "resvg",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tiny-skia",
- "tracing",
- "usvg",
- "zeroize",
-]
-
-[[package]]
-name = "aegis-atspi"
-version = "0.0.51"
-dependencies = [
- "aegis-ipc",
- "aegis-ipc-client",
- "aegis-logging",
- "aegis-model",
- "aegis-semantic",
- "async-io",
- "atspi",
- "log",
- "serde_json",
- "sha2",
- "zbus",
-]
-
-[[package]]
-name = "aegis-backend"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "aegis-wayland-protocols",
- "ash",
- "drm",
- "flux",
- "flux-sys",
- "input",
- "libc",
- "libseat",
- "log",
- "pkg-config",
- "thiserror 2.0.20",
- "udev",
-]
-
-[[package]]
-name = "aegis-command-panel"
-version = "0.0.51"
-dependencies = [
- "aegis-design",
- "aegis-model",
- "aegis-settings",
- "aegis-shell",
- "aegis-tray",
- "aegis-ui",
- "flux",
- "flux-scene-graph-sys",
- "lens",
- "lens-sys",
- "libc",
- "log",
- "zbus",
-]
-
-[[package]]
-name = "aegis-commands"
-version = "0.0.51"
-dependencies = [
- "aegis-config",
- "aegis-ipc",
- "aegis-model",
- "aegis-security",
- "clap",
- "clap_complete",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "zeroize",
-]
-
-[[package]]
-name = "aegis-compositor"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "aegis-semantic",
- "aegis-wayland-protocols",
- "getrandom 0.4.3",
- "log",
- "pkg-config",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "xkbcommon 0.9.0",
-]
-
-[[package]]
-name = "aegis-config"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "dirs",
- "libc",
- "serde",
- "tempfile",
- "thiserror 2.0.20",
- "toml",
- "toml_edit",
-]
-
-[[package]]
-name = "aegis-design"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "aegis-desktop-entries"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "dirs",
- "log",
- "rust-ini",
- "tempfile",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "aegis-dock"
-version = "0.0.51"
-dependencies = [
- "aegis-design",
- "aegis-model",
- "aegis-shell",
- "aegis-ui",
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "aegis-hud"
-version = "0.0.51"
-dependencies = [
- "aegis-design",
- "aegis-model",
- "aegis-shell",
- "aegis-tray",
- "aegis-ui",
- "flux",
- "lens",
- "lens-sys",
- "libc",
- "log",
-]
-
-[[package]]
-name = "aegis-idle"
-version = "0.0.51"
-dependencies = [
- "aegis-ipc",
- "aegis-logging",
- "aegis-model",
- "libc",
- "log",
- "wayland-client",
- "wayland-protocols",
- "zbus",
-]
-
-[[package]]
-name = "aegis-ipc"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "aegis-security",
- "aegis-semantic",
- "libc",
- "serde",
- "serde_json",
- "zeroize",
-]
-
-[[package]]
-name = "aegis-ipc-client"
-version = "0.0.51"
-dependencies = [
- "aegis-ipc",
- "aegis-model",
- "libc",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "zeroize",
-]
-
-[[package]]
-name = "aegis-launcher"
-version = "0.0.51"
-dependencies = [
- "aegis-desktop-entries",
- "aegis-model",
- "libc",
- "log",
- "tempfile",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "aegis-lock"
-version = "0.0.51"
-dependencies = [
- "aegis-config",
- "aegis-design",
- "aegis-logging",
- "aegis-shell",
- "aegis-wallpaper",
- "ash",
- "flux",
- "flux-scene-graph-sys",
- "flux-sys",
- "lens",
- "lens-sys",
- "libc",
- "log",
- "pkg-config",
- "smithay-client-toolkit",
- "thiserror 2.0.20",
- "wayland-client",
- "wayland-protocols",
- "xkbcommon 0.9.0",
- "zeroize",
-]
-
-[[package]]
-name = "aegis-logging"
-version = "0.0.51"
-dependencies = [
- "tracing-log",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "aegis-mcp"
-version = "0.0.51"
-dependencies = [
- "aegis-desktop-entries",
- "aegis-ipc",
- "aegis-ipc-client",
- "aegis-model",
- "base64",
- "clap",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "aegis-model"
-version = "0.0.51"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "aegis-prism"
-version = "0.0.51"
-dependencies = [
- "aegis-design",
- "aegis-model",
- "aegis-shell",
- "aegis-ui",
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "aegis-remote"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "aegis-security",
- "fastrand",
- "hmac",
- "log",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "aegis-render"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "flux",
- "flux-composition-graph",
- "flux-sys",
- "libc",
- "log",
-]
-
-[[package]]
-name = "aegis-security"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "flate2",
- "getrandom 0.4.3",
- "hmac",
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
- "zeroize",
-]
-
-[[package]]
-name = "aegis-semantic"
-version = "0.0.51"
-dependencies = [
- "aegis-model",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "aegis-settings"
-version = "0.0.51"
-dependencies = [
- "aegis-design",
- "aegis-model",
- "aegis-shell",
- "aegis-ui",
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "aegis-shell"
-version = "0.0.51"
-dependencies = [
- "aegis-design",
- "aegis-desktop-entries",
- "aegis-model",
- "aegis-ui",
- "fastrand",
- "flux",
- "flux-scene-graph",
- "flux-scene-graph-sys",
- "flux-sys",
- "image",
- "lens",
- "lens-sys",
- "libc",
- "log",
- "notify",
- "resvg",
- "serde",
- "tempfile",
- "thiserror 2.0.20",
- "tiny-skia",
- "toml",
- "usvg",
- "zeroize",
-]
-
-[[package]]
-name = "aegis-tray"
-version = "0.0.51"
-dependencies = [
- "aegis-desktop-entries",
- "image",
- "log",
- "zbus",
-]
-
-[[package]]
-name = "aegis-ui"
-version = "0.0.51"
-dependencies = [
- "aegis-design",
- "aegis-model",
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "aegis-wallpaper"
-version = "0.0.51"
-dependencies = [
- "flux",
- "flux-scene-graph",
- "flux-scene-graph-sys",
- "flux-sys",
- "image",
- "log",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "aegis-wayland-protocols"
-version = "0.0.51"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2443,6 +1988,461 @@ checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tessera"
+version = "0.0.52"
+dependencies = [
+ "flux",
+ "flux-scene-graph-sys",
+ "flux-sys",
+ "image",
+ "include_dir",
+ "lens",
+ "lens-sys",
+ "libc",
+ "log",
+ "prism",
+ "prism-sys",
+ "resvg",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tessera-backend",
+ "tessera-command-panel",
+ "tessera-commands",
+ "tessera-compositor",
+ "tessera-config",
+ "tessera-design",
+ "tessera-desktop-entries",
+ "tessera-dock",
+ "tessera-hud",
+ "tessera-ipc",
+ "tessera-launcher",
+ "tessera-logging",
+ "tessera-model",
+ "tessera-prism",
+ "tessera-render",
+ "tessera-security",
+ "tessera-semantic",
+ "tessera-shell",
+ "tessera-tray",
+ "tessera-wallpaper",
+ "tiny-skia",
+ "tracing",
+ "usvg",
+ "zeroize",
+]
+
+[[package]]
+name = "tessera-atspi"
+version = "0.0.52"
+dependencies = [
+ "async-io",
+ "atspi",
+ "log",
+ "serde_json",
+ "sha2",
+ "tessera-ipc",
+ "tessera-ipc-client",
+ "tessera-logging",
+ "tessera-model",
+ "tessera-semantic",
+ "zbus",
+]
+
+[[package]]
+name = "tessera-backend"
+version = "0.0.52"
+dependencies = [
+ "ash",
+ "drm",
+ "flux",
+ "flux-sys",
+ "input",
+ "libc",
+ "libseat",
+ "log",
+ "pkg-config",
+ "tessera-model",
+ "tessera-wayland-protocols",
+ "thiserror 2.0.20",
+ "udev",
+]
+
+[[package]]
+name = "tessera-command-panel"
+version = "0.0.52"
+dependencies = [
+ "flux",
+ "flux-scene-graph-sys",
+ "lens",
+ "lens-sys",
+ "libc",
+ "log",
+ "tessera-design",
+ "tessera-model",
+ "tessera-settings",
+ "tessera-shell",
+ "tessera-tray",
+ "tessera-ui",
+ "zbus",
+]
+
+[[package]]
+name = "tessera-commands"
+version = "0.0.52"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tessera-config",
+ "tessera-ipc",
+ "tessera-model",
+ "tessera-security",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
+name = "tessera-compositor"
+version = "0.0.52"
+dependencies = [
+ "getrandom 0.4.3",
+ "log",
+ "pkg-config",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tessera-model",
+ "tessera-semantic",
+ "tessera-wayland-protocols",
+ "thiserror 2.0.20",
+ "xkbcommon 0.9.0",
+]
+
+[[package]]
+name = "tessera-config"
+version = "0.0.52"
+dependencies = [
+ "dirs",
+ "libc",
+ "serde",
+ "tempfile",
+ "tessera-model",
+ "thiserror 2.0.20",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
+name = "tessera-design"
+version = "0.0.52"
+dependencies = [
+ "lens",
+ "lens-sys",
+ "tessera-model",
+]
+
+[[package]]
+name = "tessera-desktop-entries"
+version = "0.0.52"
+dependencies = [
+ "dirs",
+ "log",
+ "rust-ini",
+ "tempfile",
+ "tessera-model",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tessera-dock"
+version = "0.0.52"
+dependencies = [
+ "lens",
+ "lens-sys",
+ "tessera-design",
+ "tessera-model",
+ "tessera-shell",
+ "tessera-ui",
+]
+
+[[package]]
+name = "tessera-hud"
+version = "0.0.52"
+dependencies = [
+ "flux",
+ "lens",
+ "lens-sys",
+ "libc",
+ "log",
+ "tessera-design",
+ "tessera-model",
+ "tessera-shell",
+ "tessera-tray",
+ "tessera-ui",
+]
+
+[[package]]
+name = "tessera-idle"
+version = "0.0.52"
+dependencies = [
+ "libc",
+ "log",
+ "tessera-ipc",
+ "tessera-logging",
+ "tessera-model",
+ "wayland-client",
+ "wayland-protocols",
+ "zbus",
+]
+
+[[package]]
+name = "tessera-ipc"
+version = "0.0.52"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tessera-model",
+ "tessera-security",
+ "tessera-semantic",
+ "zeroize",
+]
+
+[[package]]
+name = "tessera-ipc-client"
+version = "0.0.52"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tessera-ipc",
+ "tessera-model",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
+name = "tessera-launcher"
+version = "0.0.52"
+dependencies = [
+ "libc",
+ "log",
+ "tempfile",
+ "tessera-desktop-entries",
+ "tessera-model",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tessera-lock"
+version = "0.0.52"
+dependencies = [
+ "ash",
+ "flux",
+ "flux-scene-graph-sys",
+ "flux-sys",
+ "lens",
+ "lens-sys",
+ "libc",
+ "log",
+ "pkg-config",
+ "smithay-client-toolkit",
+ "tessera-config",
+ "tessera-design",
+ "tessera-logging",
+ "tessera-shell",
+ "tessera-wallpaper",
+ "thiserror 2.0.20",
+ "wayland-client",
+ "wayland-protocols",
+ "xkbcommon 0.9.0",
+ "zeroize",
+]
+
+[[package]]
+name = "tessera-logging"
+version = "0.0.52"
+dependencies = [
+ "tracing-log",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tessera-mcp"
+version = "0.0.52"
+dependencies = [
+ "base64",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tessera-desktop-entries",
+ "tessera-ipc",
+ "tessera-ipc-client",
+ "tessera-model",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tessera-model"
+version = "0.0.52"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "tessera-prism"
+version = "0.0.52"
+dependencies = [
+ "lens",
+ "lens-sys",
+ "tessera-design",
+ "tessera-model",
+ "tessera-shell",
+ "tessera-ui",
+]
+
+[[package]]
+name = "tessera-remote"
+version = "0.0.52"
+dependencies = [
+ "fastrand",
+ "hmac",
+ "log",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tessera-model",
+ "tessera-security",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tessera-render"
+version = "0.0.52"
+dependencies = [
+ "flux",
+ "flux-composition-graph",
+ "flux-sys",
+ "libc",
+ "log",
+ "tessera-model",
+]
+
+[[package]]
+name = "tessera-security"
+version = "0.0.52"
+dependencies = [
+ "flate2",
+ "getrandom 0.4.3",
+ "hmac",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tessera-model",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
+name = "tessera-semantic"
+version = "0.0.52"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tessera-model",
+]
+
+[[package]]
+name = "tessera-settings"
+version = "0.0.52"
+dependencies = [
+ "lens",
+ "lens-sys",
+ "tessera-design",
+ "tessera-model",
+ "tessera-shell",
+ "tessera-ui",
+]
+
+[[package]]
+name = "tessera-shell"
+version = "0.0.52"
+dependencies = [
+ "fastrand",
+ "flux",
+ "flux-scene-graph",
+ "flux-scene-graph-sys",
+ "flux-sys",
+ "image",
+ "lens",
+ "lens-sys",
+ "libc",
+ "log",
+ "notify",
+ "resvg",
+ "serde",
+ "tempfile",
+ "tessera-design",
+ "tessera-desktop-entries",
+ "tessera-model",
+ "tessera-ui",
+ "thiserror 2.0.20",
+ "tiny-skia",
+ "toml",
+ "usvg",
+ "zeroize",
+]
+
+[[package]]
+name = "tessera-tray"
+version = "0.0.52"
+dependencies = [
+ "image",
+ "log",
+ "tessera-desktop-entries",
+ "zbus",
+]
+
+[[package]]
+name = "tessera-ui"
+version = "0.0.52"
+dependencies = [
+ "lens",
+ "lens-sys",
+ "tessera-design",
+ "tessera-model",
+]
+
+[[package]]
+name = "tessera-wallpaper"
+version = "0.0.52"
+dependencies = [
+ "flux",
+ "flux-scene-graph",
+ "flux-scene-graph-sys",
+ "flux-sys",
+ "image",
+ "log",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tessera-wayland-protocols"
+version = "0.0.52"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
