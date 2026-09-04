@@ -799,7 +799,7 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 [[package]]
 name = "flux"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "flux-sys",
 ]
@@ -807,12 +807,12 @@ dependencies = [
 [[package]]
 name = "flux-composition-graph"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 
 [[package]]
 name = "flux-scene-graph"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -823,7 +823,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -833,7 +833,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1212,7 +1212,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lens"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "flux",
  "lens-sys",
@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -1549,7 +1549,7 @@ dependencies = [
 [[package]]
 name = "prism"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "flux",
  "flux-sys",
@@ -1559,7 +1559,7 @@ dependencies = [
 [[package]]
 name = "prism-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.32#99140f390f0ec37bb0f3c5d3a25f4ab37c9de0ee"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.34#3ee9f9fba4b89a4d60d794bb3f7f1039b29fa1ed"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "tessera"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -2038,7 +2038,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-atspi"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "async-io",
  "atspi",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-backend"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "ash",
  "drm",
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-command-panel"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-commands"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "clap",
  "clap_complete",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-compositor"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "getrandom 0.4.3",
  "log",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-config"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "dirs",
  "libc",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-design"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "lens",
  "lens-sys",
@@ -2150,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-desktop-entries"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "dirs",
  "log",
@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-dock"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "lens",
  "lens-sys",
@@ -2174,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-hud"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "flux",
  "lens",
@@ -2190,7 +2190,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-idle"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "libc",
  "log",
@@ -2204,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-ipc"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "libc",
  "serde",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-ipc-client"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "libc",
  "serde",
@@ -2230,7 +2230,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-launcher"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "libc",
  "log",
@@ -2242,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-lock"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "ash",
  "flux",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-logging"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "tracing-log",
  "tracing-subscriber",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-mcp"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "base64",
  "clap",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-model"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "serde",
  "serde_json",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-prism"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "lens",
  "lens-sys",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-remote"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "fastrand",
  "hmac",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-render"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "flux",
  "flux-composition-graph",
@@ -2340,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-security"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "flate2",
  "getrandom 0.4.3",
@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-semantic"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "serde",
  "serde_json",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-settings"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "lens",
  "lens-sys",
@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-shell"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "fastrand",
  "flux",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-tray"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "image",
  "log",
@@ -2417,7 +2417,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-ui"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "lens",
  "lens-sys",
@@ -2427,7 +2427,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-wallpaper"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "flux",
  "flux-scene-graph",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-wayland-protocols"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "cc",
 ]
