@@ -11,6 +11,16 @@ project cuts a tagged release.
 > repository moved from `atrium-desktop/aegis` to
 > `atrium-desktop/tessera`. Environment variables use the `TESSERA_*` prefix
 > (previously `AEGIS_*`). The bundled cursor theme uses the `Tessera` name.
+## [0.0.55] - 2026-09-05
+
+### Added
+- Persistent compositor-owned dock state storage in `$XDG_STATE_HOME/tessera/dock_state.json` via `DockStateStore`.
+
+### Changed
+- Decoupled dock pins and position persistence from `tessera.toml`.
+- Mutually excluded active immersive and modal surfaces (Launcher, Prism, Command Panel, Overview) to prevent simultaneous modal capture.
+- Unified full-screen modal scrim and backdrop depth-of-field blur via `BackdropCover`.
+- Migrated durable audit event log stream path from `$XDG_DATA_HOME` to `$XDG_STATE_HOME`.
 
 ## [0.0.54] - 2026-09-05
 
