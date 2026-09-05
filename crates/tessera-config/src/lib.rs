@@ -1668,13 +1668,6 @@ pub fn load(path: &Path) -> Result<Option<Config>, LoadError> {
 /// representation without exposing it to the System Settings application.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigEdit {
-    /// Replace the complete manually managed dock pin list and disable
-    /// automatic population.
-    SetDockPinned { pinned: Vec<String> },
-    /// Move the dock to a different screen edge (left, bottom, or right).
-    SetDockPosition {
-        position: tessera_model::dock::DockPosition,
-    },
     /// Select the animation played when a window minimizes into the dock.
     SetDockMinimizeAnimation {
         style: tessera_model::dock::MinimizeAnimationStyle,
@@ -1729,10 +1722,6 @@ impl ConfigStore {
     pub fn apply(&self, edit: ConfigEdit) -> Result<(), LoadError> {
         let mut document = editable_document(&self.path)?;
         match edit {
-            ConfigEdit::SetDockPinned { pinned } => apply_dock_pinned(&mut document, &pinned),
-            ConfigEdit::SetDockPosition { position } => {
-                apply_dock_position(&mut document, position)
-            }
             ConfigEdit::SetDockMinimizeAnimation { style } => {
                 apply_dock_minimize_animation(&mut document, style)
             }
@@ -1808,26 +1797,6 @@ fn apply_desktop_preferences(document: &mut DocumentMut, preferences: &DesktopPr
     ui["icon_theme"] = toml_edit::value(preferences.icon_theme.as_str());
     ui["cursor_theme"] = toml_edit::value(preferences.cursor_theme.as_str());
     ui["cursor_size"] = toml_edit::value(i64::from(preferences.cursor_size));
-}
-
-fn apply_dock_pinned(document: &mut DocumentMut, pinned: &[String]) {
-    if !document.get("dock").is_some_and(toml_edit::Item::is_table) {
-        document["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-
-    let mut values = toml_edit::Array::new();
-    for id in pinned {
-        values.push(id.as_str());
-    }
-    document["dock"]["pinned"] = toml_edit::Item::Value(toml_edit::Value::Array(values));
-    document["dock"]["autopopulate"] = toml_edit::value(false);
-}
-
-fn apply_dock_position(document: &mut DocumentMut, position: tessera_model::dock::DockPosition) {
-    if !document.get("dock").is_some_and(toml_edit::Item::is_table) {
-        document["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    document["dock"]["position"] = toml_edit::value(position.name());
 }
 
 fn apply_dock_minimize_animation(

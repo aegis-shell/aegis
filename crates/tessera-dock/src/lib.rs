@@ -382,9 +382,9 @@ pub struct Dock {
     /// changes; defaults to the dark appearance until the first update arrives.
     design: Design,
     /// The screen edge the panel anchors to. Carried on the pushed
-    /// [`AppCatalog`] from the `[dock] position` configuration, switched
+    /// [`AppCatalog`] from the `[dock] position` configuration or `DockStateStore`, switched
     /// optimistically by an edge drag, and persisted by the runtime through
-    /// `ConfigEdit::SetDockPosition`. Drives panel geometry, strip
+    /// `DockStateStore`. Drives panel geometry, strip
     /// orientation, the magnification axis, reserved space, popup placement,
     /// and the autohide trigger shape.
     position: DockPosition,

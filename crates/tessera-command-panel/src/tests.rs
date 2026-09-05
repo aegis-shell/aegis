@@ -31,7 +31,7 @@ fn toggle_opens_and_closes_the_panel() {
     assert!(panel.exclusive_presentation_active());
     assert!(panel.requires_composition());
     assert!(!panel.anim_pending());
-    assert_eq!(panel.backdrop_blur_sigma(), 0.0);
+    assert_eq!(panel.backdrop_blur_sigma(), tessera_shell::BackdropCover::BLUR_SIGMA);
 
     panel.toggle_command_panel(&mut out);
     assert!(!panel.open);
@@ -241,7 +241,7 @@ fn stagger_delays_the_content_panel_behind_the_menu() {
 }
 
 #[test]
-fn command_panel_never_requests_backdrop_effects() {
+fn command_panel_requests_unified_backdrop_cover() {
     let mut panel = CommandPanel::without_sources();
     let display = (1920.0, 1080.0);
     let workspaces = WorkspaceSnapshot {
@@ -256,18 +256,20 @@ fn command_panel_never_requests_backdrop_effects() {
             .is_empty()
     );
     assert!(panel.backdrop_regions(display, &[], &workspaces).is_empty());
+    assert_eq!(panel.backdrop_blur_sigma(), 0.0);
 
-    // Opening paints solid surfaces through Lens and does not activate the
-    // compositor's capture, blur, or liquid-glass paths.
+    // Opening activates the unified BackdropCover depth-of-field blur and wash.
     panel.toggle_command_panel(&mut out);
     panel.reveal = 1.0;
-    assert_eq!(panel.backdrop_blur_sigma(), 0.0);
-    assert!(panel.backdrop_regions(display, &[], &workspaces).is_empty());
-    assert!(
-        panel
-            .liquid_glass_regions(display, &[], &workspaces)
-            .is_empty()
+    assert_eq!(
+        panel.backdrop_blur_sigma(),
+        tessera_shell::BackdropCover::BLUR_SIGMA
     );
+    let regions = panel.backdrop_regions(display, &[], &workspaces);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].w, display.0);
+    assert_eq!(regions[0].h, display.1);
+    assert!(regions[0].wash.is_some());
 }
 
 #[test]

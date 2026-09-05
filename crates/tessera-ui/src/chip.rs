@@ -18,12 +18,14 @@ pub fn chip_layout(design: &Design) -> LayoutOpts {
     }
 }
 
-/// The floating HUD chip foreground tint and border options.
+/// The floating HUD chip layout options. The physical body and rim lighting are
+/// provided exclusively by the compositor's liquid glass pass, so the painted
+/// background and border remain clean and transparent.
 pub fn chip_opts(design: &Design) -> LayoutOpts {
     LayoutOpts {
-        bg: Color::rgba(24, 26, 36, 42),
-        border: Color::rgba(255, 255, 255, 18),
-        border_width: 0.75,
+        bg: Color::TRANSPARENT,
+        border: Color::TRANSPARENT,
+        border_width: 0.0,
         radius: design.radii.chip,
         pad: 0.0,
         ..materials::surface_layout()

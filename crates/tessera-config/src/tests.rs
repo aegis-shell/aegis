@@ -359,36 +359,20 @@ fn dock_position_rejects_the_top_edge_and_unknown_spellings() {
 }
 
 #[test]
-fn config_store_writes_the_dock_position_without_touching_pins() {
-    let path = temp_config_path("dock-position");
-    let original = "schema_version = 2\n\n[dock]\npinned = [\"a.desktop\"]\nautopopulate = true\n";
+fn config_store_writes_the_dock_minimize_animation() {
+    let path = temp_config_path("dock-minimize");
+    let original = "schema_version = 2\n\n[dock]\nminimize_animation = \"genie\"\n";
     std::fs::write(&path, original).unwrap();
     ConfigStore::new(&path)
-        .apply(ConfigEdit::SetDockPosition {
-            position: tessera_model::dock::DockPosition::Right,
+        .apply(ConfigEdit::SetDockMinimizeAnimation {
+            style: tessera_model::dock::MinimizeAnimationStyle::Scale,
         })
         .unwrap();
     let cfg = load(&path).unwrap().expect("file still valid");
-    assert_eq!(cfg.dock.position, tessera_model::dock::DockPosition::Right);
-    assert_eq!(cfg.dock.pinned, vec!["a.desktop"], "pins survive a move");
-    assert!(
-        cfg.dock.autopopulate,
-        "a position edit is not a manual pin edit"
+    assert_eq!(
+        cfg.dock.minimize_animation,
+        tessera_model::dock::MinimizeAnimationStyle::Scale
     );
-    let _ = std::fs::remove_file(&path);
-}
-
-#[test]
-fn config_store_creates_the_dock_table_for_a_position_edit() {
-    let path = temp_config_path("dock-position-create");
-    let _ = std::fs::remove_file(&path);
-    ConfigStore::new(&path)
-        .apply(ConfigEdit::SetDockPosition {
-            position: tessera_model::dock::DockPosition::Left,
-        })
-        .unwrap();
-    let cfg = load(&path).unwrap().expect("file written");
-    assert_eq!(cfg.dock.position, tessera_model::dock::DockPosition::Left);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -457,37 +441,22 @@ fn temp_config_path(tag: &str) -> PathBuf {
 }
 
 #[test]
-fn config_store_creates_a_loadable_config_for_dock_pins() {
-    let path = temp_config_path("create");
-    let _ = std::fs::remove_file(&path);
-    ConfigStore::new(&path)
-        .apply(ConfigEdit::SetDockPinned {
-            pinned: vec!["foot.desktop".to_string(), "firefox".to_string()],
-        })
-        .unwrap();
-    let cfg = load(&path).unwrap().expect("file written");
-    assert_eq!(cfg.dock.pinned, vec!["foot.desktop", "firefox"]);
-    assert!(
-        !cfg.dock.autopopulate,
-        "manual control disables the fallback"
-    );
-    let _ = std::fs::remove_file(&path);
-}
-
-#[test]
 fn config_store_preserves_other_content_and_comments() {
     let path = temp_config_path("preserve");
-    let original = "schema_version = 2\n\n# my apps\n[dock]\npinned = [\"a.desktop\"]\n\n[ui]\nreduced_motion = true\n";
+    let original = "schema_version = 2\n\n# my apps\n[dock]\nminimize_animation = \"genie\"\n\n[ui]\nreduced_motion = true\n";
     std::fs::write(&path, original).unwrap();
     ConfigStore::new(&path)
-        .apply(ConfigEdit::SetDockPinned {
-            pinned: vec!["b.desktop".to_string()],
+        .apply(ConfigEdit::SetDockMinimizeAnimation {
+            style: tessera_model::dock::MinimizeAnimationStyle::Scale,
         })
         .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("# my apps"), "comment survives: {text}");
     let cfg = load(&path).unwrap().expect("file still valid");
-    assert_eq!(cfg.dock.pinned, vec!["b.desktop"]);
+    assert_eq!(
+        cfg.dock.minimize_animation,
+        tessera_model::dock::MinimizeAnimationStyle::Scale
+    );
     assert!(cfg.ui.reduced_motion, "untouched section survives");
     let _ = std::fs::remove_file(&path);
 }
@@ -497,8 +466,8 @@ fn config_store_does_not_overwrite_invalid_toml() {
     let path = temp_config_path("invalid");
     std::fs::write(&path, "schema_version = [unterminated\n").unwrap();
     let err = ConfigStore::new(&path)
-        .apply(ConfigEdit::SetDockPinned {
-            pinned: vec!["a.desktop".to_string()],
+        .apply(ConfigEdit::SetDockMinimizeAnimation {
+            style: tessera_model::dock::MinimizeAnimationStyle::Scale,
         })
         .unwrap_err();
     assert!(matches!(err, LoadError::Invalid { .. }), "{err}");
@@ -516,8 +485,8 @@ fn config_store_validates_the_complete_document_before_replacing_it() {
     let original = "schema_version = 99\n";
     std::fs::write(&path, original).unwrap();
     let err = ConfigStore::new(&path)
-        .apply(ConfigEdit::SetDockPinned {
-            pinned: vec!["a.desktop".to_string()],
+        .apply(ConfigEdit::SetDockMinimizeAnimation {
+            style: tessera_model::dock::MinimizeAnimationStyle::Scale,
         })
         .unwrap_err();
     assert!(matches!(err, LoadError::Invalid { .. }), "{err}");
@@ -556,8 +525,8 @@ fn config_store_composes_typed_edits_without_losing_fields() {
     let _ = std::fs::remove_file(&path);
     let store = ConfigStore::new(&path);
     store
-        .apply(ConfigEdit::SetDockPinned {
-            pinned: vec!["foot.desktop".to_string()],
+        .apply(ConfigEdit::SetDockMinimizeAnimation {
+            style: tessera_model::dock::MinimizeAnimationStyle::Suck,
         })
         .unwrap();
     let touchpad = TouchpadConfig {
@@ -599,7 +568,10 @@ fn config_store_composes_typed_edits_without_losing_fields() {
 
     let config = store.load().unwrap().unwrap();
     assert_eq!(store.path(), path);
-    assert_eq!(config.dock.pinned, vec!["foot.desktop"]);
+    assert_eq!(
+        config.dock.minimize_animation,
+        tessera_model::dock::MinimizeAnimationStyle::Suck
+    );
     assert_eq!(config.input.touchpad, touchpad);
     assert_eq!(config.input.mouse, mouse);
     assert_eq!(config.input.keyboard, keyboard);

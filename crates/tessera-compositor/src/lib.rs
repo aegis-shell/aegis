@@ -1607,6 +1607,8 @@ pub(crate) struct State {
 }
 
 mod state;
+pub mod dock_state;
+pub use dock_state::DockStateStore;
 mod window_state;
 
 /// Existing compositor paths are the physical human-seat path. Dereferencing

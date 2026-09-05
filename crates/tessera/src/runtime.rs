@@ -83,25 +83,10 @@ pub(super) struct ConfigWriter {
 struct ConfigWriteJob {
     store: tessera_config::ConfigStore,
     edit: tessera_config::ConfigEdit,
-    receipt: Option<std::sync::mpsc::Sender<Result<(), String>>>,
+    receipt: std::sync::mpsc::Sender<Result<(), String>>,
 }
 
 impl ConfigWriter {
-    /// Queue a typed edit without blocking the caller.
-    pub(super) fn enqueue(&self, edit: tessera_config::ConfigEdit) -> Result<(), String> {
-        let store = self
-            .store
-            .clone()
-            .ok_or_else(|| "no writable configuration path is available".to_owned())?;
-        self.tx
-            .send(ConfigWriteJob {
-                store,
-                edit,
-                receipt: None,
-            })
-            .map_err(|_| "config write worker stopped".to_owned())
-    }
-
     /// Queue a write and block until the worker reports the result. Used by
     /// settings commits, which must surface persistence failures in their
     /// IPC reply; the block is bounded by one TOML rewrite per queued job.
@@ -115,7 +100,7 @@ impl ConfigWriter {
             .send(ConfigWriteJob {
                 store,
                 edit,
-                receipt: Some(receipt_tx),
+                receipt: receipt_tx,
             })
             .map_err(|_| "config write worker stopped".to_owned())?;
         receipt_rx
@@ -500,17 +485,23 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // + the borrowed icon cache, which outlives the shell) before registering
     // the dock: `Shell::add` seeds new components with the current catalog.
     // The dock stays last so it stacks above the other chrome.
+    let dock_state_path = tessera_compositor::DockStateStore::default_path();
+    let (seed_pinned, seed_autopopulate, seed_position) = config
+        .as_ref()
+        .map(|c| (c.dock.pinned.clone(), c.dock.autopopulate, c.dock.position))
+        .unwrap_or_default();
+    let dock_state = tessera_compositor::DockStateStore::load_or_init(
+        &dock_state_path,
+        &seed_pinned,
+        seed_autopopulate,
+        seed_position,
+    );
+
     let pinned = resolve_chrome_pins(
         &launcher_apps,
         &icon_cache.map,
-        config
-            .as_ref()
-            .map(|c| c.dock.pinned.as_slice())
-            .unwrap_or(&[]),
-        config
-            .as_ref()
-            .map(|c| c.dock.autopopulate)
-            .unwrap_or(false),
+        &dock_state.pinned,
+        dock_state.autopopulate,
     );
     #[cfg(feature = "chrome-dock")]
     log::info!("dock: {} app(s) pinned", pinned.len());
@@ -518,7 +509,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         apps: launcher_apps.clone(),
         pinned,
         icons: icon_cache.as_icon_set(),
-        position: config.as_ref().map(|c| c.dock.position).unwrap_or_default(),
+        position: dock_state.position,
     });
     #[cfg(feature = "chrome-dock")]
     {
@@ -672,16 +663,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .spawn(move || {
             while let Ok(job) = config_write_rx.recv() {
                 let result = job.store.apply(job.edit).map_err(|error| error.to_string());
-                match job.receipt {
-                    Some(receipt) => {
-                        let _ = receipt.send(result);
-                    }
-                    None => {
-                        if let Err(e) = result {
-                            log::warn!("{e}");
-                        }
-                    }
-                }
+                let _ = job.receipt.send(result);
             }
         })
         .expect("spawn config write worker");
@@ -736,6 +718,18 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::mpsc::channel::<ConfirmPickControlRequest>();
     let (capability_pick_control_tx, capability_pick_control_rx) =
         std::sync::mpsc::channel::<CapabilityPickControlRequest>();
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/state"))
+        })
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "XDG_STATE_HOME/HOME is required for durable audit state",
+            )
+        })?;
+    let journal_path = state_home.join("tessera/audit/events-v2.jsonl");
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -744,10 +738,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "XDG_DATA_HOME/HOME is required for durable audit and Actor identity state",
+                "XDG_DATA_HOME/HOME is required for durable Actor identity state",
             )
         })?;
-    let journal_path = data_home.join("tessera/audit/events-v2.jsonl");
     let audit_policy = config
         .as_ref()
         .map(|config| config.audit)
@@ -1066,6 +1059,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         status_rx,
         status_refresh_tx,
         config_writer,
+        dock_state,
+        dock_state_path,
         reload,
         idle_process,
         semantic_adapter_process,

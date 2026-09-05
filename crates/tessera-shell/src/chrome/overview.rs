@@ -579,11 +579,20 @@ impl Chrome for Overview {
     }
 
     fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
-        if matches!(command, ChromeCommand::ToggleOverview) {
-            self.open = !self.open;
-            if self.open {
-                self.anim_active = true;
+        match command {
+            ChromeCommand::ToggleOverview => {
+                self.open = !self.open;
+                if self.open {
+                    self.anim_active = true;
+                }
             }
+            ChromeCommand::CloseOverview | ChromeCommand::DismissModal => {
+                if self.open {
+                    self.open = false;
+                    self.anim_active = true;
+                }
+            }
+            _ => {}
         }
     }
 
