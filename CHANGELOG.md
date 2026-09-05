@@ -11,6 +11,15 @@ project cuts a tagged release.
 > repository moved from `atrium-desktop/aegis` to
 > `atrium-desktop/tessera`. Environment variables use the `TESSERA_*` prefix
 > (previously `AEGIS_*`). The bundled cursor theme uses the `Tessera` name.
+
+## [0.0.56] - 2026-09-05
+
+### Added
+- Handled `org.freedesktop.login1.Session.Lock` signal in `tessera-idle` to immediately require a secure session lock upon system lock requests.
+
+### Changed
+- Updated portal documentation to reflect native support for all 17 portal interfaces in `xdg-desktop-portal-atrium` without external fallback dependencies.
+
 ## [0.0.55] - 2026-09-05
 
 ### Added
