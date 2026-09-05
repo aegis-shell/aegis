@@ -30,9 +30,10 @@ Per-user discovery paths are
 `$XDG_CONFIG_HOME/xdg-desktop-portal/`, and
 `$XDG_DATA_HOME/dbus-1/services/`.
 
-The backend-selection file uses `default=tessera;gtk`. Tessera is tried first
-for every interface that its `.portal` metadata advertises; GTK supplies
-unadvertised interfaces and configured fallbacks.
+The backend-selection file uses `default=atrium`. Tessera is the sole,
+full-stack backend: all advertised interfaces are served natively by
+`xdg-desktop-portal-atrium`. No external fallback backend (such as
+`xdg-desktop-portal-gtk`) is installed or required.
 
 ## Runtime Dependencies
 
@@ -43,7 +44,6 @@ unadvertised interfaces and configured fallbacks.
 | Compositor-backed operations | Matching Tessera compositor and `$XDG_RUNTIME_DIR/tessera.sock` |
 | ScreenCast | PipeWire session |
 | FileChooser | GTK4 and Tessera xdg-foreign-v2 support |
-| Unsupported interface fallback | `xdg-desktop-portal-gtk` |
 | Email | `xdg-email`, or the command selected by `TESSERA_PORTAL_MAILER` |
 | Password-vault auto-unlock | Optional `pam_sigil.so` integration |
 
@@ -59,12 +59,21 @@ unadvertised interfaces and configured fallbacks.
 | `org.freedesktop.impl.portal.FileChooser` | current backend ABI | Handles open, save, directory, and multiple-file flows in a supervised one-shot GTK4 process. No path crosses compositor IPC. |
 | `org.freedesktop.impl.portal.Email` | current backend ABI | Validates attachment URIs and hands compose requests to the session mail client through `xdg-email`. |
 | `org.freedesktop.impl.portal.Account` | current backend ABI | Returns the account name and optional avatar after explicit compositor confirmation. |
+| `org.freedesktop.impl.portal.Access` | current backend ABI | Generic frontend-driven consent dialog rendered with the native prompter. |
+| `org.freedesktop.impl.portal.AppChooser` | current backend ABI | Resolves desktop entries and associations in-process and renders the native prompter dialog. |
+| `org.freedesktop.impl.portal.OpenURI` | current backend ABI | Resolves content types and launches default applications, reusing the native AppChooser dialog when needed. |
+| `org.freedesktop.impl.portal.Background` | current backend ABI | Native consent prompt for background activity and autostart registration. |
+| `org.freedesktop.impl.portal.DynamicLauncher` | current backend ABI | Native launcher editor prompter for desktop entry installation confirmation. |
+| `org.freedesktop.impl.portal.Inhibit` | 3 | Native inhibition backed by logind for idle (8) and suspend (4). |
+| `org.freedesktop.impl.portal.Notification` | current backend ABI | Native notification cards rendered through the portal prompter. |
+| `org.freedesktop.impl.portal.Wallpaper` | current backend ABI | Compositor-backed wallpaper application via scoped IPC decode-and-swap. |
+| `org.freedesktop.impl.portal.Print` | current backend ABI | Native print dialog support. |
 
-Tessera does not advertise any interface outside this table. Inhibit,
-AppChooser, Notification, DynamicLauncher, and Wallpaper route to GTK because
-the Tessera implementations do not cover their complete portal contracts. The
-GTK backend also supplies other unadvertised interfaces, including Access,
-Background, Print, and Location.
+`xdg-desktop-portal-atrium` is a complete, self-contained portal implementation.
+It natively serves all 17 interfaces listed above without requiring
+`xdg-desktop-portal-gtk` or any external fallback backend. Interfaces outside
+`atrium.portal` (such as Camera, RemoteDesktop, InputCapture, USB) have no
+backend in this stack and fail cleanly at the frontend.
 
 ## Lock and Seat Behavior
 
