@@ -12,6 +12,7 @@ const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 pub enum SleepEvent {
     Preparing,
     Resumed,
+    Lock,
 }
 
 pub fn acquire_delay_inhibitor() -> Result<zbus::zvariant::OwnedFd, zbus::Error> {
@@ -151,24 +152,44 @@ pub fn suspend_async() {
 /// should terminate; `true` means the D-Bus stream ended and can reconnect.
 fn monitor(events: &Sender<SleepEvent>) -> Result<bool, zbus::Error> {
     let connection = zbus::blocking::Connection::system()?;
-    let rule = format!(
-        "type='signal',sender='{DESTINATION}',interface='{INTERFACE}',member='PrepareForSleep'"
-    );
+    let own_session_path = session_proxy_parts()
+        .ok()
+        .map(|(_, path)| path.as_str().to_string());
+    let rule = format!("type='signal',sender='{DESTINATION}'");
     let iterator =
         zbus::blocking::MessageIterator::for_match_rule(rule.as_str(), &connection, Some(8))?;
     for message in iterator.flatten() {
-        let Ok(preparing) = message.body().deserialize::<bool>() else {
-            continue;
-        };
-        if events
-            .send(if preparing {
-                SleepEvent::Preparing
-            } else {
-                SleepEvent::Resumed
-            })
-            .is_err()
-        {
-            return Ok(false);
+        let header = message.header();
+        let interface = header.interface().map(|name| name.as_str());
+        let member = header.member().map(|name| name.as_str());
+        match (interface, member) {
+            (Some(INTERFACE), Some("PrepareForSleep")) => {
+                let Ok(preparing) = message.body().deserialize::<bool>() else {
+                    continue;
+                };
+                if events
+                    .send(if preparing {
+                        SleepEvent::Preparing
+                    } else {
+                        SleepEvent::Resumed
+                    })
+                    .is_err()
+                {
+                    return Ok(false);
+                }
+            }
+            (Some(SESSION_INTERFACE), Some("Lock")) => {
+                let path = header.path().map(|p| p.as_str());
+                if let Some(ref own_path) = own_session_path {
+                    if path != Some(own_path.as_str()) {
+                        continue;
+                    }
+                }
+                if events.send(SleepEvent::Lock).is_err() {
+                    return Ok(false);
+                }
+            }
+            _ => {}
         }
     }
     Ok(true)

@@ -14,8 +14,6 @@ Install these runtime components:
 - compatible `tessera` and `xdg-desktop-portal-atrium` releases from the
   [Portal Backend Reference](../reference/portal.md#identifiers-and-paths);
 - `xdg-desktop-portal` as the public frontend;
-- `xdg-desktop-portal-gtk` as the fallback for interfaces that Tessera does not
-  implement;
 - GTK 4.10 or newer for file selection;
 - PipeWire and WirePlumber for screen sharing; and
 - `xdg-email` for email handoff.
@@ -34,17 +32,18 @@ Use the distribution package when one is available. The
 
 | Source | Destination |
 |--------|-------------|
-| Meson portal executable | `/usr/libexec/xdg-desktop-portal-atrium` by default |
-| Meson FileChooser executable | `/usr/libexec/atrium-portal-prompter` by default |
+| Backend portal executable | `/usr/libexec/xdg-desktop-portal-atrium` by default |
+| FileChooser prompter executable | `/usr/libexec/atrium-portal-prompter` by default |
 | Generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.atrium.service` |
 | `contrib/xdg-desktop-portal/portals/atrium.portal` | `/usr/share/xdg-desktop-portal/portals/atrium.portal` |
 | `contrib/xdg-desktop-portal/atrium-portals.conf` | `/usr/share/xdg-desktop-portal/atrium-portals.conf` |
 | `LICENSE` | `/usr/share/licenses/xdg-desktop-portal-atrium/LICENSE` |
 
 The D-Bus service activates the portal backend. The `atrium.portal` file
-declares the eight native interfaces, and `atrium-portals.conf` routes the
-remaining interfaces to GTK. The Portal does not install a partial
-`org.freedesktop.secrets` service.
+declares all 17 native interfaces, and `atrium-portals.conf` routes exclusively
+to `atrium`. The backend is complete and self-contained; no external fallback
+(such as `xdg-desktop-portal-gtk`) is installed or required. The Portal does
+not install a partial `org.freedesktop.secrets` service.
 
 There is no `xdg-desktop-portal-atrium.service` to enable. D-Bus starts the
 private helper on demand.
@@ -59,17 +58,16 @@ git clone --branch "v<PORTAL_VERSION>" --depth 1 \
   https://github.com/aegis-shell/xdg-desktop-portal-atrium.git \
   ../xdg-desktop-portal-atrium
 cd ../xdg-desktop-portal-atrium
-meson setup build --buildtype=release --prefix=/usr -Dpam=false
-meson compile -C build
-sudo meson install -C build
+cargo build --locked --release -p xdg-desktop-portal-atrium -p atrium-portal-prompter
+sudo ./scripts/install.sh --prefix /usr --no-build
 ```
 
-Meson generates the D-Bus service with the configured `libexecdir`, installs
+The install script generates the D-Bus service with the configured `libexecdir`, installs
 both private executables, and installs the portal metadata and routing file.
 Use `DESTDIR` instead of `sudo` when staging a package:
 
 ```bash
-DESTDIR="$PWD/stage" meson install -C build
+DESTDIR="$PWD/stage" ./scripts/install.sh --prefix /usr --no-build
 ```
 
 The generated service keeps its `Exec=` value synchronized when a
@@ -82,13 +80,11 @@ the system package. Run these commands from the
 `xdg-desktop-portal-atrium` repository root:
 
 ```bash
-meson setup build-user --buildtype=debug \
-  --prefix="$HOME/.local" -Dpam=false
-meson compile -C build-user
-meson install -C build-user
+cargo build --debug -p xdg-desktop-portal-atrium -p atrium-portal-prompter
+./scripts/install.sh --prefix "$HOME/.local" --no-build
 ```
 
-Meson writes an absolute `Exec=` path into the per-user D-Bus service. D-Bus
+The install script writes an absolute `Exec=` path into the per-user D-Bus service. D-Bus
 does not expand `~`, `$HOME`, or shell expressions in `Exec=`; inspect the
 installed service and confirm the path is absolute.
 
@@ -218,7 +214,7 @@ journalctl --user -b -u tessera.service --no-pager
 | The backend activates but public interfaces are absent | Confirm `XDG_CURRENT_DESKTOP=tessera`, inspect `atrium-portals.conf`, then restart `xdg-desktop-portal.service`. |
 | Settings work but capture or pickers fail | Confirm that the matching compositor is running and owns `$XDG_RUNTIME_DIR/tessera.sock`. |
 | Screen sharing opens a chooser but produces no node | Confirm that the PipeWire user session is running and inspect the portal journal. |
-| Unsupported interfaces disappear | Install `xdg-desktop-portal-gtk`; it is the configured fallback. |
+| The backend does not respond | Confirm `xdg-desktop-portal-atrium` is running and `atrium.portal` is installed under `/usr/share/xdg-desktop-portal/portals/`. |
 | A nested test reaches the outer desktop | Use a direct session or isolate the session bus; nested Tessera intentionally does not overwrite the host activation environment. |
 
 See the [Portal Backend Reference](../reference/portal.md) for interface

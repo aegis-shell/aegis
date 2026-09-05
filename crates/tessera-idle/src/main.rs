@@ -484,6 +484,11 @@ impl Daemon {
                     self.resumed();
                     self.sleep_inhibitor.resumed(Instant::now());
                 }
+                SleepEvent::Lock => {
+                    log::info!("idle: system requested session lock via logind; requiring secure lock");
+                    self.require_lock();
+                    self.apply_secure_actions();
+                }
             }
         }
     }
@@ -1078,6 +1083,12 @@ mod tests {
         assert!(consume_lock_ready(&mut ready).unwrap());
         assert!(ready.is_none());
         assert!(!consume_lock_ready(&mut ready).unwrap());
+    }
+
+    #[test]
+    fn sleep_event_lock_variants_are_distinct() {
+        assert_ne!(SleepEvent::Preparing, SleepEvent::Lock);
+        assert_ne!(SleepEvent::Resumed, SleepEvent::Lock);
     }
 
     #[test]
