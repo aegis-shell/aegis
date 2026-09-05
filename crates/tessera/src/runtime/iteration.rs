@@ -747,24 +747,14 @@ impl CompositorRuntime {
             let pinned = resolve_chrome_pins(
                 &self.launcher_apps,
                 &self.icon_cache.map,
-                self.config
-                    .as_ref()
-                    .map(|c| c.dock.pinned.as_slice())
-                    .unwrap_or(&[]),
-                self.config
-                    .as_ref()
-                    .map(|c| c.dock.autopopulate)
-                    .unwrap_or(false),
+                &self.dock_state.pinned,
+                self.dock_state.autopopulate,
             );
             self.shell.set_app_catalog(tessera_shell::AppCatalog {
                 apps: self.launcher_apps.clone(),
                 pinned,
                 icons: self.icon_cache.as_icon_set(),
-                position: self
-                    .config
-                    .as_ref()
-                    .map(|c| c.dock.position)
-                    .unwrap_or_default(),
+                position: self.dock_state.position,
             });
             // Theme selection follows the same live-reload contract as the
             // rest of the effective desktop-preferences snapshot.
@@ -805,24 +795,14 @@ impl CompositorRuntime {
                 let pinned = resolve_chrome_pins(
                     &refreshed,
                     &refreshed_icons.map,
-                    self.config
-                        .as_ref()
-                        .map(|c| c.dock.pinned.as_slice())
-                        .unwrap_or(&[]),
-                    self.config
-                        .as_ref()
-                        .map(|c| c.dock.autopopulate)
-                        .unwrap_or(false),
+                    &self.dock_state.pinned,
+                    self.dock_state.autopopulate,
                 );
                 self.shell.set_app_catalog(tessera_shell::AppCatalog {
                     apps: refreshed.clone(),
                     pinned,
                     icons: refreshed_icons.as_icon_set(),
-                    position: self
-                        .config
-                        .as_ref()
-                        .map(|c| c.dock.position)
-                        .unwrap_or_default(),
+                    position: self.dock_state.position,
                 });
                 // Components now point only at refreshed_icons; dropping the
                 // old cache after the update cannot leave dangling textures.

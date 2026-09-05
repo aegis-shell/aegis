@@ -173,6 +173,30 @@ pub fn modal_scrim_backdrop(display: (f32, f32), design: &tessera_design::Design
     }
 }
 
+/// Standard full-screen backdrop cover for immersive modal surfaces (Launchpad, Command Panel).
+///
+/// Immersive modals share an optical depth-of-field effect: a large-radius Gaussian blur
+/// paired with an adaptive modal scrim wash, grounding foreground content without completely
+/// severing visual continuity with the user's desktop workspace.
+pub struct BackdropCover;
+
+impl BackdropCover {
+    /// Canonical backdrop blur sigma for full-screen immersive modals (16.0).
+    pub const BLUR_SIGMA: f32 = 16.0;
+
+    /// Full-screen frosted backdrop region with the canonical modal scrim wash.
+    #[must_use]
+    pub fn region(display: (f32, f32), design: &tessera_design::Design) -> BackdropRegion {
+        BackdropRegion {
+            x: 0.0,
+            y: 0.0,
+            w: display.0,
+            h: display.1,
+            wash: Some(backdrop_wash(design.colors.modal_scrim.with_alpha(126))),
+        }
+    }
+}
+
 /// Logical output-space rectangle whose already-composited desktop should be
 /// sampled and blurred before chrome is drawn over it. Components declare
 /// only the area occupied by their glass material; the executable shares one
@@ -686,12 +710,12 @@ pub struct ChromeEvents {
     pub dock_pin_actions: Vec<PinAction>,
     /// The complete pinned order the dock committed this frame when the user
     /// finished dragging a tile to a new slot (entry ids in dock order).
-    /// Drained by the main loop into `ConfigEdit::SetDockPinned`, like pin
+    /// Drained by the main loop into `DockStateStore`, like pin
     /// actions; the dock has already applied the order optimistically, and
     /// the resulting catalog push reconciles it.
     pub dock_reorder: Option<Vec<String>>,
     /// The screen edge the user dragged the dock to this frame. Drained by
-    /// the main loop into `ConfigEdit::SetDockPosition`; the dock has
+    /// the main loop into `DockStateStore`; the dock has
     /// already switched edges optimistically.
     pub dock_position: Option<tessera_model::dock::DockPosition>,
     /// Ordered Interaction Domain lifecycle and authority mutations requested by trusted
@@ -721,7 +745,9 @@ pub enum ChromeCommand<'a> {
     ClosePrism,
     OpenBuiltIn(BuiltInApplication),
     ToggleOverview,
+    CloseOverview,
     ToggleCommandPanel,
+    CloseCommandPanel,
     StartWindowSwitcher,
     FinishWindowSwitcher,
     StartPick(PickerMode),
@@ -1471,13 +1497,13 @@ impl Shell {
     }
 
     /// Drain the pinned order committed by a dock tile drag this frame, if
-    /// any. The main loop persists it through `ConfigEdit::SetDockPinned`.
+    /// any. The main loop persists it to `DockStateStore`.
     pub fn take_dock_reorder(&mut self) -> Option<Vec<String>> {
         self.events.dock_reorder.take()
     }
 
     /// Drain the screen edge the dock was dragged to this frame, if any. The
-    /// main loop persists it through `ConfigEdit::SetDockPosition`.
+    /// main loop persists it to `DockStateStore`.
     pub fn take_dock_position(&mut self) -> Option<tessera_model::dock::DockPosition> {
         self.events.dock_position.take()
     }
@@ -1509,6 +1535,12 @@ impl Shell {
     /// [`Shell::toggle`]: fanned out to every component; static components
     /// ignore it.
     pub fn toggle_overview(&mut self) {
+        let opening = !self.overview_active();
+        if opening {
+            self.broadcast_command(ChromeCommand::CloseLauncher);
+            self.broadcast_command(ChromeCommand::ClosePrism);
+            self.broadcast_command(ChromeCommand::CloseCommandPanel);
+        }
         self.broadcast_command(ChromeCommand::ToggleOverview);
     }
 
@@ -1532,6 +1564,12 @@ impl Shell {
     /// (ADR-0080). Mirrors [`Shell::toggle_overview`]: fanned out to every
     /// component; static components ignore it.
     pub fn toggle_command_panel(&mut self) {
+        let opening = !self.command_panel_active();
+        if opening {
+            self.broadcast_command(ChromeCommand::CloseLauncher);
+            self.broadcast_command(ChromeCommand::ClosePrism);
+            self.broadcast_command(ChromeCommand::CloseOverview);
+        }
         self.broadcast_command(ChromeCommand::ToggleCommandPanel);
     }
 
@@ -1923,8 +1961,8 @@ impl Shell {
     }
 
     /// Fire the global application-launcher hotkey. Opening the launcher
-    /// closes Prism first so the two catalog surfaces cannot capture input at
-    /// the same time.
+    /// closes other immersive surfaces (Prism, Command Panel, Overview) so
+    /// only one modal surface captures input and owns the screen.
     pub fn toggle(&mut self) {
         let opening = !self
             .components
@@ -1932,12 +1970,14 @@ impl Shell {
             .any(|component| component.launcher_active());
         if opening {
             self.broadcast_command(ChromeCommand::ClosePrism);
+            self.broadcast_command(ChromeCommand::CloseCommandPanel);
+            self.broadcast_command(ChromeCommand::CloseOverview);
         }
         self.broadcast_command(ChromeCommand::ToggleLauncher);
     }
 
-    /// Fire the global Prism hotkey. Opening Prism closes the application
-    /// launcher first so only one catalog surface owns keyboard input.
+    /// Fire the global Prism hotkey. Opening Prism closes other modal
+    /// surfaces so only one catalog surface owns keyboard input.
     pub fn toggle_prism(&mut self) {
         let opening = !self
             .components
@@ -1945,6 +1985,8 @@ impl Shell {
             .any(|component| component.prism_active());
         if opening {
             self.broadcast_command(ChromeCommand::CloseLauncher);
+            self.broadcast_command(ChromeCommand::CloseCommandPanel);
+            self.broadcast_command(ChromeCommand::CloseOverview);
         }
         self.broadcast_command(ChromeCommand::TogglePrism);
     }
@@ -2319,14 +2361,16 @@ impl Shell {
                     total.right += edge.right;
                     total
                 });
-            // The launcher (including its exit fade) owns the whole output:
-            // persistent decorations floating inside its blurred field hide.
-            let launcher_active = components
-                .iter()
-                .any(|component| component.launcher_active());
+            // Immersive modal surfaces (Launcher, Command Panel, Overview) own the whole output:
+            // persistent decorations (HUD status chips) floating inside the blurred field hide.
+            let immersive_active = components.iter().any(|component| {
+                component.launcher_active()
+                    || component.command_panel_active()
+                    || component.overview_active()
+            });
             for component in components.iter_mut() {
                 component.update(ChromeUpdate::ModalReserved(modal_reserved));
-                component.update(ChromeUpdate::LauncherActive(launcher_active));
+                component.update(ChromeUpdate::LauncherActive(immersive_active));
             }
             self.ui.frame(input, |f| {
                 for component in components.iter_mut() {

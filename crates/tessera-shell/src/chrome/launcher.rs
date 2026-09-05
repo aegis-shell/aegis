@@ -35,7 +35,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
-    LiquidGlassRegion, Localizer, Message, Reserved, WindowAction, backdrop_wash, ellipsize,
+    LiquidGlassRegion, Localizer, Message, Reserved, WindowAction, ellipsize,
 };
 use tessera_model::app::Entry;
 use tessera_model::input::{KeyAction, KeyChar, key_action};
@@ -48,7 +48,7 @@ use super::app_menu::AppMenu;
 /// Blur width requested from the compositor host, in logical pixels. The host
 /// scales it to its quarter-resolution capture and evaluates a fixed-cost
 /// multi-resolution filter while the desktop remains live.
-const BACKDROP_BLUR_SIGMA: f32 = 10.0;
+const BACKDROP_BLUR_SIGMA: f32 = crate::BackdropCover::BLUR_SIGMA;
 const SEARCH_TOP: f32 = 38.0;
 const SEARCH_H: f32 = 44.0;
 const SEARCH_MAX_W: f32 = 520.0;
@@ -1086,22 +1086,14 @@ impl Chrome for Launcher {
         _workspaces: &crate::WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
         if self.active() {
-            // The launcher's veil is a wash INTO the frost (beneath any
-            // glass body), not a chrome-painted rect above it: the glass
-            // context-menu must refract the dimmed frost, and the veil must
-            // not sit between the frost and the glass.
-            vec![BackdropRegion {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-                wash: Some(backdrop_wash(
-                    self.design.colors.modal_scrim.with_alpha(126),
-                )),
-            }]
+            vec![crate::BackdropCover::region(display, &self.design)]
         } else {
             Vec::new()
         }
+    }
+
+    fn exclusive_presentation_active(&self) -> bool {
+        self.active()
     }
 
     /// The context menu's glass body. The full-screen frost region above

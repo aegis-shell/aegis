@@ -53,12 +53,12 @@ impl Design {
                 scrollbar: 5.0,
             },
             glass: GlassStyles {
-                chip: GlassStyle::new(0.16, 4.0, 2.0).with_material(1.0, 1.0, 1.0, 0.0),
+                chip: GlassStyle::new(0.16, 4.0, 2.0).with_material(1.0, 1.0, 1.05, -1.0),
                 tooltip: GlassStyle::new(0.14, 10.0, 5.0).with_material(3.0, 3.0, 0.85, 0.0),
                 menu: GlassStyle::new(0.18, 16.0, 8.0).with_material(5.0, 3.6, 0.7, 0.0),
                 floating_panel: GlassStyle::new(0.18, 16.0, 8.0).with_material(3.5, 3.0, 0.85, 0.0),
                 prominent_panel: GlassStyle::new(0.20, 18.0, 9.0).with_material(4.0, 3.2, 0.8, 0.0),
-                dock: GlassStyle::new(0.20, 12.0, 6.0).with_material(3.0, 2.5, 0.9, 0.0),
+                dock: GlassStyle::new(0.20, 12.0, 6.0).with_material(1.0, 1.0, 1.08, -1.0),
             },
             glass_focus: GlassFocus {
                 hover_tint: colors.glass_focus.surface_hover,
@@ -127,13 +127,13 @@ impl Design {
             scheme: ColorScheme::Light,
             colors: colors.product,
             glass: GlassStyles {
-                chip: GlassStyle::new(0.18, 4.0, 2.0).with_material(1.0, 1.0, 1.0, 1.0),
+                chip: GlassStyle::new(0.18, 4.0, 2.0).with_material(1.0, 1.0, 1.05, -1.0),
                 tooltip: GlassStyle::new(0.16, 10.0, 5.0).with_material(3.0, 3.5, 0.9, 1.0),
                 menu: GlassStyle::new(0.20, 16.0, 8.0).with_material(5.0, 4.5, 0.8, 1.0),
                 floating_panel: GlassStyle::new(0.20, 16.0, 8.0).with_material(3.5, 3.5, 0.9, 1.0),
                 prominent_panel: GlassStyle::new(0.22, 18.0, 9.0)
                     .with_material(4.0, 4.0, 0.85, 1.0),
-                dock: GlassStyle::new(0.22, 12.0, 6.0).with_material(3.0, 3.0, 0.95, 1.0),
+                dock: GlassStyle::new(0.22, 12.0, 6.0).with_material(1.0, 1.0, 1.08, -1.0),
             },
             glass_focus: GlassFocus {
                 hover_tint: colors.glass_focus.surface_hover,
@@ -632,16 +632,17 @@ mod tests {
         assert!(tooltip.frost_strength < menu.frost_strength);
         assert_eq!(tooltip.plate_polarity, 0.0);
         for role in [
-            GlassRole::Chip,
             GlassRole::Tooltip,
             GlassRole::Menu,
             GlassRole::FloatingPanel,
             GlassRole::ProminentPanel,
-            GlassRole::Dock,
         ] {
             let style = glass.for_role(role);
             assert_eq!(style.plate_polarity, 0.0);
         }
+        // Decorative bodies (Chip, Dock) keep per-pixel adaptive polarity
+        assert_eq!(glass.chip.plate_polarity, -1.0);
+        assert_eq!(glass.dock.plate_polarity, -1.0);
         // Light appearance pins the opposite polarity (pearl plate under dark
         // text) with strengths of its own.
         let light = Design::light().glass;

@@ -782,9 +782,7 @@ impl CompositorRuntime {
                 );
                 let backdrop_material_key =
                     BackdropStackMaterialKey::new(&backdrop_layers, glass_tint(color_scheme));
-                let backdrop_plan = if overview_active
-                    || (self.screenshot_freeze.armed && !self.screenshot_freeze.active())
-                {
+                let backdrop_plan = if overview_active {
                     self.backdrop_graph.invalidate();
                     BackdropPlan::Direct
                 } else {
@@ -1125,14 +1123,34 @@ impl CompositorRuntime {
                             .collect();
                         repaint = repaint.with_rects(effect_damage.clone());
                         presented_damage = presented_damage.with_rects(effect_damage);
-                        output_render_area = frame_damage_render_area(&repaint);
-                        begin_opaque_frame_repaint(
-                            &self.canvas,
-                            &frame,
-                            physical_size,
-                            self.clear,
-                            &repaint,
-                        )?;
+                        if freeze_capturing {
+                            if !self.screenshot_freeze.ensure_target(
+                                &self.device,
+                                &self.surface,
+                                &frame,
+                                physical_size,
+                            ) {
+                                self.screenshot_freeze.failed = true;
+                            }
+                        }
+                        let mut in_freeze_target = false;
+                        if freeze_capturing && !self.screenshot_freeze.failed {
+                            if let Some(target) = self.screenshot_freeze.target(&frame) {
+                                if begin_opaque_target(&self.canvas, &frame, target, self.clear).is_ok() {
+                                    in_freeze_target = true;
+                                }
+                            }
+                        }
+                        if !in_freeze_target {
+                            output_render_area = frame_damage_render_area(&repaint);
+                            begin_opaque_frame_repaint(
+                                &self.canvas,
+                                &frame,
+                                physical_size,
+                                self.clear,
+                                &repaint,
+                            )?;
+                        }
                         if self.screenshot_freeze.active() {
                             if let Some(image) = self.screenshot_freeze.image() {
                                 self.canvas.draw_image(
@@ -1143,7 +1161,8 @@ impl CompositorRuntime {
                                     physical_size.1 as f32,
                                 );
                             }
-                        } else if capture_covers_output
+                        } else if !in_freeze_target
+                            && capture_covers_output
                             && refreshed
                             && self.backdrop_graph.draw_capture_opaque(
                                 &self.canvas,
@@ -1167,7 +1186,7 @@ impl CompositorRuntime {
                                 &mut self.renderer,
                                 &self.server,
                                 render_geometry,
-                                output_render_area,
+                                if in_freeze_target { None } else { output_render_area },
                                 overview_active,
                                 overview_progress,
                                 window_switcher.as_ref(),
@@ -1189,14 +1208,34 @@ impl CompositorRuntime {
                         // The desktop still repaints normally, but the effect
                         // image is only sampled. No capture, blur, or liquid
                         // compute is recorded for this frame.
-                        output_render_area = frame_damage_render_area(&repaint);
-                        begin_opaque_frame_repaint(
-                            &self.canvas,
-                            &frame,
-                            physical_size,
-                            self.clear,
-                            &repaint,
-                        )?;
+                        if freeze_capturing {
+                            if !self.screenshot_freeze.ensure_target(
+                                &self.device,
+                                &self.surface,
+                                &frame,
+                                physical_size,
+                            ) {
+                                self.screenshot_freeze.failed = true;
+                            }
+                        }
+                        let mut in_freeze_target = false;
+                        if freeze_capturing && !self.screenshot_freeze.failed {
+                            if let Some(target) = self.screenshot_freeze.target(&frame) {
+                                if begin_opaque_target(&self.canvas, &frame, target, self.clear).is_ok() {
+                                    in_freeze_target = true;
+                                }
+                            }
+                        }
+                        if !in_freeze_target {
+                            output_render_area = frame_damage_render_area(&repaint);
+                            begin_opaque_frame_repaint(
+                                &self.canvas,
+                                &frame,
+                                physical_size,
+                                self.clear,
+                                &repaint,
+                            )?;
+                        }
                         if self.screenshot_freeze.active() {
                             if let Some(image) = self.screenshot_freeze.image() {
                                 self.canvas.draw_image(
@@ -1216,7 +1255,7 @@ impl CompositorRuntime {
                                 &mut self.renderer,
                                 &self.server,
                                 render_geometry,
-                                output_render_area,
+                                if in_freeze_target { None } else { output_render_area },
                                 overview_active,
                                 overview_progress,
                                 window_switcher.as_ref(),
@@ -2277,32 +2316,22 @@ impl CompositorRuntime {
                     self.shell.toggle();
                 }
                 // Dock context-menu pin/unpin requests: apply the explicit,
-                // idempotent action to `[dock] pinned`, write the config back,
-                // and refresh immediately rather than waiting for live reload.
+                // idempotent action to dock state, persist to dock_state.json,
+                // and refresh immediately.
                 let pin_actions = self.shell.take_dock_pin_actions();
                 if !pin_actions.is_empty() {
-                    let mut pinned_list = self
-                        .config
-                        .as_ref()
-                        .map(|c| c.dock.pinned.clone())
-                        .unwrap_or_default();
+                    let mut pinned_list = self.dock_state.pinned.clone();
                     pinned_list = materialize_pins_for_manual_edit(
                         &self.launcher_apps,
                         &self.icon_cache.map,
                         &pinned_list,
-                        self.config.as_ref().is_some_and(|c| c.dock.autopopulate),
+                        self.dock_state.autopopulate,
                     );
                     pinned_list =
                         apply_pin_actions(&self.launcher_apps, &pinned_list, &pin_actions);
-                    // Persist off the frame loop: the single worker applies
-                    // the full list in send order, so rapid pin/unpin clicks
-                    // cannot overwrite each other out of order.
-                    if let Err(error) =
-                        self.config_writer
-                            .enqueue(tessera_config::ConfigEdit::SetDockPinned {
-                                pinned: pinned_list.clone(),
-                            })
-                    {
+                    self.dock_state.pinned = pinned_list.clone();
+                    self.dock_state.autopopulate = false;
+                    if let Err(error) = self.dock_state.save_to_path(&self.dock_state_path) {
                         log::warn!("dock: pins not saved: {error}");
                     }
                     if let Some(c) = self.config.as_mut() {
@@ -2319,25 +2348,17 @@ impl CompositorRuntime {
                         apps: self.launcher_apps.clone(),
                         pinned,
                         icons: self.icon_cache.as_icon_set(),
-                        position: self
-                            .config
-                            .as_ref()
-                            .map(|c| c.dock.position)
-                            .unwrap_or_default(),
+                        position: self.dock_state.position,
                     });
                 }
                 // A committed drag reorder carries the complete pinned list
                 // in dock order (entry ids, already materialized from the
-                // visible strip): persist it through the same path as a
-                // pin/unpin edit. The dock applied the order optimistically;
-                // this push reconciles it.
+                // visible strip): persist it to dock_state.json. The dock
+                // applied the order optimistically; this push reconciles it.
                 if let Some(pinned_list) = self.shell.take_dock_reorder() {
-                    if let Err(error) =
-                        self.config_writer
-                            .enqueue(tessera_config::ConfigEdit::SetDockPinned {
-                                pinned: pinned_list.clone(),
-                            })
-                    {
+                    self.dock_state.pinned = pinned_list.clone();
+                    self.dock_state.autopopulate = false;
+                    if let Err(error) = self.dock_state.save_to_path(&self.dock_state_path) {
                         log::warn!("dock: reordered pins not saved: {error}");
                     }
                     if let Some(c) = self.config.as_mut() {
@@ -2354,21 +2375,15 @@ impl CompositorRuntime {
                         apps: self.launcher_apps.clone(),
                         pinned,
                         icons: self.icon_cache.as_icon_set(),
-                        position: self
-                            .config
-                            .as_ref()
-                            .map(|c| c.dock.position)
-                            .unwrap_or_default(),
+                        position: self.dock_state.position,
                     });
                 }
                 // A dock edge drag commits the edge it landed on: persist
-                // it and reconcile the catalog-carried position. The dock
-                // already switched edges optimistically during the gesture.
+                // it to dock_state.json and reconcile the catalog-carried position.
+                // The dock already switched edges optimistically during the gesture.
                 if let Some(position) = self.shell.take_dock_position() {
-                    if let Err(error) = self
-                        .config_writer
-                        .enqueue(tessera_config::ConfigEdit::SetDockPosition { position })
-                    {
+                    self.dock_state.position = position;
+                    if let Err(error) = self.dock_state.save_to_path(&self.dock_state_path) {
                         log::warn!("dock: position not saved: {error}");
                     }
                     if let Some(c) = self.config.as_mut() {
@@ -2377,14 +2392,8 @@ impl CompositorRuntime {
                     let pinned = resolve_chrome_pins(
                         &self.launcher_apps,
                         &self.icon_cache.map,
-                        self.config
-                            .as_ref()
-                            .map(|c| c.dock.pinned.as_slice())
-                            .unwrap_or(&[]),
-                        self.config
-                            .as_ref()
-                            .map(|c| c.dock.autopopulate)
-                            .unwrap_or(false),
+                        &self.dock_state.pinned,
+                        self.dock_state.autopopulate,
                     );
                     self.shell.set_app_catalog(tessera_shell::AppCatalog {
                         apps: self.launcher_apps.clone(),

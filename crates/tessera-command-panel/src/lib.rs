@@ -1011,31 +1011,6 @@ impl Chrome for CommandPanel {
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
         let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
 
-        // One opaque canvas replaces the former blur → wash → liquid-glass
-        // stack. It fades with the reveal but is fully solid at rest, so the
-        // open panel needs no backdrop capture or material recomposition.
-        let hud = self.panel_colors();
-        f.set_opacity(reveal);
-        f.place(
-            "tessera-command-panel-background",
-            &materials::chrome_place(
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: display.0,
-                    h: display.1,
-                },
-                LayoutOpts {
-                    bg: hud.background,
-                    pad: 0.0,
-                    ..materials::surface_layout()
-                },
-            ),
-            |f| {
-                f.column_ex(&materials::sized(display.0, display.1), |_| {});
-            },
-        );
-
         // Display typography is per-call (`display_label`, bold sans at the
         // amplified HUD sizes), so no context-wide scope is needed here.
         // Lens stamps each built node with the context opacity, so one
@@ -1086,19 +1061,48 @@ impl Chrome for CommandPanel {
     }
 
     fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
-        if matches!(command, ChromeCommand::ToggleCommandPanel) {
-            if self.open {
-                self.close();
-            } else {
-                self.open = true;
-                if let Some(name) = self
-                    .avatar
-                    .as_mut()
-                    .and_then(|avatar| avatar.play_random_action().map(str::to_owned))
-                {
-                    log::debug!("command-panel: playing avatar action {name:?}");
+        match command {
+            ChromeCommand::ToggleCommandPanel => {
+                if self.open {
+                    self.close();
+                } else {
+                    self.open = true;
+                    if let Some(name) = self
+                        .avatar
+                        .as_mut()
+                        .and_then(|avatar| avatar.play_random_action().map(str::to_owned))
+                    {
+                        log::debug!("command-panel: playing avatar action {name:?}");
+                    }
                 }
             }
+            ChromeCommand::CloseCommandPanel | ChromeCommand::DismissModal => {
+                if self.open {
+                    self.close();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn backdrop_blur_sigma(&self) -> f32 {
+        if self.active() {
+            tessera_shell::BackdropCover::BLUR_SIGMA
+        } else {
+            0.0
+        }
+    }
+
+    fn backdrop_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<tessera_shell::BackdropRegion> {
+        if self.active() {
+            vec![tessera_shell::BackdropCover::region(display, &self.design)]
+        } else {
+            Vec::new()
         }
     }
 

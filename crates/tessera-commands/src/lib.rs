@@ -236,13 +236,13 @@ fn config_error(error: tessera_config::LoadError) -> CliError {
 
 /// Resolve the durable audit store path from the environment.
 fn audit_stream_path() -> Result<PathBuf, CliError> {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
+    let state_home = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .ok_or_else(|| {
-            CliError::Fs("$XDG_DATA_HOME and HOME are unset; cannot locate the audit store".into())
+            CliError::Fs("$XDG_STATE_HOME and HOME are unset; cannot locate the audit store".into())
         })?;
-    Ok(data_home.join("tessera/audit/events-v2.jsonl"))
+    Ok(state_home.join("tessera/audit/events-v2.jsonl"))
 }
 
 fn audit_error(error: tessera_security::audit::AuditError) -> CliError {
@@ -1564,11 +1564,11 @@ mod tests {
     fn audit_cli_status_verify_export_and_prune_round_trip() {
         // Build a small real store with tiny segments via the security layer,
         // then drive the CLI dispatch over it. The dispatch functions resolve
-        // the store through XDG_DATA_HOME, so scope that variable per test.
+        // the store through XDG_STATE_HOME, so scope that variable per test.
         let dir = tempfile::tempdir().unwrap();
-        let data_home = dir.path().join("data");
-        std::fs::create_dir_all(data_home.join("tessera/audit")).unwrap();
-        let stream = data_home.join("tessera/audit/events-v2.jsonl");
+        let state_home = dir.path().join("state");
+        std::fs::create_dir_all(state_home.join("tessera/audit")).unwrap();
+        let stream = state_home.join("tessera/audit/events-v2.jsonl");
         let options = tessera_security::audit::AuditStoreOptions {
             min_free_bytes: 0,
             checkpoint_interval_events: u64::MAX,
@@ -1591,7 +1591,7 @@ mod tests {
                 .unwrap();
             }
         }
-        // The dispatch functions resolve the store via XDG_DATA_HOME; the
+        // The dispatch functions resolve the store via XDG_STATE_HOME; the
         // test drives the path-scoped variant directly.
         let dispatch = |command| dispatch_audit_at(&stream, command, false);
         let status = dispatch(AuditCmd::Status).unwrap();

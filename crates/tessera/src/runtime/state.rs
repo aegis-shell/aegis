@@ -173,6 +173,8 @@ pub(super) struct CompositorRuntime {
     /// edits are fire-and-forget; settings edits wait for an accurate IPC
     /// receipt.
     pub(super) config_writer: ConfigWriter,
+    pub(super) dock_state: tessera_compositor::DockStateStore,
+    pub(super) dock_state_path: std::path::PathBuf,
     pub(super) reload: Option<tessera_config::ReloadWatcher>,
     /// Supervised ext-idle-notify policy client for this session.
     pub(super) idle_process: session::IdleProcess,
